@@ -1147,15 +1147,34 @@ impl Contacts {
     }
 
     pub async fn remove(&self, id: ContactId) -> Result<()> {
+        let _search_guard = self.0.inner.search_sync.write().await;
         let now = Utc::now().timestamp();
         let mut connection = self.0.inner.connection.lock().await;
         let transaction = connection.transaction().await?;
+        let mut rows = transaction
+            .query(
+                r#"SELECT m.id
+                FROM messages m
+                JOIN contact_addresses ca
+                    ON ca.address = m.from_address COLLATE NOCASE
+                WHERE ca.contact_id = ?1"#,
+                (id.to_string(),),
+            )
+            .await?;
+        let mut affected = Vec::new();
+        while let Some(row) = rows.next().await? {
+            affected.push(parse_id(row.get::<String>(0)?, "message")?);
+        }
+        drop(rows);
         let changed = transaction
             .execute("DELETE FROM contacts WHERE id = ?1", (id.to_string(),))
             .await?;
         if changed == 0 {
             transaction.rollback().await?;
             return Err(not_found("contact", id));
+        }
+        for message_id in affected {
+            enqueue_search_on(&transaction, message_id).await?;
         }
         let event = insert_event(
             &transaction,
@@ -1166,6 +1185,8 @@ impl Contacts {
         )
         .await?;
         transaction.commit().await?;
+        drop(connection);
+        self.0.flush_search_projection().await?;
         let _ = self.0.inner.events.send(event);
         Ok(())
     }

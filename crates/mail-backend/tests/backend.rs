@@ -130,7 +130,7 @@ async fn complete_local_backend_flow() {
         .unwrap();
     assert_eq!(cold.items.len(), 1);
 
-    backend
+    let contact = backend
         .contacts()
         .add(NewContact {
             display_name: "Abigail Marie".into(),
@@ -226,6 +226,39 @@ async fn complete_local_backend_flow() {
             .unwrap_or_else(|error| panic!("query {query:?} failed: {error}"));
         assert_eq!(results.items.len(), 1, "query {query:?}");
     }
+
+    backend.contacts().remove(contact.id).await.unwrap();
+    assert_eq!(
+        backend
+            .messages()
+            .get(id)
+            .await
+            .unwrap()
+            .summary
+            .inbox_class,
+        InboxClass::Cold
+    );
+    let formerly_warm = backend
+        .search()
+        .search(SearchRequest {
+            query: "is:warm".into(),
+            page_size: 20,
+            cursor: None,
+        })
+        .await
+        .unwrap();
+    assert!(formerly_warm.items.is_empty());
+    let newly_cold = backend
+        .search()
+        .search(SearchRequest {
+            query: "is:cold".into(),
+            page_size: 20,
+            cursor: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(newly_cold.items.len(), 1);
+    assert_eq!(newly_cold.items[0].id, id);
 
     backend
         .messages()

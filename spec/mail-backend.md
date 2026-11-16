@@ -191,9 +191,9 @@ and message-ID fields, then Turso hydrates only the bounded result-ID page.
 
 Search results use keyset cursors and stable tie-break IDs. Do not use growing
 SQL `OFFSET` values for mailbox scrolling. Search-relevant mutations—contact
-addition, classification, remote flag refresh and local-folder membership—must
-enqueue and synchronously publish replacement documents before their API calls
-return.
+addition or removal, classification, remote flag refresh and local-folder
+membership—must enqueue and synchronously publish replacement documents before
+their API calls return.
 
 Exact result counts may be calculated lazily. The first page and stable
 navigation matter more than blocking the UI for a count on every keystroke.
