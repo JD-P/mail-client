@@ -14,9 +14,65 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use chrono::{DateTime, Duration, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::{str::FromStr, sync::Arc};
+use std::{collections::HashSet, mem, str::FromStr, sync::Arc};
 use tokio::sync::{broadcast, Mutex};
 use turso::{params_from_iter, Connection, Value};
+use uuid::Uuid;
+
+const MAX_INGEST_BATCH_MESSAGES: usize = 1_000;
+const MAX_INGEST_BATCH_BYTES: usize = 64 * 1024 * 1024;
+
+struct PreparedIngest {
+    id: MessageId,
+    remote: Option<RemoteMessageIdentity>,
+    remote_flags_json: Option<String>,
+    attachments: Vec<Attachment>,
+    stage: Option<StagedMessage>,
+}
+
+struct StagedMessage {
+    blob_hash: String,
+    rfc_message_id: Option<String>,
+    subject: Option<String>,
+    from_address: Option<String>,
+    from_name: Option<String>,
+    to_addresses: String,
+    cc_addresses: String,
+    bcc_addresses: String,
+    delivered_to_addresses: String,
+    list_id: Option<String>,
+    body_text: String,
+    body_html: Option<String>,
+    preview: String,
+    sent_at: Option<i64>,
+    received_at: i64,
+    size_bytes: i64,
+    has_attachment: bool,
+    attachment_names: String,
+    is_read: bool,
+    is_starred: bool,
+    user_classification: Option<String>,
+    content_state: String,
+    search_metadata: String,
+    created_at: i64,
+}
+
+impl StagedMessage {
+    fn staged_bytes(&self) -> usize {
+        self.subject.as_ref().map_or(0, String::len)
+            + self.from_address.as_ref().map_or(0, String::len)
+            + self.from_name.as_ref().map_or(0, String::len)
+            + self.to_addresses.len()
+            + self.cc_addresses.len()
+            + self.bcc_addresses.len()
+            + self.delivered_to_addresses.len()
+            + self.list_id.as_ref().map_or(0, String::len)
+            + self.body_text.len()
+            + self.body_html.as_ref().map_or(0, String::len)
+            + self.attachment_names.len()
+            + self.search_metadata.len()
+    }
+}
 
 #[derive(Clone)]
 pub struct Backend {
@@ -103,186 +159,322 @@ impl Backend {
     /// Store an exact RFC 5322 message. Protocol adapters should call this
     /// method rather than introducing a second parsing/indexing path.
     pub async fn ingest(&self, request: IngestMessage) -> Result<MessageId> {
-        if request.raw.len() > self.inner.config.limits.max_message_bytes {
-            return Err(BackendError::MessageTooLarge {
-                actual: request.raw.len(),
-                limit: self.inner.config.limits.max_message_bytes,
-            });
-        }
-        if let Some(remote) = &request.remote {
-            if let Some(id) = self.refresh_existing_remote(remote).await? {
-                return Ok(id);
+        self.ingest_batch(vec![request])
+            .await?
+            .pop()
+            .ok_or_else(|| BackendError::InvalidInput("ingest batch was empty".into()))
+    }
+
+    /// Store messages in bounded transactions while publishing each chunk to
+    /// the FTS-indexed table with one SQL statement. Results preserve input
+    /// order. Chunks committed before a later parse failure remain committed.
+    pub async fn ingest_batch(&self, requests: Vec<IngestMessage>) -> Result<Vec<MessageId>> {
+        let mut remote_keys = HashSet::new();
+        for request in &requests {
+            if request.raw.len() > self.inner.config.limits.max_message_bytes {
+                return Err(BackendError::MessageTooLarge {
+                    actual: request.raw.len(),
+                    limit: self.inner.config.limits.max_message_bytes,
+                });
+            }
+            if let Some(remote) = &request.remote {
+                if remote.uid == 0 {
+                    return Err(BackendError::InvalidInput(
+                        "remote message UIDs must be non-zero".into(),
+                    ));
+                }
+                if !remote_keys.insert((remote.folder_id, remote.uid_validity, remote.uid)) {
+                    return Err(BackendError::InvalidInput(
+                        "an ingest batch cannot contain a duplicate remote UID".into(),
+                    ));
+                }
             }
         }
 
+        let mut message_ids = Vec::with_capacity(requests.len());
+        let mut batch = Vec::new();
+        let mut staged_bytes = 0usize;
+        for request in requests {
+            let prepared = self.prepare_ingest(request).await?;
+            let message_bytes = prepared
+                .stage
+                .as_ref()
+                .map_or(0, StagedMessage::staged_bytes);
+            if !batch.is_empty()
+                && (batch.len() >= MAX_INGEST_BATCH_MESSAGES
+                    || staged_bytes.saturating_add(message_bytes) > MAX_INGEST_BATCH_BYTES)
+            {
+                message_ids.extend(self.commit_prepared_batch(mem::take(&mut batch)).await?);
+                staged_bytes = 0;
+            }
+            staged_bytes = staged_bytes.saturating_add(message_bytes);
+            batch.push(prepared);
+        }
+        if !batch.is_empty() {
+            message_ids.extend(self.commit_prepared_batch(batch).await?);
+        }
+        Ok(message_ids)
+    }
+
+    async fn prepare_ingest(&self, request: IngestMessage) -> Result<PreparedIngest> {
+        let size_bytes = request.raw.len() as i64;
         let parsed = mime::parse(&request.raw, &self.inner.config.limits)?;
         let blob_hash = self.inner.blobs.put(&request.raw).await?;
         let id = MessageId::new();
         let now = Utc::now().timestamp();
         let received_at = request.received_at.or(parsed.sent_at).unwrap_or(now);
-        let to_json = serde_json::to_string(&parsed.to_addresses)?;
-        let cc_json = serde_json::to_string(&parsed.cc_addresses)?;
-        let bcc_json = serde_json::to_string(&parsed.bcc_addresses)?;
-        let delivered_to_json = serde_json::to_string(&parsed.delivered_to_addresses)?;
         let attachment_names = parsed
             .attachments
             .iter()
             .filter_map(|attachment| attachment.name.as_deref())
             .collect::<Vec<_>>()
             .join(" ");
-        let classification = request.user_classification.map(classification_text);
-        let search_metadata = json!({"received_at": received_at}).to_string();
-        let remote_flags = request
-            .remote
+        let has_attachment = !parsed.attachments.is_empty();
+        let mut remote = request.remote;
+        if let Some(remote) = &mut remote {
+            remote.flags = canonical_flags(&remote.flags);
+        }
+        let remote_flags_json = remote
             .as_ref()
-            .map(|remote| canonical_flags(&remote.flags));
-        let (is_read, is_starred) = request
-            .remote
+            .map(|remote| serde_json::to_string(&remote.flags))
+            .transpose()?;
+        let (is_read, is_starred) = remote
             .as_ref()
-            .zip(remote_flags.as_ref())
-            .map(|(_remote, flags)| {
+            .map(|remote| {
                 (
-                    flags.iter().any(|flag| flag.eq_ignore_ascii_case("\\Seen")),
-                    flags
+                    remote
+                        .flags
+                        .iter()
+                        .any(|flag| flag.eq_ignore_ascii_case("\\Seen")),
+                    remote
+                        .flags
                         .iter()
                         .any(|flag| flag.eq_ignore_ascii_case("\\Flagged")),
                 )
             })
             .unwrap_or((false, false));
-
-        let mut connection = self.inner.connection.lock().await;
-        if let Some(remote) = &request.remote {
-            if let Some(existing) = lookup_remote_on(
-                &connection,
-                remote.folder_id,
-                remote.uid_validity,
-                remote.uid,
-            )
-            .await?
-            {
-                let event = refresh_remote_on(&mut connection, existing, remote).await?;
-                drop(connection);
-                if let Some(event) = event {
-                    let _ = self.inner.events.send(event);
-                }
-                return Ok(existing);
-            }
-        }
-        let transaction = connection.transaction().await?;
-        transaction
-            .execute(
-                r#"INSERT INTO messages (
-                    id, blob_hash, rfc_message_id, subject, from_address, from_name,
-                    to_addresses, cc_addresses, bcc_addresses, delivered_to_addresses,
-                    list_id, body_text, body_html, preview, sent_at, received_at, size_bytes, has_attachment,
-                    attachment_names, is_read, is_starred, user_classification,
-                    content_state, search_metadata, created_at
-                ) VALUES (
-                    ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
-                    ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23,
-                    ?24, ?25
-                )"#,
-                turso::params![
-                    id.to_string(),
-                    blob_hash,
-                    parsed.rfc_message_id,
-                    parsed.subject,
-                    parsed.from_address,
-                    parsed.from_name,
-                    to_json,
-                    cc_json,
-                    bcc_json,
-                    delivered_to_json,
-                    parsed.list_id,
-                    parsed.body_text,
-                    parsed.body_html,
-                    parsed.preview,
-                    parsed.sent_at,
-                    received_at,
-                    request.raw.len() as i64,
-                    !parsed.attachments.is_empty(),
-                    attachment_names,
-                    is_read,
-                    is_starred,
-                    classification,
-                    content_state_text(parsed.content_state),
-                    search_metadata,
-                    now,
-                ],
-            )
-            .await?;
-        for attachment in &parsed.attachments {
-            transaction
-                .execute(
-                    r#"INSERT INTO attachments (
-                        message_id, ordinal, name, declared_media_type, decoded_size,
-                        inline, content_id
-                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"#,
-                    turso::params![
-                        id.to_string(),
-                        attachment.ordinal as i64,
-                        attachment.name.clone(),
-                        attachment.declared_media_type.clone(),
-                        attachment.decoded_size as i64,
-                        attachment.inline,
-                        attachment.content_id.clone(),
-                    ],
-                )
-                .await?;
-        }
-        if let Some(remote) = &request.remote {
-            transaction
-                .execute(
-                    r#"INSERT INTO message_instances (
-                        message_id, account_id, folder_id, uid_validity, imap_uid,
-                        mod_sequence, flags_json
-                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"#,
-                    turso::params![
-                        id.to_string(),
-                        remote.account_id.to_string(),
-                        remote.folder_id.to_string(),
-                        remote.uid_validity as i64,
-                        remote.uid as i64,
-                        remote.mod_sequence.map(|value| value as i64),
-                        serde_json::to_string(remote_flags.as_deref().unwrap_or_default())?,
-                    ],
-                )
-                .await?;
-        }
-        let event = insert_event(
-            &transaction,
-            now,
-            "message_ingested",
-            id.to_string(),
-            json!({"message_id": id}),
-        )
-        .await?;
-        transaction.commit().await?;
-        let _ = self.inner.events.send(event);
-        Ok(id)
+        let stage = StagedMessage {
+            blob_hash,
+            rfc_message_id: parsed.rfc_message_id,
+            subject: parsed.subject,
+            from_address: parsed.from_address,
+            from_name: parsed.from_name,
+            to_addresses: serde_json::to_string(&parsed.to_addresses)?,
+            cc_addresses: serde_json::to_string(&parsed.cc_addresses)?,
+            bcc_addresses: serde_json::to_string(&parsed.bcc_addresses)?,
+            delivered_to_addresses: serde_json::to_string(&parsed.delivered_to_addresses)?,
+            list_id: parsed.list_id,
+            body_text: parsed.body_text,
+            body_html: parsed.body_html,
+            preview: parsed.preview,
+            sent_at: parsed.sent_at,
+            received_at,
+            size_bytes,
+            has_attachment,
+            attachment_names,
+            is_read,
+            is_starred,
+            user_classification: request
+                .user_classification
+                .map(classification_text)
+                .map(str::to_owned),
+            content_state: content_state_text(parsed.content_state).to_owned(),
+            search_metadata: json!({"received_at": received_at}).to_string(),
+            created_at: now,
+        };
+        Ok(PreparedIngest {
+            id,
+            remote,
+            remote_flags_json,
+            attachments: parsed.attachments,
+            stage: Some(stage),
+        })
     }
 
-    async fn refresh_existing_remote(
+    async fn commit_prepared_batch(
         &self,
-        remote: &RemoteMessageIdentity,
-    ) -> Result<Option<MessageId>> {
+        mut prepared: Vec<PreparedIngest>,
+    ) -> Result<Vec<MessageId>> {
+        let batch_id = Uuid::new_v4().to_string();
         let mut connection = self.inner.connection.lock().await;
-        let Some(id) = lookup_remote_on(
-            &connection,
-            remote.folder_id,
-            remote.uid_validity,
-            remote.uid,
-        )
-        .await?
-        else {
-            return Ok(None);
-        };
-        let event = refresh_remote_on(&mut connection, id, remote).await?;
+        let transaction = connection.transaction().await?;
+        let mut existing_ids = vec![None; prepared.len()];
+        for (position, message) in prepared.iter().enumerate() {
+            if let Some(remote) = &message.remote {
+                existing_ids[position] = lookup_remote_on(
+                    &transaction,
+                    remote.folder_id,
+                    remote.uid_validity,
+                    remote.uid,
+                )
+                .await?;
+            }
+        }
+
+        let mut staged_any = false;
+        for (position, message) in prepared.iter_mut().enumerate() {
+            if existing_ids[position].is_some() {
+                message.stage = None;
+                continue;
+            }
+            let stage = message
+                .stage
+                .take()
+                .expect("prepared message has stage data");
+            transaction
+                .execute(
+                    r#"INSERT INTO ingest_message_stage (
+                        batch_id, position, id, blob_hash, rfc_message_id, subject,
+                        from_address, from_name, to_addresses, cc_addresses,
+                        bcc_addresses, delivered_to_addresses, list_id, body_text,
+                        body_html, preview, sent_at, received_at, size_bytes,
+                        has_attachment, attachment_names, is_read, is_starred,
+                        user_classification, content_state, search_metadata, created_at
+                    ) VALUES (
+                        ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
+                        ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22,
+                        ?23, ?24, ?25, ?26, ?27
+                    )"#,
+                    turso::params![
+                        batch_id.clone(),
+                        position as i64,
+                        message.id.to_string(),
+                        stage.blob_hash,
+                        stage.rfc_message_id,
+                        stage.subject,
+                        stage.from_address,
+                        stage.from_name,
+                        stage.to_addresses,
+                        stage.cc_addresses,
+                        stage.bcc_addresses,
+                        stage.delivered_to_addresses,
+                        stage.list_id,
+                        stage.body_text,
+                        stage.body_html,
+                        stage.preview,
+                        stage.sent_at,
+                        stage.received_at,
+                        stage.size_bytes,
+                        stage.has_attachment,
+                        stage.attachment_names,
+                        stage.is_read,
+                        stage.is_starred,
+                        stage.user_classification,
+                        stage.content_state,
+                        stage.search_metadata,
+                        stage.created_at,
+                    ],
+                )
+                .await?;
+            staged_any = true;
+        }
+        if staged_any {
+            transaction
+                .execute(
+                    r#"INSERT INTO messages (
+                        id, blob_hash, rfc_message_id, subject, from_address, from_name,
+                        to_addresses, cc_addresses, bcc_addresses, delivered_to_addresses,
+                        list_id, body_text, body_html, preview, sent_at, received_at,
+                        size_bytes, has_attachment, attachment_names, is_read, is_starred,
+                        user_classification, content_state, search_metadata, created_at
+                    )
+                    SELECT id, blob_hash, rfc_message_id, subject, from_address, from_name,
+                        to_addresses, cc_addresses, bcc_addresses, delivered_to_addresses,
+                        list_id, body_text, body_html, preview, sent_at, received_at,
+                        size_bytes, has_attachment, attachment_names, is_read, is_starred,
+                        user_classification, content_state, search_metadata, created_at
+                    FROM ingest_message_stage
+                    WHERE batch_id = ?1
+                    ORDER BY position"#,
+                    (batch_id.clone(),),
+                )
+                .await?;
+            transaction
+                .execute(
+                    "DELETE FROM ingest_message_stage WHERE batch_id = ?1",
+                    (batch_id,),
+                )
+                .await?;
+        }
+
+        let mut message_ids = Vec::with_capacity(prepared.len());
+        let mut events = Vec::with_capacity(prepared.len());
+        for (position, message) in prepared.iter().enumerate() {
+            if let Some(existing) = existing_ids[position] {
+                if let Some(event) = refresh_remote_in_transaction(
+                    &transaction,
+                    existing,
+                    message
+                        .remote
+                        .as_ref()
+                        .expect("existing remote has identity"),
+                )
+                .await?
+                {
+                    events.push(event);
+                }
+                message_ids.push(existing);
+                continue;
+            }
+            for attachment in &message.attachments {
+                transaction
+                    .execute(
+                        r#"INSERT INTO attachments (
+                            message_id, ordinal, name, declared_media_type, decoded_size,
+                            inline, content_id
+                        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"#,
+                        turso::params![
+                            message.id.to_string(),
+                            attachment.ordinal as i64,
+                            attachment.name.clone(),
+                            attachment.declared_media_type.clone(),
+                            attachment.decoded_size as i64,
+                            attachment.inline,
+                            attachment.content_id.clone(),
+                        ],
+                    )
+                    .await?;
+            }
+            if let Some(remote) = &message.remote {
+                transaction
+                    .execute(
+                        r#"INSERT INTO message_instances (
+                            message_id, account_id, folder_id, uid_validity, imap_uid,
+                            mod_sequence, flags_json
+                        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"#,
+                        turso::params![
+                            message.id.to_string(),
+                            remote.account_id.to_string(),
+                            remote.folder_id.to_string(),
+                            remote.uid_validity as i64,
+                            remote.uid as i64,
+                            remote.mod_sequence.map(|value| value as i64),
+                            message
+                                .remote_flags_json
+                                .clone()
+                                .expect("remote message has serialized flags"),
+                        ],
+                    )
+                    .await?;
+            }
+            events.push(
+                insert_event(
+                    &transaction,
+                    Utc::now().timestamp(),
+                    "message_ingested",
+                    message.id.to_string(),
+                    json!({"message_id": message.id}),
+                )
+                .await?,
+            );
+            message_ids.push(message.id);
+        }
+        transaction.commit().await?;
         drop(connection);
-        if let Some(event) = event {
+        for event in events {
             let _ = self.inner.events.send(event);
         }
-        Ok(Some(id))
+        Ok(message_ids)
     }
 }
 
@@ -462,6 +654,10 @@ pub struct Messages(Backend);
 impl Messages {
     pub async fn ingest(&self, request: IngestMessage) -> Result<MessageId> {
         self.0.ingest(request).await
+    }
+
+    pub async fn ingest_batch(&self, requests: Vec<IngestMessage>) -> Result<Vec<MessageId>> {
+        self.0.ingest_batch(requests).await
     }
 
     pub async fn get(&self, id: MessageId) -> Result<Message> {
@@ -1011,31 +1207,28 @@ impl Sync {
         uid_validity: u32,
         fetched: Vec<ImapFetchedMessage>,
     ) -> Result<SyncBatchResult> {
-        let mut message_ids = Vec::with_capacity(fetched.len());
+        let mut requests = Vec::with_capacity(fetched.len());
         for message in fetched {
             if message.uid == 0 {
                 return Err(BackendError::InvalidInput(
                     "IMAP UIDs must be non-zero".into(),
                 ));
             }
-            message_ids.push(
-                self.0
-                    .ingest(IngestMessage {
-                        raw: message.raw,
-                        remote: Some(RemoteMessageIdentity {
-                            account_id,
-                            folder_id,
-                            uid_validity,
-                            uid: message.uid,
-                            mod_sequence: message.mod_sequence,
-                            flags: message.flags,
-                        }),
-                        received_at: message.internal_date,
-                        user_classification: None,
-                    })
-                    .await?,
-            );
+            requests.push(IngestMessage {
+                raw: message.raw,
+                remote: Some(RemoteMessageIdentity {
+                    account_id,
+                    folder_id,
+                    uid_validity,
+                    uid: message.uid,
+                    mod_sequence: message.mod_sequence,
+                    flags: message.flags,
+                }),
+                received_at: message.internal_date,
+                user_classification: None,
+            });
         }
+        let message_ids = self.0.ingest_batch(requests).await?;
         Ok(SyncBatchResult { message_ids })
     }
 }
@@ -1156,8 +1349,8 @@ async fn lookup_remote_on(
         .transpose()
 }
 
-async fn refresh_remote_on(
-    connection: &mut Connection,
+async fn refresh_remote_in_transaction(
+    connection: &Connection,
     id: MessageId,
     remote: &RemoteMessageIdentity,
 ) -> Result<Option<BackendEvent>> {
@@ -1189,8 +1382,7 @@ async fn refresh_remote_on(
         .iter()
         .any(|flag| flag.eq_ignore_ascii_case("\\Flagged"));
     let now = Utc::now().timestamp();
-    let transaction = connection.transaction().await?;
-    transaction
+    connection
         .execute(
             "UPDATE message_instances SET mod_sequence = ?1, flags_json = ?2 WHERE folder_id = ?3 AND uid_validity = ?4 AND imap_uid = ?5",
             turso::params![
@@ -1202,14 +1394,14 @@ async fn refresh_remote_on(
             ],
         )
         .await?;
-    transaction
+    connection
         .execute(
             "UPDATE messages SET is_read = ?1, is_starred = ?2 WHERE id = ?3",
             (is_read, is_starred, id.to_string()),
         )
         .await?;
     let event = insert_event(
-        &transaction,
+        connection,
         now,
         "message_remote_state_changed",
         id.to_string(),
@@ -1223,7 +1415,6 @@ async fn refresh_remote_on(
         }),
     )
     .await?;
-    transaction.commit().await?;
     Ok(Some(event))
 }
 

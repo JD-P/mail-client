@@ -1,8 +1,8 @@
 use lizard_mail_backend::{
-    AccountKind, Backend, BackendConfig, ChangeCursor, ContactAddress, FolderKind,
-    ImapFetchedMessage, ImapSecurity, ImapSettings, InboxClass, IngestMessage, MessageFilter,
-    MessageSort, NewAccount, NewContact, NewFolder, RemoteMessageIdentity, SearchRequest,
-    UserClassification,
+    AccountId, AccountKind, Backend, BackendConfig, ChangeCursor, ContactAddress, FolderId,
+    FolderKind, ImapFetchedMessage, ImapSecurity, ImapSettings, InboxClass, IngestMessage,
+    MessageFilter, MessageSort, NewAccount, NewContact, NewFolder, RemoteMessageIdentity,
+    SearchRequest, UserClassification,
 };
 
 fn message(subject: &str, body: &str) -> Vec<u8> {
@@ -371,6 +371,87 @@ async fn full_text_search_is_exact_across_time_windows_and_pages() {
         .await
         .unwrap();
     assert!(timestamp_is_not_user_text.items.is_empty());
+}
+
+#[tokio::test]
+async fn batch_ingest_preserves_order_and_publishes_search_atomically() {
+    let profile = tempfile::tempdir().unwrap();
+    let backend = Backend::open(BackendConfig::new(profile.path()))
+        .await
+        .unwrap();
+    let requests = (0..48)
+        .map(|index| {
+            let mut request = IngestMessage::local(message(
+                &format!("Batch message {index}"),
+                "batchneedle shared body",
+            ));
+            request.received_at = Some(10_000 + index);
+            request
+        })
+        .collect();
+    let ids = backend.messages().ingest_batch(requests).await.unwrap();
+    assert_eq!(ids.len(), 48);
+
+    let results = backend
+        .search()
+        .search(SearchRequest {
+            query: "batchneedle".into(),
+            page_size: 100,
+            cursor: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(results.items.len(), 48);
+    assert_eq!(results.items.first().unwrap().id, ids[47]);
+    assert_eq!(results.items.last().unwrap().id, ids[0]);
+    assert!(results
+        .items
+        .windows(2)
+        .all(|pair| pair[0].received_at > pair[1].received_at));
+}
+
+#[tokio::test]
+async fn batch_ingest_rolls_back_every_database_row_on_member_failure() {
+    let profile = tempfile::tempdir().unwrap();
+    let backend = Backend::open(BackendConfig::new(profile.path()))
+        .await
+        .unwrap();
+    let local = IngestMessage::local(message("Local", "rollbackneedle"));
+    let invalid_remote = IngestMessage {
+        raw: message("Invalid remote", "rollbackneedle"),
+        remote: Some(RemoteMessageIdentity {
+            account_id: AccountId::new(),
+            folder_id: FolderId::new(),
+            uid_validity: 1,
+            uid: 1,
+            mod_sequence: None,
+            flags: Vec::new(),
+        }),
+        received_at: Some(20_000),
+        user_classification: None,
+    };
+    backend
+        .messages()
+        .ingest_batch(vec![local, invalid_remote])
+        .await
+        .unwrap_err();
+
+    let messages = backend
+        .messages()
+        .list(MessageFilter::default())
+        .await
+        .unwrap();
+    assert!(messages.items.is_empty());
+    let search = backend
+        .search()
+        .search(SearchRequest {
+            query: "rollbackneedle".into(),
+            page_size: 20,
+            cursor: None,
+        })
+        .await
+        .unwrap();
+    assert!(search.items.is_empty());
 }
 
 #[tokio::test]

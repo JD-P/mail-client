@@ -1,8 +1,9 @@
 //! Headless, local-first mail storage and search.
 //!
 //! This crate deliberately owns no renderer and performs no network I/O. Protocol
-//! adapters feed exact RFC 5322 bytes through [`Backend::ingest`], which is also
-//! used by fixture importers and future POP3 support.
+//! adapters feed exact RFC 5322 bytes through [`Backend::ingest`] or the bounded
+//! [`Backend::ingest_batch`] path, which are also used by fixture importers and
+//! future POP3 support.
 
 mod backend;
 mod blob;

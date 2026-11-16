@@ -29,12 +29,17 @@ Current invariants:
 - remote mailbox instances and local folder memberships are durable state;
 - search and mailbox scrolling use stable keyset cursors rather than offsets;
 - changes commit with the state they describe and can be replayed by sequence;
+- bulk ingestion publishes at most 1,000 messages or 64 MiB of staged data per
+  set-based FTS statement, with temporary staging and atomic chunk commits;
 - IMAP configuration permits TLS or STARTTLS, not plaintext, and stores only an
   opaque credential reference.
 
 `imap_fetch_message` converts complete `async-imap` `FETCH` results into the
 transport-neutral batch type. The caller must request `UID FLAGS MODSEQ
 INTERNALDATE BODY.PEEK[]`; missing UID or complete body data is rejected.
+`ingest_imap_batch` routes complete fetch batches through the same bounded
+set-based path exposed as `Backend::ingest_batch` and
+`Messages::ingest_batch`.
 
 The initial search grammar supports bare terms, quoted phrases, parentheses,
 `AND`, `OR`, unary `-`, `from:`, `to:`, `cc:`, `bcc:`, `subject:`,

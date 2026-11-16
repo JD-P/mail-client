@@ -1,8 +1,9 @@
 use lizard_mail_backend::{Backend, BackendConfig, IngestMessage, SearchRequest};
 use serde::Serialize;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 const MESSAGE_BODY_BYTES: usize = 64 * 1024;
+const INGEST_BATCH_MESSAGES: usize = 1_000;
 const QUERY_RUNS: usize = 31;
 
 #[derive(Serialize)]
@@ -41,7 +42,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let profile = tempfile::tempdir()?;
     let backend = Backend::open(BackendConfig::new(profile.path())).await?;
-    let started = Instant::now();
+    let mut ingest_elapsed = Duration::ZERO;
     let mut raw_bytes = 0_u64;
     let mut messages = 0_usize;
     let mut results = Vec::new();
@@ -49,20 +50,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     for target_mib in checkpoints {
         let target_bytes = target_mib * 1024 * 1024;
         while raw_bytes < target_bytes {
-            let raw = generated_message(messages, MESSAGE_BODY_BYTES);
-            raw_bytes += raw.len() as u64;
-            backend
-                .ingest(IngestMessage {
+            let mut requests = Vec::with_capacity(INGEST_BATCH_MESSAGES);
+            while raw_bytes < target_bytes && requests.len() < INGEST_BATCH_MESSAGES {
+                let index = messages + requests.len();
+                let raw = generated_message(index, MESSAGE_BODY_BYTES);
+                raw_bytes += raw.len() as u64;
+                requests.push(IngestMessage {
                     raw,
                     remote: None,
-                    received_at: Some(1_767_225_600 + messages as i64),
+                    received_at: Some(1_767_225_600 + index as i64),
                     user_classification: None,
-                })
-                .await?;
-            messages += 1;
+                });
+            }
+            let batch_len = requests.len();
+            let started = Instant::now();
+            backend.ingest_batch(requests).await?;
+            ingest_elapsed += started.elapsed();
+            messages += batch_len;
         }
 
-        let elapsed = started.elapsed().as_secs_f64();
+        let elapsed = ingest_elapsed.as_secs_f64();
         let queries = benchmark_queries(&backend).await?;
         let checkpoint = Checkpoint {
             target_mib,

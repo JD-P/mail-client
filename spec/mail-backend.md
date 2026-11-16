@@ -135,6 +135,25 @@ downloaded can be searchable by headers while the API reports that body search
 is incomplete. A parser, attachment inspector or heuristic failure must not
 silently turn into a clean verdict.
 
+Bulk synchronization must not publish one FTS statement per message. The
+backend prepares bounded chunks of at most 1,000 messages or 64 MiB of
+normalized staged data, writes rows to connection-local temporary staging, and
+uses one `INSERT ... SELECT` to publish each chunk to the FTS-indexed table.
+Message rows, attachment metadata, remote identities and change events commit
+in one transaction per chunk. Earlier chunks remain committed if preparing a
+later chunk fails, matching resumable IMAP synchronization semantics.
+
+This distinction is material for local Turso 0.9.0-pre.5: FTS flushes a
+Tantivy segment at each SQL statement boundary, not each transaction boundary.
+Merely wrapping single-row inserts in a transaction still creates one segment
+per message. In the synthetic 64 KiB-text corpus, set-based publication raised
+1 GiB ingestion from 2.64 MiB/s to 18.35 MiB/s (387.5 seconds to 55.8 seconds).
+The same run also crossed Turso FTS's hard-coded 192 MiB retained-segment cache
+and exposed a separate search-latency cliff: the common-term p50 rose to 47.6
+ms and the oldest rare-term p50 to 392.5 ms. Batching fixes write amplification;
+it does not resolve the need to evaluate standalone Tantivy for multi-gigabyte
+indexes.
+
 ## Search language
 
 Implement a documented Gmail-like grammar because users already know it and

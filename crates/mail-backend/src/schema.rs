@@ -129,49 +129,47 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
     let mut rows = connection
         .query("SELECT version FROM schema_meta LIMIT 1", ())
         .await?;
-    let version = rows
+    let mut version = rows
         .next()
         .await?
         .ok_or_else(|| crate::BackendError::InvalidInput("missing schema version".into()))?
         .get::<i64>(0)?;
     drop(rows);
-    match version {
-        1 => {
-            connection
-                .execute("DROP INDEX IF EXISTS messages_fts", ())
-                .await?;
-            let mut rows = connection.query("PRAGMA table_info(messages)", ()).await?;
-            let mut has_search_metadata = false;
-            while let Some(row) = rows.next().await? {
-                has_search_metadata |= row.get::<String>(1)? == "search_metadata";
-            }
-            drop(rows);
-            if !has_search_metadata {
-                connection
-                    .execute(
-                        "ALTER TABLE messages ADD COLUMN search_metadata TEXT NOT NULL DEFAULT '{}'",
-                        (),
-                    )
-                    .await?;
-            }
+    if version == 1 {
+        connection
+            .execute("DROP INDEX IF EXISTS messages_fts", ())
+            .await?;
+        let mut rows = connection.query("PRAGMA table_info(messages)", ()).await?;
+        let mut has_search_metadata = false;
+        while let Some(row) = rows.next().await? {
+            has_search_metadata |= row.get::<String>(1)? == "search_metadata";
+        }
+        drop(rows);
+        if !has_search_metadata {
             connection
                 .execute(
-                    r#"UPDATE messages SET search_metadata = '{"received_at":' || received_at || '}'"#,
+                    "ALTER TABLE messages ADD COLUMN search_metadata TEXT NOT NULL DEFAULT '{}'",
                     (),
                 )
                 .await?;
-            // Update the version last. Every preceding step is idempotent, so
-            // an interrupted migration resumes safely on the next open.
-            connection
-                .execute("UPDATE schema_meta SET version = 2", ())
-                .await?;
         }
-        2 => {}
-        other => {
-            return Err(crate::BackendError::InvalidInput(format!(
-                "unsupported database schema version {other}"
-            )));
-        }
+        connection
+            .execute(
+                r#"UPDATE messages SET search_metadata = '{"received_at":' || received_at || '}'"#,
+                (),
+            )
+            .await?;
+        // Update the version last. Every preceding step is idempotent, so
+        // an interrupted migration resumes safely on the next open.
+        connection
+            .execute("UPDATE schema_meta SET version = 2", ())
+            .await?;
+        version = 2;
+    }
+    if version != 2 {
+        return Err(crate::BackendError::InvalidInput(format!(
+            "unsupported database schema version {version}"
+        )));
     }
 
     // Turso's local FTS method is Tantivy-backed. JSON numeric fields are
@@ -181,6 +179,45 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
         .execute(
             "CREATE INDEX IF NOT EXISTS messages_fts ON messages USING fts (subject, body_text, from_address, from_name, to_addresses, cc_addresses, bcc_addresses, delivered_to_addresses, list_id, attachment_names, search_metadata) WITH (json_fields = 'search_metadata')",
             (),
+        )
+        .await?;
+    // Scratch rows never need durability. Keeping them in the connection's
+    // temporary database avoids doubling main-database WAL traffic while a
+    // batch is copied into the FTS-indexed messages table.
+    connection
+        .execute_batch(
+            r#"
+            CREATE TEMP TABLE IF NOT EXISTS ingest_message_stage (
+                batch_id TEXT NOT NULL,
+                position INTEGER NOT NULL,
+                id TEXT NOT NULL,
+                blob_hash TEXT NOT NULL,
+                rfc_message_id TEXT,
+                subject TEXT,
+                from_address TEXT,
+                from_name TEXT,
+                to_addresses TEXT NOT NULL,
+                cc_addresses TEXT NOT NULL,
+                bcc_addresses TEXT NOT NULL,
+                delivered_to_addresses TEXT NOT NULL,
+                list_id TEXT,
+                body_text TEXT NOT NULL,
+                body_html TEXT,
+                preview TEXT NOT NULL,
+                sent_at INTEGER,
+                received_at INTEGER NOT NULL,
+                size_bytes INTEGER NOT NULL,
+                has_attachment INTEGER NOT NULL,
+                attachment_names TEXT NOT NULL,
+                is_read INTEGER NOT NULL,
+                is_starred INTEGER NOT NULL,
+                user_classification TEXT,
+                content_state TEXT NOT NULL,
+                search_metadata TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                PRIMARY KEY(batch_id, position)
+            );
+            "#,
         )
         .await?;
     Ok(())
