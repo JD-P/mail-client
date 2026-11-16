@@ -1,8 +1,8 @@
 use lizard_mail_backend::{
-    AccountId, AccountKind, Backend, BackendConfig, ChangeCursor, ContactAddress, FolderId,
-    FolderKind, ImapFetchedMessage, ImapSecurity, ImapSettings, InboxClass, IngestMessage,
-    MessageFilter, MessageSort, NewAccount, NewContact, NewFolder, RemoteMessageIdentity,
-    SearchRequest, UserClassification,
+    AccountId, AccountKind, Backend, BackendConfig, ChangeCursor, ContactAddress,
+    DkimAuthenticationStatus, DkimSignatureStatus, FolderId, FolderKind, ImapFetchedMessage,
+    ImapSecurity, ImapSettings, InboxClass, IngestMessage, MessageFilter, MessageSort, NewAccount,
+    NewContact, NewFolder, RemoteMessageIdentity, SearchRequest, UserClassification,
 };
 
 fn message(subject: &str, body: &str) -> Vec<u8> {
@@ -671,4 +671,52 @@ async fn search_cursor_breaks_equal_timestamps_by_message_id() {
         .map(|message| message.id)
         .collect::<std::collections::HashSet<_>>();
     assert_eq!(ids.len(), 3);
+}
+
+#[tokio::test]
+async fn dkim_evidence_is_persisted_for_unsigned_and_malformed_messages() {
+    let profile = tempfile::tempdir().unwrap();
+    let backend = Backend::open(BackendConfig::new(profile.path()))
+        .await
+        .unwrap();
+
+    let unsigned_id = backend
+        .ingest(IngestMessage::local(message("Unsigned", "plain body")))
+        .await
+        .unwrap();
+    let unsigned = backend.messages().get(unsigned_id).await.unwrap();
+    assert_eq!(unsigned.dkim.status, DkimAuthenticationStatus::Unsigned);
+    assert!(unsigned.dkim.signatures.is_empty());
+
+    let malformed = concat!(
+        "DKIM-Signature: a=rsa-sha256; v=1; d=example.test; s=mail; ",
+        "h=From; bh=YWJj; b=YWJj\r\n",
+        "From: Example <sender@example.test>\r\n",
+        "Subject: malformed DKIM\r\n\r\n",
+        "body\r\n"
+    );
+    let malformed_id = backend
+        .ingest(IngestMessage::local(malformed.as_bytes().to_vec()))
+        .await
+        .unwrap();
+    let malformed = backend.messages().get(malformed_id).await.unwrap();
+    assert_eq!(malformed.dkim.status, DkimAuthenticationStatus::Failed);
+    assert_eq!(malformed.dkim.signatures.len(), 1);
+    assert_eq!(
+        malformed.dkim.signatures[0].status,
+        DkimSignatureStatus::Neutral
+    );
+    assert_eq!(
+        malformed.dkim.signatures[0].reason_code.as_deref(),
+        Some("version_not_first")
+    );
+    drop(backend);
+
+    let reopened = Backend::open(BackendConfig::new(profile.path()))
+        .await
+        .unwrap();
+    assert_eq!(
+        reopened.messages().get(malformed_id).await.unwrap().dkim,
+        malformed.dkim
+    );
 }

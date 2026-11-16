@@ -1,0 +1,941 @@
+[
+  {
+    "name": "algorithm_misnamed",
+    "file": "algorithm_misnamed.eml",
+    "mail_from": "<sender@test.dkim2.eu>",
+    "rcpt_to": [
+      "<recipient@example.com>"
+    ],
+    "expected": "permerror",
+    "now": 1782394396,
+    "strict": true,
+    "section": [],
+    "comments": "signed with ed25519, labeled rsa"
+  },
+  {
+    "name": "algorithm_no_signature",
+    "file": "algorithm_no_signature.eml",
+    "mail_from": "<sender@test.dkim2.eu>",
+    "rcpt_to": [
+      "<recipient@example.com>"
+    ],
+    "expected": "permerror",
+    "now": 1782394396,
+    "strict": true,
+    "section": [],
+    "comments": ""
+  },
+  {
+    "name": "algorithm_only_future",
+    "file": "algorithm_only_future.eml",
+    "mail_from": "<sender@test.dkim2.eu>",
+    "rcpt_to": [
+      "<recipient@example.com>"
+    ],
+    "expected": "permerror",
+    "now": 1782394396,
+    "strict": true,
+    "section": [],
+    "comments": "an s= algorithm the Verifier has not implemented is a PERMERROR (-08 \u00a714.6)"
+  },
+  {
+    "name": "algorithm_with_future",
+    "file": "algorithm_with_future.eml",
+    "mail_from": "<sender@test.dkim2.eu>",
+    "rcpt_to": [
+      "<recipient@example.com>"
+    ],
+    "expected": "permerror",
+    "now": 1782394396,
+    "strict": true,
+    "section": [],
+    "comments": "an unknown algorithm in a \",\" group makes the group a PERMERROR (-08 \u00a714.6)"
+  },
+  {
+    "name": "domain_above_mailfrom",
+    "file": "domain_above_mailfrom.eml",
+    "mail_from": "<sender@foo.test.dkim2.eu>",
+    "rcpt_to": [
+      "<recipient@example.com>"
+    ],
+    "expected": "pass",
+    "now": 1782394396,
+    "strict": true,
+    "section": [
+      "10.8"
+    ],
+    "comments": "mf= must match or be a subdomain of d= (\u00a710.8)"
+  },
+  {
+    "name": "domain_below_mailfrom",
+    "file": "domain_below_mailfrom.eml",
+    "mail_from": "<sender@test.dkim2.eu>",
+    "rcpt_to": [
+      "<recipient@example.com>"
+    ],
+    "expected": "fail",
+    "now": 1782394396,
+    "strict": true,
+    "section": [
+      "10.8"
+    ],
+    "comments": "mf= must match or be a subdomain of d=, a FAIL (\u00a710.8, -08 \u00a714.4)"
+  },
+  {
+    "name": "flags_whitespace",
+    "file": "flags_whitespace.eml",
+    "mail_from": "<sender@test.dkim2.eu>",
+    "rcpt_to": [
+      "<recipient@example.com>"
+    ],
+    "expected": "pass",
+    "now": 1782394396,
+    "strict": true,
+    "section": [
+      "10.10"
+    ],
+    "comments": "flags can be surrounded by whitespace (\u00a710.10)"
+  },
+  {
+    "name": "mailfrom_case",
+    "file": "mailfrom_case.eml",
+    "mail_from": "<sender@test.dkim2.eu>",
+    "rcpt_to": [
+      "<recipient@example.com>"
+    ],
+    "expected": "pass",
+    "now": 1782394396,
+    "strict": true,
+    "section": [
+      "14.4"
+    ],
+    "comments": "match domains case-insensitively (\u00a714.4)"
+  },
+  {
+    "name": "mailfrom_empty",
+    "file": "mailfrom_empty.eml",
+    "mail_from": "<>",
+    "rcpt_to": [
+      "<recipient@example.com>"
+    ],
+    "expected": "pass",
+    "now": 1782394396,
+    "strict": true,
+    "section": [
+      "10.5"
+    ],
+    "comments": "<> is a valid return path (\u00a710.5)"
+  },
+  {
+    "name": "mailfrom_needs_brackets",
+    "file": "mailfrom_needs_brackets.eml",
+    "mail_from": "sender@test.dkim2.eu",
+    "rcpt_to": [
+      "<recipient@example.com>"
+    ],
+    "expected": "permerror",
+    "now": 1782394396,
+    "strict": true,
+    "section": [
+      "10.5"
+    ],
+    "comments": "The angle brackets MUST be included (\u00a710.5)"
+  },
+  {
+    "name": "nonce_empty",
+    "file": "nonce_empty.eml",
+    "mail_from": "<sender@test.dkim2.eu>",
+    "rcpt_to": [
+      "<recipient@example.com>"
+    ],
+    "expected": "pass",
+    "now": 1782394396,
+    "strict": true,
+    "section": [
+      "10.3"
+    ],
+    "comments": "a nonce may be empty (\u00a710.3)"
+  },
+  {
+    "name": "nonce_sneaky",
+    "file": "nonce_sneaky.eml",
+    "mail_from": "<sender@test.dkim2.eu>",
+    "rcpt_to": [
+      "<recipient@example.com>"
+    ],
+    "expected": "pass",
+    "now": 1782394396,
+    "strict": true,
+    "section": [
+      "10.3"
+    ],
+    "comments": "printable ASCII except semicolon (\u00a710.3)"
+  },
+  {
+    "name": "nonce_too_long",
+    "file": "nonce_too_long.eml",
+    "mail_from": "<sender@test.dkim2.eu>",
+    "rcpt_to": [
+      "<recipient@example.com>"
+    ],
+    "expected": "permerror",
+    "now": 1782394396,
+    "strict": true,
+    "section": [
+      "10.3"
+    ],
+    "comments": "the length of the string is restricted to 64 characters (nonce-value ABNF, \u00a710.3)"
+  },
+  {
+    "name": "nonce_valid",
+    "file": "nonce_valid.eml",
+    "mail_from": "<sender@test.dkim2.eu>",
+    "rcpt_to": [
+      "<recipient@example.com>"
+    ],
+    "expected": "pass",
+    "now": 1782394396,
+    "strict": true,
+    "section": [
+      "10.3"
+    ],
+    "comments": "a nonce may be up to 64 characters (\u00a710.3)"
+  },
+  {
+    "name": "pkix_rsa1024",
+    "file": "pkix_rsa1024.eml",
+    "mail_from": "<sender@test.dkim2.eu>",
+    "rcpt_to": [
+      "<recipient@example.com>"
+    ],
+    "expected": "pass",
+    "now": 1782394396,
+    "strict": true,
+    "section": [
+      "3.2"
+    ],
+    "comments": "Verifiers MUST be able to validate signatures with keys ranging from 1024 bits to 2048 bits, and they MAY be able to validate signatures with larger keys. (\u00a73.2)"
+  },
+  {
+    "name": "pkix_rsa2048",
+    "file": "pkix_rsa2048.eml",
+    "mail_from": "<sender@test.dkim2.eu>",
+    "rcpt_to": [
+      "<recipient@example.com>"
+    ],
+    "expected": "pass",
+    "now": 1782394396,
+    "strict": true,
+    "section": [
+      "3.2"
+    ],
+    "comments": "Verifiers MUST be able to validate signatures with keys ranging from 1024 bits to 2048 bits, and they MAY be able to validate signatures with larger keys. (\u00a73.2)"
+  },
+  {
+    "name": "pkix_rsa4096",
+    "file": "pkix_rsa4096.eml",
+    "mail_from": "<sender@test.dkim2.eu>",
+    "rcpt_to": [
+      "<recipient@example.com>"
+    ],
+    "expected": "pass",
+    "now": 1782394396,
+    "strict": true,
+    "section": [
+      "3.2"
+    ],
+    "comments": "Verifiers MUST be able to validate signatures with keys ranging from 1024 bits to 2048 bits, and they MAY be able to validate signatures with larger keys. (\u00a73.2)"
+  },
+  {
+    "name": "pkix_rsa5120",
+    "file": "pkix_rsa5120.eml",
+    "mail_from": "<sender@test.dkim2.eu>",
+    "rcpt_to": [
+      "<recipient@example.com>"
+    ],
+    "expected": "pass",
+    "now": 1782394396,
+    "strict": true,
+    "section": [
+      "3.2"
+    ],
+    "comments": "Verifiers MUST be able to validate signatures with keys ranging from 1024 bits to 2048 bits, and they MAY be able to validate signatures with larger keys. (\u00a73.2)"
+  },
+  {
+    "name": "pkix_rsa6144",
+    "file": "pkix_rsa6144.eml",
+    "mail_from": "<sender@test.dkim2.eu>",
+    "rcpt_to": [
+      "<recipient@example.com>"
+    ],
+    "expected": "pass",
+    "now": 1782394396,
+    "strict": true,
+    "section": [
+      "3.2"
+    ],
+    "comments": "Verifiers MUST be able to validate signatures with keys ranging from 1024 bits to 2048 bits, and they MAY be able to validate signatures with larger keys. (\u00a73.2)"
+  },
+  {
+    "name": "pkix_rsa8192",
+    "file": "pkix_rsa8192.eml",
+    "mail_from": "<sender@test.dkim2.eu>",
+    "rcpt_to": [
+      "<recipient@example.com>"
+    ],
+    "expected": "pass",
+    "now": 1782394396,
+    "strict": true,
+    "section": [
+      "3.2"
+    ],
+    "comments": "Verifiers MUST be able to validate signatures with keys ranging from 1024 bits to 2048 bits, and they MAY be able to validate signatures with larger keys. (\u00a73.2)"
+  },
+  {
+    "name": "rcptto_case",
+    "file": "rcptto_case.eml",
+    "mail_from": "<sender@test.dkim2.eu>",
+    "rcpt_to": [
+      "<recipient@example.com>"
+    ],
+    "expected": "pass",
+    "now": 1782394396,
+    "strict": true,
+    "section": [
+      "14.4"
+    ],
+    "comments": "match domains case-insensitively (\u00a714.4)"
+  },
+  {
+    "name": "simple_ed25519",
+    "file": "simple_ed25519.eml",
+    "mail_from": "<sender@test.dkim2.eu>",
+    "rcpt_to": [
+      "<recipient@example.com>"
+    ],
+    "expected": "pass",
+    "now": 1782394396,
+    "strict": true,
+    "section": [
+      "3.3"
+    ],
+    "comments": "Ed25519 signature (\u00a73.3)"
+  },
+  {
+    "name": "simple_rsa1024",
+    "file": "simple_rsa1024.eml",
+    "mail_from": "<sender@test.dkim2.eu>",
+    "rcpt_to": [
+      "<recipient@example.com>"
+    ],
+    "expected": "pass",
+    "now": 1782394396,
+    "strict": true,
+    "section": [
+      "3.2"
+    ],
+    "comments": "Verifiers MUST be able to validate signatures with keys ranging from 1024 bits to 2048 bits, and they MAY be able to validate signatures with larger keys. (\u00a73.2)"
+  },
+  {
+    "name": "simple_rsa4096",
+    "file": "simple_rsa4096.eml",
+    "mail_from": "<sender@test.dkim2.eu>",
+    "rcpt_to": [
+      "<recipient@example.com>"
+    ],
+    "expected": "pass",
+    "now": 1782394396,
+    "strict": true,
+    "section": [
+      "3.2"
+    ],
+    "comments": "Verifiers MUST be able to validate signatures with keys ranging from 1024 bits to 2048 bits, and they MAY be able to validate signatures with larger keys. (\u00a73.2)"
+  },
+  {
+    "name": "simple_rsa5120",
+    "file": "simple_rsa5120.eml",
+    "mail_from": "<sender@test.dkim2.eu>",
+    "rcpt_to": [
+      "<recipient@example.com>"
+    ],
+    "expected": "pass",
+    "now": 1782394396,
+    "strict": true,
+    "section": [
+      "3.2"
+    ],
+    "comments": "Verifiers MUST be able to validate signatures with keys ranging from 1024 bits to 2048 bits, and they MAY be able to validate signatures with larger keys. (\u00a73.2)"
+  },
+  {
+    "name": "simple_rsa6144",
+    "file": "simple_rsa6144.eml",
+    "mail_from": "<sender@test.dkim2.eu>",
+    "rcpt_to": [
+      "<recipient@example.com>"
+    ],
+    "expected": "pass",
+    "now": 1782394396,
+    "strict": true,
+    "section": [
+      "3.2"
+    ],
+    "comments": "Verifiers MUST be able to validate signatures with keys ranging from 1024 bits to 2048 bits, and they MAY be able to validate signatures with larger keys. (\u00a73.2)"
+  },
+  {
+    "name": "simple_rsa8192",
+    "file": "simple_rsa8192.eml",
+    "mail_from": "<sender@test.dkim2.eu>",
+    "rcpt_to": [
+      "<recipient@example.com>"
+    ],
+    "expected": "pass",
+    "now": 1782394396,
+    "strict": true,
+    "section": [
+      "3.2"
+    ],
+    "comments": "Verifiers MUST be able to validate signatures with keys ranging from 1024 bits to 2048 bits, and they MAY be able to validate signatures with larger keys. (\u00a73.2)"
+  },
+  {
+    "name": "tags_reversed",
+    "file": "tags_reversed.eml",
+    "mail_from": "<sender@test.dkim2.eu>",
+    "rcpt_to": [
+      "<recipient@example.com>"
+    ],
+    "expected": "pass",
+    "now": 1782394396,
+    "strict": true,
+    "section": [
+      "8"
+    ],
+    "comments": "header tags have no required order (\u00a78)"
+  },
+  {
+    "name": "too_short_rsa512",
+    "file": "too_short_rsa512.eml",
+    "mail_from": "<sender@test.dkim2.eu>",
+    "rcpt_to": [
+      "<recipient@example.com>"
+    ],
+    "expected": "permerror",
+    "now": 1782394396,
+    "strict": true,
+    "section": [
+      "3.2"
+    ],
+    "comments": "Signers MUST use RSA keys of at least 1024 bits (\u00a73.2)"
+  },
+  {
+    "name": "too_short_rsa768",
+    "file": "too_short_rsa768.eml",
+    "mail_from": "<sender@test.dkim2.eu>",
+    "rcpt_to": [
+      "<recipient@example.com>"
+    ],
+    "expected": "permerror",
+    "now": 1782394396,
+    "strict": true,
+    "section": [
+      "3.2"
+    ],
+    "comments": "Signers MUST use RSA keys of at least 1024 bits (\u00a73.2)"
+  },
+  {
+    "name": "d2_07_sha512",
+    "file": "simple-sha512.eml",
+    "mail_from": "<sender@test1.dkim2.com>",
+    "rcpt_to": [
+      "<recipient@example.com>"
+    ],
+    "expected": "pass",
+    "now": 1740002100,
+    "strict": true,
+    "section": [
+      "3.1",
+      "9.3"
+    ],
+    "comments": "SHA-512 Message-Instance hashes (\u00a73.1)"
+  },
+  {
+    "name": "d2_07_sha256_sha512",
+    "file": "simple-sha256-sha512.eml",
+    "mail_from": "<sender@test1.dkim2.com>",
+    "rcpt_to": [
+      "<recipient@example.com>"
+    ],
+    "expected": "pass",
+    "now": 1740002100,
+    "strict": true,
+    "section": [
+      "3.1",
+      "9.3"
+    ],
+    "comments": "SHA-256 and SHA-512 hashes, both checked (\u00a714.7)"
+  },
+  {
+    "name": "d2_08_mldsa44",
+    "file": "simple-mldsa44.eml",
+    "mail_from": "<sender@test1.dkim2.com>",
+    "rcpt_to": [
+      "<recipient@example.com>"
+    ],
+    "expected": "pass",
+    "now": 1740002100,
+    "strict": true,
+    "section": [
+      "3.4"
+    ],
+    "comments": "pure ML-DSA-44 signature (\u00a73.4)"
+  },
+  {
+    "name": "d2_07_nd_rt_subdomain",
+    "file": "d2_07_nd_rt_subdomain.eml",
+    "mail_from": "<relay@test3.dkim2.com>",
+    "rcpt_to": [
+      "<recipient@example.com>"
+    ],
+    "expected": "pass",
+    "now": 1740002100,
+    "strict": true,
+    "section": [
+      "7.1"
+    ],
+    "comments": "nd= signature with d= a parent of the previous rt= domain: the rt= domain is Parameter1 (\u00a77.1)"
+  },
+  {
+    "name": "d2_07_null_mf_mid_chain",
+    "file": "d2_07_null_mf_mid_chain.eml",
+    "mail_from": "<>",
+    "rcpt_to": [
+      "<recipient@example.com>"
+    ],
+    "expected": "pass",
+    "now": 1740002100,
+    "strict": true,
+    "section": [
+      "7.1"
+    ],
+    "comments": "null mf= on a later hop: the previous rt= domain is matched against d= (\u00a77.1)"
+  },
+  {
+    "name": "d2_07_future_timestamp",
+    "file": "d2_07_future_timestamp.eml",
+    "mail_from": "<sender@test1.dkim2.com>",
+    "rcpt_to": [
+      "<recipient@example.com>"
+    ],
+    "expected": "fail",
+    "now": 1740002100,
+    "strict": true,
+    "section": [
+      "14.3"
+    ],
+    "comments": "t= more than one day ahead of delivery, a FAIL (-08 \u00a714.3)"
+  },
+  {
+    "name": "d2_07_from_not_authentic",
+    "file": "d2_07_from_not_authentic.eml",
+    "mail_from": "<sender@test1.dkim2.com>",
+    "rcpt_to": [
+      "<recipient@example.com>"
+    ],
+    "expected": "fail",
+    "now": 1740002100,
+    "strict": true,
+    "section": [
+      "11",
+      "14.8"
+    ],
+    "comments": "From domain does not match d= of i=1, a FAIL (\u00a711, -08 \u00a714.8)"
+  },
+  {
+    "name": "d2_07_from_rewritten",
+    "file": "d2_07_from_rewritten.eml",
+    "mail_from": "<relay@test2.dkim2.com>",
+    "rcpt_to": [
+      "<recipient@example.com>"
+    ],
+    "expected": "pass",
+    "now": 1740002100,
+    "strict": true,
+    "section": [
+      "11",
+      "14.8"
+    ],
+    "comments": "a Reviser replaced From and signed with a matching domain (\u00a711)"
+  },
+  {
+    "name": "d2_07_u_step",
+    "file": "d2_07_u_step.eml",
+    "mail_from": "<relay@test2.dkim2.com>",
+    "rcpt_to": [
+      "<recipient@example.com>"
+    ],
+    "expected": "pass",
+    "now": 1740002100,
+    "strict": true,
+    "section": [
+      "5.2"
+    ],
+    "comments": "a body recipe with a u step for a line that is not UTF-8 (\u00a75.2)"
+  },
+  {
+    "name": "d2_07_duplicate_selector",
+    "file": "d2_07_duplicate_selector.eml",
+    "mail_from": "<sender@test1.dkim2.com>",
+    "rcpt_to": [
+      "<recipient@example.com>"
+    ],
+    "expected": "permerror",
+    "now": 1740002100,
+    "strict": true,
+    "section": [
+      "10.9",
+      "14.2"
+    ],
+    "comments": "a Selector MUST NOT be present more than once (\u00a710.9)"
+  },
+  {
+    "name": "d2_07_too_many_selectors",
+    "file": "d2_07_too_many_selectors.eml",
+    "mail_from": "<sender@test1.dkim2.com>",
+    "rcpt_to": [
+      "<recipient@example.com>"
+    ],
+    "expected": "fail",
+    "now": 1740002100,
+    "strict": true,
+    "section": [
+      "10.9",
+      "14.2"
+    ],
+    "comments": "three ed25519 signatures in one \",\" group are allowed (-08 \u00a710.9); the group fails because two do not verify"
+  },
+  {
+    "name": "d2_07_duplicate_hash",
+    "file": "d2_07_duplicate_hash.eml",
+    "mail_from": "<sender@test1.dkim2.com>",
+    "rcpt_to": [
+      "<recipient@example.com>"
+    ],
+    "expected": "permerror",
+    "now": 1740002100,
+    "strict": true,
+    "section": [
+      "9.3",
+      "14.2"
+    ],
+    "comments": "an algorithm MUST NOT be present more than once in a Message-Instance (\u00a79.3)"
+  },
+  {
+    "name": "d2_07_duplicate_tag",
+    "file": "d2_07_duplicate_tag.eml",
+    "mail_from": "<sender@test1.dkim2.com>",
+    "rcpt_to": [
+      "<recipient@example.com>"
+    ],
+    "expected": "permerror",
+    "now": 1740002100,
+    "strict": true,
+    "section": [
+      "8"
+    ],
+    "comments": "a repeated tag name invalidates the tag-list (\u00a78)"
+  },
+  {
+    "name": "d2_07_originator_multipart",
+    "file": "d2_07_originator_multipart.eml",
+    "mail_from": "<sender@test1.dkim2.com>",
+    "rcpt_to": [
+      "<foo@test2.dkim2.com>"
+    ],
+    "expected": "pass",
+    "now": 1740002100,
+    "strict": true,
+    "section": [
+      "11",
+      "12.4"
+    ],
+    "comments": "an Originator signs a multipart message whose From is Authentic for d= (\u00a711, \u00a712.4)"
+  },
+  {
+    "name": "d2_07_chain_hop1",
+    "file": "d2_07_chain_hop1.eml",
+    "mail_from": "<brong@test1.dkim2.com>",
+    "rcpt_to": [
+      "<list@test2.dkim2.com>"
+    ],
+    "expected": "pass",
+    "now": 1740002100,
+    "strict": true,
+    "section": [
+      "11",
+      "12.1"
+    ],
+    "comments": "chain hop 1: the Originator signs with d= matching the From domain (\u00a711)"
+  },
+  {
+    "name": "d2_07_chain_hop2",
+    "file": "d2_07_chain_hop2.eml",
+    "mail_from": "<bounces@test2.dkim2.com>",
+    "rcpt_to": [
+      "<user@test3.dkim2.com>"
+    ],
+    "expected": "pass",
+    "now": 1740002100,
+    "strict": true,
+    "section": [
+      "5.1",
+      "5.2",
+      "11",
+      "14.8"
+    ],
+    "comments": "chain hop 2: a mailing list replaces headers and body and rewrites From to its own domain; the recipe recreates the original From, which stays Authentic for i=1, and the new From is Authentic for i=2 (\u00a711)"
+  },
+  {
+    "name": "d2_07_chain_hop3",
+    "file": "d2_07_chain_hop3.eml",
+    "mail_from": "<relay@test3.dkim2.com>",
+    "rcpt_to": [
+      "<user@test4.dkim2.com>"
+    ],
+    "expected": "pass",
+    "now": 1740002100,
+    "strict": true,
+    "section": [
+      "5.1",
+      "5.2",
+      "12.1"
+    ],
+    "comments": "chain hop 3: a relay adds a header field and two body lines, recorded in a recipe (\u00a75)"
+  },
+  {
+    "name": "d2_07_chain_hop4",
+    "file": "d2_07_chain_hop4.eml",
+    "mail_from": "<relay@test4.dkim2.com>",
+    "rcpt_to": [
+      "<user@test5.dkim2.com>"
+    ],
+    "expected": "pass",
+    "now": 1740002100,
+    "strict": true,
+    "section": [
+      "5.1",
+      "5.2",
+      "12.1"
+    ],
+    "comments": "chain hop 4: a relay removes the header field and body lines added by hop 3, recorded in a recipe (\u00a75)"
+  },
+  {
+    "name": "d2_07_chain_hop5",
+    "file": "d2_07_chain_hop5.eml",
+    "mail_from": "<forwarder@test5.dkim2.com>",
+    "rcpt_to": [
+      "<brong@test1.dkim2.com>"
+    ],
+    "expected": "pass",
+    "now": 1740002100,
+    "strict": true,
+    "section": [
+      "4",
+      "5.1",
+      "12.1"
+    ],
+    "comments": "chain hop 5: delivery adds only unsigned trace fields (Received-SPF, Return-Path, Received, Authentication-Results, X-*), so no recipe and no new Message-Instance (\u00a74, \u00a75.1)"
+  },
+  {
+    "name": "d2_07_chain_hop6",
+    "file": "d2_07_chain_hop6.eml",
+    "mail_from": "<relay@test1.dkim2.com>",
+    "rcpt_to": [
+      "<dest@test2.dkim2.com>"
+    ],
+    "expected": "pass",
+    "now": 1740002100,
+    "strict": true,
+    "section": [
+      "12.1",
+      "12.2"
+    ],
+    "comments": "chain hop 6: the message is re-signed unchanged, with no new Message-Instance (\u00a712.1)"
+  },
+  {
+    "name": "d2_07_duplicate_d_tag",
+    "file": "d2_07_duplicate_d_tag.eml",
+    "mail_from": "<sender@test1.dkim2.com>",
+    "rcpt_to": [
+      "<recipient@example.com>"
+    ],
+    "expected": "permerror",
+    "now": 1740002100,
+    "strict": true,
+    "section": [
+      "8",
+      "14.2"
+    ],
+    "comments": "the d= tag appears twice with the same value and the signature covers both; a repeated tag name invalidates the tag-list (\u00a78)"
+  },
+  {
+    "name": "d2_07_duplicate_f_tag",
+    "file": "d2_07_duplicate_f_tag.eml",
+    "mail_from": "<sender@test1.dkim2.com>",
+    "rcpt_to": [
+      "<recipient@example.com>"
+    ],
+    "expected": "permerror",
+    "now": 1740002100,
+    "strict": true,
+    "section": [
+      "8",
+      "14.2"
+    ],
+    "comments": "the f= tag appears twice with the same value and the signature covers both; a repeated tag name invalidates the tag-list (\u00a78)"
+  },
+  {
+    "name": "d2_07_duplicate_i_tag",
+    "file": "d2_07_duplicate_i_tag.eml",
+    "mail_from": "<sender@test1.dkim2.com>",
+    "rcpt_to": [
+      "<recipient@example.com>"
+    ],
+    "expected": "permerror",
+    "now": 1740002100,
+    "strict": true,
+    "section": [
+      "8",
+      "14.2"
+    ],
+    "comments": "the i= tag appears twice with the same value and the signature covers both; a repeated tag name invalidates the tag-list (\u00a78)"
+  },
+  {
+    "name": "d2_07_duplicate_m_tag",
+    "file": "d2_07_duplicate_m_tag.eml",
+    "mail_from": "<sender@test1.dkim2.com>",
+    "rcpt_to": [
+      "<recipient@example.com>"
+    ],
+    "expected": "permerror",
+    "now": 1740002100,
+    "strict": true,
+    "section": [
+      "8",
+      "14.2"
+    ],
+    "comments": "the m= tag appears twice with the same value and the signature covers both; a repeated tag name invalidates the tag-list (\u00a78)"
+  },
+  {
+    "name": "d2_07_duplicate_mf_tag",
+    "file": "d2_07_duplicate_mf_tag.eml",
+    "mail_from": "<sender@test1.dkim2.com>",
+    "rcpt_to": [
+      "<recipient@example.com>"
+    ],
+    "expected": "permerror",
+    "now": 1740002100,
+    "strict": true,
+    "section": [
+      "8",
+      "14.2"
+    ],
+    "comments": "the mf= tag appears twice with the same value and the signature covers both; a repeated tag name invalidates the tag-list (\u00a78)"
+  },
+  {
+    "name": "d2_07_duplicate_n_tag",
+    "file": "d2_07_duplicate_n_tag.eml",
+    "mail_from": "<sender@test1.dkim2.com>",
+    "rcpt_to": [
+      "<recipient@example.com>"
+    ],
+    "expected": "permerror",
+    "now": 1740002100,
+    "strict": true,
+    "section": [
+      "8",
+      "14.2"
+    ],
+    "comments": "the n= tag appears twice with the same value and the signature covers both; a repeated tag name invalidates the tag-list (\u00a78)"
+  },
+  {
+    "name": "d2_07_duplicate_rt_tag",
+    "file": "d2_07_duplicate_rt_tag.eml",
+    "mail_from": "<sender@test1.dkim2.com>",
+    "rcpt_to": [
+      "<recipient@example.com>"
+    ],
+    "expected": "permerror",
+    "now": 1740002100,
+    "strict": true,
+    "section": [
+      "8",
+      "14.2"
+    ],
+    "comments": "the rt= tag appears twice with the same value and the signature covers both; a repeated tag name invalidates the tag-list (\u00a78)"
+  },
+  {
+    "name": "d2_07_duplicate_s_tag",
+    "file": "d2_07_duplicate_s_tag.eml",
+    "mail_from": "<sender@test1.dkim2.com>",
+    "rcpt_to": [
+      "<recipient@example.com>"
+    ],
+    "expected": "permerror",
+    "now": 1740002100,
+    "strict": true,
+    "section": [
+      "8",
+      "14.2"
+    ],
+    "comments": "the s= tag appears twice with the same value and the signature covers both; a repeated tag name invalidates the tag-list (\u00a78)"
+  },
+  {
+    "name": "d2_07_duplicate_t_tag",
+    "file": "d2_07_duplicate_t_tag.eml",
+    "mail_from": "<sender@test1.dkim2.com>",
+    "rcpt_to": [
+      "<recipient@example.com>"
+    ],
+    "expected": "permerror",
+    "now": 1740002100,
+    "strict": true,
+    "section": [
+      "8",
+      "14.2"
+    ],
+    "comments": "the t= tag appears twice with the same value and the signature covers both; a repeated tag name invalidates the tag-list (\u00a78)"
+  },
+  {
+    "name": "d2_07_upper_case_tags_ignored",
+    "file": "d2_07_upper_case_tags_ignored.eml",
+    "mail_from": "<sender@test1.dkim2.com>",
+    "rcpt_to": [
+      "<recipient@example.com>"
+    ],
+    "expected": "pass",
+    "now": 1740002100,
+    "strict": true,
+    "section": [
+      "8",
+      "10",
+      "14.2"
+    ],
+    "comments": "upper-case copies of every tag (I=, M=, T=, D=, MF=, RT=, N=, F=, S=) with conflicting values are unrecognized tags, ignored rather than duplicates; the signature covers them (\u00a78, \u00a710)"
+  },
+  {
+    "name": "d2_07_mixed_case_tags",
+    "file": "d2_07_mixed_case_tags.eml",
+    "mail_from": "<sender@test1.dkim2.com>",
+    "rcpt_to": [
+      "<recipient@example.com>"
+    ],
+    "expected": "permerror",
+    "now": 1740002100,
+    "strict": true,
+    "section": [
+      "8",
+      "10",
+      "14.2"
+    ],
+    "comments": "tag names are case-sensitive and MUST be lower case, so I=, M=, T=, D=, Mf=, Rt= and S= are unrecognized and the required tags are missing (\u00a78, \u00a710)"
+  }
+]

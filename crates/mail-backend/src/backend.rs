@@ -1,3 +1,4 @@
+use crate::authentication::DkimVerifier;
 use crate::blob::BlobStore;
 use crate::event::{ChangeCursor, EventSubscription};
 use crate::imap::imap_fetch_metadata;
@@ -9,12 +10,13 @@ use crate::{
     Account, AccountId, AccountKind, Attachment, BackendConfig, BackendError, BackendEvent,
     Contact, ContactAddress, ContactId, ContentState, Folder, FolderId, FolderKind,
     ImapFetchedMessage, ImapSettings, InboxClass, IngestMessage, Message, MessageFilter, MessageId,
-    MessageInstance, MessageSort, MessageSummary, NewAccount, NewContact, NewFolder, Page,
-    RemoteMessageIdentity, Result, SearchRequest, SyncBatchResult, UserClassification,
+    MessageInstance, MessageLink, MessageLinkSource, MessageSort, MessageSummary, NewAccount,
+    NewContact, NewFolder, Page, RemoteMessageIdentity, Result, SearchRequest, SyncBatchResult,
+    UserClassification,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use chrono::Utc;
-use futures_util::TryStreamExt;
+use futures_util::{stream, StreamExt, TryStreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::{
@@ -30,6 +32,7 @@ use uuid::Uuid;
 
 const MAX_INGEST_BATCH_MESSAGES: usize = 1_000;
 const MAX_INGEST_BATCH_BYTES: usize = 64 * 1024 * 1024;
+const MAX_PREPARE_CONCURRENCY: usize = 16;
 const MAX_IMAP_METADATA_UIDS: usize = 500;
 const IMAP_BODY_CHUNK_BYTES: usize = 1024 * 1024;
 
@@ -38,6 +41,7 @@ struct PreparedIngest {
     remote: Option<RemoteMessageIdentity>,
     remote_flags_json: Option<String>,
     attachments: Vec<Attachment>,
+    links: Vec<MessageLink>,
     stage: Option<StagedMessage>,
 }
 
@@ -65,6 +69,7 @@ struct StagedMessage {
     user_classification: Option<String>,
     content_state: String,
     search_metadata: String,
+    dkim_json: String,
     created_at: i64,
 }
 
@@ -82,22 +87,24 @@ impl StagedMessage {
             + self.body_html.as_ref().map_or(0, String::len)
             + self.attachment_names.len()
             + self.search_metadata.len()
+            + self.dkim_json.len()
     }
 }
 
 #[derive(Clone)]
 pub struct Backend {
-    inner: Arc<Inner>,
+    pub(crate) inner: Arc<Inner>,
 }
 
-struct Inner {
+pub(crate) struct Inner {
     config: BackendConfig,
     _database: turso::Database,
-    connection: Mutex<Connection>,
+    pub(crate) connection: Mutex<Connection>,
     search_index: Arc<SearchIndex>,
-    search_sync: RwLock<()>,
+    pub(crate) search_sync: RwLock<()>,
     blobs: BlobStore,
-    events: broadcast::Sender<BackendEvent>,
+    dkim_verifier: DkimVerifier,
+    pub(crate) events: broadcast::Sender<BackendEvent>,
 }
 
 impl Backend {
@@ -130,6 +137,9 @@ impl Backend {
         schema::migrate(&connection).await?;
         let search_index = prepare_search_index(&config.profile_dir, &mut connection).await?;
         let blobs = BlobStore::open(config.profile_dir.join("blobs")).await?;
+        let dkim_verifier = DkimVerifier::new(config.dkim_dns).map_err(|error| {
+            BackendError::InvalidInput(format!("could not initialize DKIM resolver: {error}"))
+        })?;
         let (events, _) = broadcast::channel(config.event_buffer.max(1));
         Ok(Self {
             inner: Arc::new(Inner {
@@ -139,6 +149,7 @@ impl Backend {
                 search_index,
                 search_sync: RwLock::new(()),
                 blobs,
+                dkim_verifier,
                 events,
             }),
         })
@@ -166,6 +177,14 @@ impl Backend {
 
     pub fn events(&self) -> Events {
         Events(self.clone())
+    }
+
+    pub fn filter_rules(&self) -> crate::FilterRules {
+        crate::FilterRules::new(self.clone())
+    }
+
+    pub fn heuristics(&self) -> crate::Heuristics {
+        crate::Heuristics::new(self.clone())
     }
 
     pub fn sync(&self) -> Sync {
@@ -211,8 +230,14 @@ impl Backend {
         let mut message_ids = Vec::with_capacity(requests.len());
         let mut batch = Vec::new();
         let mut staged_bytes = 0usize;
-        for request in requests {
-            let prepared = self.prepare_ingest(request).await?;
+        let mut preparations = stream::iter(
+            requests
+                .into_iter()
+                .map(|request| self.prepare_ingest(request)),
+        )
+        .buffered(MAX_PREPARE_CONCURRENCY);
+        while let Some(prepared) = preparations.next().await {
+            let prepared = prepared?;
             let message_bytes = prepared
                 .stage
                 .as_ref()
@@ -230,6 +255,20 @@ impl Backend {
         if !batch.is_empty() {
             message_ids.extend(self.commit_prepared_batch(batch).await?);
         }
+        let mut evaluated = HashSet::new();
+        let run_filters = self.filter_rules().has_enabled().await?;
+        let run_heuristics = self.heuristics().has_enabled().await?;
+        for message_id in &message_ids {
+            if !evaluated.insert(*message_id) {
+                continue;
+            }
+            if run_filters {
+                self.filter_rules().evaluate_message(*message_id).await?;
+            }
+            if run_heuristics {
+                self.heuristics().evaluate_message(*message_id).await?;
+            }
+        }
         Ok(message_ids)
     }
 
@@ -239,6 +278,8 @@ impl Backend {
         let blob_hash = self.inner.blobs.put(&request.raw).await?;
         let id = MessageId::new();
         let now = Utc::now().timestamp();
+        let dkim_json =
+            serde_json::to_string(&self.inner.dkim_verifier.verify(&request.raw, now).await)?;
         let received_at = request.received_at.or(parsed.sent_at).unwrap_or(now);
         let attachment_names = parsed
             .attachments
@@ -297,6 +338,7 @@ impl Backend {
                 .map(str::to_owned),
             content_state: content_state_text(parsed.content_state).to_owned(),
             search_metadata: json!({"received_at": received_at}).to_string(),
+            dkim_json,
             created_at: now,
         };
         Ok(PreparedIngest {
@@ -304,6 +346,7 @@ impl Backend {
             remote,
             remote_flags_json,
             attachments: parsed.attachments,
+            links: parsed.links,
             stage: Some(stage),
         })
     }
@@ -347,11 +390,11 @@ impl Backend {
                         bcc_addresses, delivered_to_addresses, list_id, body_text,
                         body_html, preview, sent_at, received_at, size_bytes,
                         has_attachment, attachment_names, is_read, is_starred,
-                        user_classification, content_state, search_metadata, created_at
+                        user_classification, content_state, search_metadata, dkim_json, created_at
                     ) VALUES (
                         ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
                         ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22,
-                        ?23, ?24, ?25, ?26, ?27
+                        ?23, ?24, ?25, ?26, ?27, ?28
                     )"#,
                     turso::params![
                         batch_id.clone(),
@@ -380,6 +423,7 @@ impl Backend {
                         stage.user_classification,
                         stage.content_state,
                         stage.search_metadata,
+                        stage.dkim_json,
                         stage.created_at,
                     ],
                 )
@@ -394,13 +438,13 @@ impl Backend {
                         to_addresses, cc_addresses, bcc_addresses, delivered_to_addresses,
                         list_id, body_text, body_html, preview, sent_at, received_at,
                         size_bytes, has_attachment, attachment_names, is_read, is_starred,
-                        user_classification, content_state, search_metadata, created_at
+                        user_classification, content_state, search_metadata, dkim_json, created_at
                     )
                     SELECT id, blob_hash, rfc_message_id, subject, from_address, from_name,
                         to_addresses, cc_addresses, bcc_addresses, delivered_to_addresses,
                         list_id, body_text, body_html, preview, sent_at, received_at,
                         size_bytes, has_attachment, attachment_names, is_read, is_starred,
-                        user_classification, content_state, search_metadata, created_at
+                        user_classification, content_state, search_metadata, dkim_json, created_at
                     FROM ingest_message_stage
                     WHERE batch_id = ?1
                     ORDER BY position"#,
@@ -459,6 +503,25 @@ impl Backend {
                     )
                     .await?;
             }
+            for link in &message.links {
+                transaction
+                    .execute(
+                        "INSERT INTO message_links(message_id, ordinal, destination, scheme, host, registrable_domain, source) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                        turso::params![
+                            message.id.to_string(),
+                            i64::from(link.ordinal),
+                            link.destination.clone(),
+                            link.scheme.clone(),
+                            link.host.clone(),
+                            link.registrable_domain.clone(),
+                            match link.source {
+                                MessageLinkSource::PlainText => "plain_text",
+                                MessageLinkSource::Html => "html",
+                            },
+                        ],
+                    )
+                    .await?;
+            }
             if let Some(remote) = &message.remote {
                 transaction
                     .execute(
@@ -502,7 +565,7 @@ impl Backend {
         Ok(message_ids)
     }
 
-    async fn flush_search_projection(&self) -> Result<()> {
+    pub(crate) async fn flush_search_projection(&self) -> Result<()> {
         loop {
             let queued = {
                 let connection = self.inner.connection.lock().await;
@@ -728,7 +791,7 @@ impl Messages {
         let mut rows = connection
             .query(
                 &format!(
-                    "SELECT {}, rfc_message_id, to_addresses, cc_addresses, bcc_addresses, delivered_to_addresses, list_id, body_text, body_html FROM messages m WHERE m.id = ?1",
+                    "SELECT {}, rfc_message_id, to_addresses, cc_addresses, bcc_addresses, delivered_to_addresses, list_id, body_text, body_html, dkim_json FROM messages m WHERE m.id = ?1",
                     SUMMARY_COLUMNS
                 ),
                 (id.to_string(),),
@@ -744,6 +807,7 @@ impl Messages {
         let list_id = row.get(SUMMARY_COLUMN_COUNT + 5)?;
         let body_text = row.get(SUMMARY_COLUMN_COUNT + 6)?;
         let body_html = row.get(SUMMARY_COLUMN_COUNT + 7)?;
+        let dkim = serde_json::from_str(&row.get::<String>(SUMMARY_COLUMN_COUNT + 8)?)?;
         drop(rows);
 
         let mut rows = connection
@@ -754,13 +818,45 @@ impl Messages {
             .await?;
         let mut attachments = Vec::new();
         while let Some(row) = rows.next().await? {
+            let ordinal = row.get::<i64>(0)? as u32;
             attachments.push(Attachment {
-                ordinal: row.get::<i64>(0)? as u32,
+                id: format!("attachment:{ordinal}"),
+                ordinal,
                 name: row.get(1)?,
                 declared_media_type: row.get(2)?,
                 decoded_size: row.get::<i64>(3)? as u64,
                 inline: row.get(4)?,
                 content_id: row.get(5)?,
+            });
+        }
+        drop(rows);
+        let mut rows = connection
+            .query(
+                "SELECT ordinal, destination, scheme, host, registrable_domain, source FROM message_links WHERE message_id = ?1 ORDER BY ordinal",
+                (id.to_string(),),
+            )
+            .await?;
+        let mut links = Vec::new();
+        while let Some(row) = rows.next().await? {
+            let ordinal = u32::try_from(row.get::<i64>(0)?).map_err(|_| {
+                BackendError::InvalidInput("database contains invalid link ordinal".into())
+            })?;
+            links.push(MessageLink {
+                id: format!("link:{ordinal}"),
+                ordinal,
+                destination: row.get(1)?,
+                scheme: row.get(2)?,
+                host: row.get(3)?,
+                registrable_domain: row.get(4)?,
+                source: match row.get::<String>(5)?.as_str() {
+                    "plain_text" => MessageLinkSource::PlainText,
+                    "html" => MessageLinkSource::Html,
+                    _ => {
+                        return Err(BackendError::InvalidInput(
+                            "database contains invalid link source".into(),
+                        ))
+                    }
+                },
             });
         }
         drop(rows);
@@ -792,6 +888,34 @@ impl Messages {
         while let Some(row) = rows.next().await? {
             local_folder_ids.push(parse_id(row.get::<String>(0)?, "folder")?);
         }
+        drop(rows);
+        let mut rows = connection
+            .query(
+                "SELECT hf.id, hf.message_id, hf.heuristic_id, hf.heuristic_version, hf.code, hf.presentation, hf.severity, hf.target_kind, hf.target_id, hf.text, hf.evidence_json, hf.source_kind, hf.created_at, responses.dismissed_at FROM heuristic_findings hf JOIN heuristics h ON h.id = hf.heuristic_id AND h.version = hf.heuristic_version AND h.enabled = 1 AND h.deleted_at IS NULL LEFT JOIN heuristic_finding_responses responses ON responses.finding_id = hf.id WHERE hf.message_id = ?1 ORDER BY CASE hf.severity WHEN 'danger' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END, hf.presentation, hf.id",
+                (id.to_string(),),
+            )
+            .await?;
+        let mut findings = Vec::new();
+        while let Some(row) = rows.next().await? {
+            findings.push(crate::HeuristicFinding {
+                id: parse_id(row.get::<String>(0)?, "heuristic finding")?,
+                message_id: parse_id(row.get::<String>(1)?, "message")?,
+                heuristic_id: parse_id(row.get::<String>(2)?, "heuristic")?,
+                heuristic_version: u32::try_from(row.get::<i64>(3)?).map_err(|_| {
+                    BackendError::InvalidInput("database contains invalid heuristic version".into())
+                })?,
+                code: row.get(4)?,
+                presentation: crate::automation::parse_presentation(&row.get::<String>(5)?)?,
+                severity: crate::automation::parse_severity(&row.get::<String>(6)?)?,
+                target_kind: crate::automation::parse_target_kind(&row.get::<String>(7)?)?,
+                target_id: row.get(8)?,
+                text: row.get(9)?,
+                evidence: serde_json::from_str(&row.get::<String>(10)?)?,
+                source_kind: crate::automation::parse_source_kind(&row.get::<String>(11)?)?,
+                created_at: row.get(12)?,
+                dismissed_at: row.get(13)?,
+            });
+        }
         Ok(Message {
             summary,
             rfc_message_id,
@@ -803,8 +927,11 @@ impl Messages {
             body_text,
             body_html,
             attachments,
+            links,
             instances,
             local_folder_ids,
+            dkim,
+            findings,
         })
     }
 
@@ -1786,7 +1913,7 @@ async fn load_queued_search_documents(
     Ok(queued)
 }
 
-async fn enqueue_search_on(connection: &Connection, id: MessageId) -> Result<()> {
+pub(crate) async fn enqueue_search_on(connection: &Connection, id: MessageId) -> Result<()> {
     connection
         .execute(
             r#"INSERT INTO search_index_queue(message_id, revision) VALUES (?1, 1)
@@ -1930,7 +2057,7 @@ async fn refresh_remote_in_transaction(
     Ok(Some(event))
 }
 
-async fn insert_event(
+pub(crate) async fn insert_event(
     connection: &Connection,
     occurred_at: i64,
     kind: &str,
@@ -2050,13 +2177,13 @@ fn validate_imap_settings(settings: &ImapSettings) -> Result<()> {
     }
 }
 
-fn parse_id<T: FromStr>(value: String, entity: &'static str) -> Result<T> {
+pub(crate) fn parse_id<T: FromStr>(value: String, entity: &'static str) -> Result<T> {
     value
         .parse()
         .map_err(|_| BackendError::InvalidInput(format!("database contains invalid {entity} ID")))
 }
 
-fn not_found(entity: &'static str, id: impl ToString) -> BackendError {
+pub(crate) fn not_found(entity: &'static str, id: impl ToString) -> BackendError {
     BackendError::NotFound {
         entity,
         id: id.to_string(),

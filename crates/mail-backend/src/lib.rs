@@ -6,10 +6,13 @@
 //! future POP3 support. The IMAP adapter accepts an authenticated session whose
 //! TLS transport and credentials remain the embedding application's concern.
 
+mod authentication;
+mod automation;
 mod backend;
 mod blob;
 mod error;
 mod event;
+mod heuristic;
 mod id;
 mod imap;
 mod mime;
@@ -18,10 +21,12 @@ mod schema;
 mod search_index;
 mod types;
 
+pub use automation::{FilterRules, Heuristics};
 pub use backend::{Accounts, Backend, Contacts, Events, Folders, Messages, Search, Sync};
 pub use error::{BackendError, ErrorCode, Result};
 pub use event::{ChangeCursor, EventRecvError, EventSubscription};
-pub use id::{AccountId, ContactId, FolderId, MessageId};
+pub use heuristic::compile_heuristic;
+pub use id::{AccountId, ContactId, FilterRuleId, FindingId, FolderId, HeuristicId, MessageId};
 pub use imap::imap_fetch_message;
 pub use query::{parse_query, QueryExpr, QueryParseError, QueryTerm};
 pub use types::*;

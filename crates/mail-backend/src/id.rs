@@ -18,6 +18,10 @@ macro_rules! id_type {
             pub fn as_uuid(self) -> Uuid {
                 self.0
             }
+
+            pub fn from_uuid(value: Uuid) -> Self {
+                Self(value)
+            }
         }
 
         impl Default for $name {
@@ -45,4 +49,7 @@ macro_rules! id_type {
 id_type!(AccountId);
 id_type!(ContactId);
 id_type!(FolderId);
+id_type!(FilterRuleId);
+id_type!(HeuristicId);
+id_type!(FindingId);
 id_type!(MessageId);

@@ -1,5 +1,15 @@
-use crate::{Attachment, BackendError, ContentState, IngestLimits, Result};
+use crate::{
+    Attachment, BackendError, ContentState, IngestLimits, MessageLink, MessageLinkSource, Result,
+};
+use html5ever::tendril::StrTendril;
+use html5ever::tokenizer::states::RawKind;
+use html5ever::tokenizer::{
+    BufferQueue, StartTag, TagToken, Token, TokenSink, TokenSinkResult, Tokenizer, TokenizerOpts,
+};
+use linkify::{LinkFinder, LinkKind};
 use mail_parser::{AddressList, HeaderForm, MessageParser, PartFlags, PartKind};
+use std::cell::{Cell, RefCell};
+use url::Url;
 
 pub(crate) struct ParsedMessage {
     pub subject: Option<String>,
@@ -16,6 +26,7 @@ pub(crate) struct ParsedMessage {
     pub body_html: Option<String>,
     pub preview: String,
     pub attachments: Vec<Attachment>,
+    pub links: Vec<MessageLink>,
     pub content_state: ContentState,
 }
 
@@ -79,6 +90,7 @@ pub(crate) fn parse(raw: &[u8], limits: &IngestLimits) -> Result<ParsedMessage> 
                     .unwrap_or_else(|| media.ctype().to_owned())
             });
             Attachment {
+                id: format!("attachment:{ordinal}"),
                 ordinal: ordinal as u32,
                 name: part.attachment_name().map(str::to_owned),
                 declared_media_type,
@@ -88,6 +100,12 @@ pub(crate) fn parse(raw: &[u8], limits: &IngestLimits) -> Result<ParsedMessage> 
             }
         })
         .collect::<Vec<_>>();
+    let links = extract_links(
+        &body_text,
+        (!html.is_empty()).then_some(html.as_str()),
+        limits,
+        &mut limited,
+    );
 
     let mut delivered_to_addresses = Vec::new();
     for header in message.headers().all("Delivered-To") {
@@ -123,12 +141,140 @@ pub(crate) fn parse(raw: &[u8], limits: &IngestLimits) -> Result<ParsedMessage> 
         body_html: (!html.is_empty()).then_some(html),
         preview,
         attachments,
+        links,
         content_state: if limited {
             ContentState::Limited
         } else {
             ContentState::Complete
         },
     })
+}
+
+fn extract_links(
+    body_text: &str,
+    body_html: Option<&str>,
+    limits: &IngestLimits,
+    limited: &mut bool,
+) -> Vec<MessageLink> {
+    let mut links = Vec::new();
+    let mut finder = LinkFinder::new();
+    finder.kinds(&[LinkKind::Url]);
+    for link in finder.links(body_text) {
+        push_link(
+            &mut links,
+            link.as_str(),
+            MessageLinkSource::PlainText,
+            limits,
+            limited,
+        );
+        if links.len() >= limits.max_links {
+            *limited = true;
+            return links;
+        }
+    }
+
+    let Some(html) = body_html else {
+        return links;
+    };
+    let sink = HtmlLinkSink {
+        hrefs: RefCell::new(Vec::new()),
+        tokens: Cell::new(0),
+        maximum_tokens: limits.max_html_nodes,
+        maximum_links: limits.max_links.saturating_sub(links.len()),
+        limited: Cell::new(false),
+    };
+    let input = BufferQueue::default();
+    input.push_back(StrTendril::from(html));
+    let tokenizer = Tokenizer::new(sink, TokenizerOpts::default());
+    let _ = tokenizer.feed(&input);
+    tokenizer.end();
+    *limited |= tokenizer.sink.limited.get();
+    for href in tokenizer.sink.hrefs.into_inner() {
+        push_link(&mut links, &href, MessageLinkSource::Html, limits, limited);
+    }
+    links
+}
+
+struct HtmlLinkSink {
+    hrefs: RefCell<Vec<String>>,
+    tokens: Cell<usize>,
+    maximum_tokens: usize,
+    maximum_links: usize,
+    limited: Cell<bool>,
+}
+
+impl TokenSink for HtmlLinkSink {
+    type Handle = ();
+
+    fn process_token(&self, token: Token, _line_number: u64) -> TokenSinkResult<Self::Handle> {
+        let token_count = self.tokens.get().saturating_add(1);
+        self.tokens.set(token_count);
+        if token_count > self.maximum_tokens {
+            self.limited.set(true);
+            return TokenSinkResult::Continue;
+        }
+        if let TagToken(tag) = token {
+            let tag_name: &str = tag.name.as_ref();
+            if tag.kind == StartTag && tag_name == "a" {
+                let href = tag.attrs.iter().find(|attribute| {
+                    let name: &str = attribute.name.local.as_ref();
+                    name == "href"
+                });
+                if let Some(href) = href {
+                    let mut hrefs = self.hrefs.borrow_mut();
+                    if hrefs.len() < self.maximum_links {
+                        hrefs.push(href.value.to_string());
+                    } else {
+                        self.limited.set(true);
+                    }
+                }
+            }
+            if tag.kind == StartTag {
+                return match tag_name {
+                    "title" | "textarea" => TokenSinkResult::RawData(RawKind::Rcdata),
+                    "style" | "xmp" | "iframe" | "noembed" | "noframes" | "noscript" => {
+                        TokenSinkResult::RawData(RawKind::Rawtext)
+                    }
+                    "script" => TokenSinkResult::RawData(RawKind::ScriptData),
+                    _ => TokenSinkResult::Continue,
+                };
+            }
+        }
+        TokenSinkResult::Continue
+    }
+}
+
+fn push_link(
+    links: &mut Vec<MessageLink>,
+    destination: &str,
+    source: MessageLinkSource,
+    limits: &IngestLimits,
+    limited: &mut bool,
+) {
+    if links.len() >= limits.max_links {
+        *limited = true;
+        return;
+    }
+    let destination = destination.trim();
+    if destination.is_empty() || destination.len() > 8_192 {
+        *limited |= destination.len() > 8_192;
+        return;
+    }
+    let Ok(parsed) = Url::parse(destination) else {
+        return;
+    };
+    let ordinal = links.len() as u32;
+    let host = parsed.host_str().map(|host| host.to_lowercase());
+    let registrable_domain = host.as_deref().and_then(psl::domain_str).map(str::to_owned);
+    links.push(MessageLink {
+        id: format!("link:{ordinal}"),
+        ordinal,
+        destination: destination.to_owned(),
+        scheme: parsed.scheme().to_lowercase(),
+        host,
+        registrable_domain,
+        source,
+    });
 }
 
 fn addresses(list: Option<AddressList<'_>>) -> Vec<String> {
@@ -173,4 +319,27 @@ fn make_preview(text: &str, max_chars: usize) -> String {
         }
     }
     output.trim().to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extracts_security_relevant_html_destinations() {
+        let limits = IngestLimits::default();
+        let mut limited = false;
+        let links = extract_links(
+            "",
+            Some(
+                r#"<a href="https://accounts.example.com@evil.example:8443/login?next=https%3A%2F%2Faccounts.example.com">accounts.example.com</a><script>"<a href='https://not-a-link.example'>"</script><a href="javascript:alert(1)">continue</a>"#,
+            ),
+            &limits,
+            &mut limited,
+        );
+        assert!(!limited);
+        assert_eq!(links.len(), 2);
+        assert_eq!(links[0].host.as_deref(), Some("evil.example"));
+        assert_eq!(links[1].scheme, "javascript");
+    }
 }

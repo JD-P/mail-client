@@ -10,7 +10,7 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 version INTEGER NOT NULL
             );
             INSERT INTO schema_meta(version)
-                SELECT 3 WHERE NOT EXISTS (SELECT 1 FROM schema_meta);
+                SELECT 5 WHERE NOT EXISTS (SELECT 1 FROM schema_meta);
 
             CREATE TABLE IF NOT EXISTS accounts (
                 id TEXT PRIMARY KEY,
@@ -58,6 +58,7 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 user_classification TEXT,
                 content_state TEXT NOT NULL,
                 search_metadata TEXT NOT NULL,
+                dkim_json TEXT NOT NULL,
                 created_at INTEGER NOT NULL
             );
 
@@ -87,6 +88,17 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 decoded_size INTEGER NOT NULL,
                 inline INTEGER NOT NULL,
                 content_id TEXT,
+                PRIMARY KEY(message_id, ordinal)
+            );
+
+            CREATE TABLE IF NOT EXISTS message_links (
+                message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+                ordinal INTEGER NOT NULL,
+                destination TEXT NOT NULL,
+                scheme TEXT NOT NULL,
+                host TEXT,
+                registrable_domain TEXT,
+                source TEXT NOT NULL,
                 PRIMARY KEY(message_id, ordinal)
             );
 
@@ -122,6 +134,96 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 revision INTEGER NOT NULL CHECK(revision > 0)
             );
 
+            CREATE TABLE IF NOT EXISTS filter_rules (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                revision INTEGER NOT NULL CHECK(revision > 0),
+                priority INTEGER NOT NULL,
+                enabled INTEGER NOT NULL,
+                conditions_json TEXT NOT NULL,
+                actions_json TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                deleted_at INTEGER
+            );
+
+            CREATE TABLE IF NOT EXISTS filter_rule_applications (
+                rule_id TEXT NOT NULL REFERENCES filter_rules(id) ON DELETE CASCADE,
+                rule_revision INTEGER NOT NULL,
+                message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+                actions_json TEXT NOT NULL,
+                applied_at INTEGER NOT NULL,
+                PRIMARY KEY(rule_id, rule_revision, message_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS filter_rule_versions (
+                rule_id TEXT NOT NULL REFERENCES filter_rules(id) ON DELETE CASCADE,
+                revision INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                conditions_json TEXT NOT NULL,
+                actions_json TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                PRIMARY KEY(rule_id, revision)
+            );
+
+            CREATE TABLE IF NOT EXISTS heuristics (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                version INTEGER NOT NULL CHECK(version > 0),
+                source TEXT NOT NULL,
+                source_kind TEXT NOT NULL,
+                enabled INTEGER NOT NULL,
+                compiled_json TEXT NOT NULL,
+                required_features_json TEXT NOT NULL,
+                maximum_steps INTEGER NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                deleted_at INTEGER
+            );
+
+            CREATE TABLE IF NOT EXISTS heuristic_findings (
+                id TEXT PRIMARY KEY,
+                message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+                heuristic_id TEXT NOT NULL REFERENCES heuristics(id) ON DELETE CASCADE,
+                heuristic_version INTEGER NOT NULL,
+                code TEXT NOT NULL,
+                presentation TEXT NOT NULL,
+                severity TEXT NOT NULL,
+                target_kind TEXT NOT NULL,
+                target_id TEXT,
+                text TEXT,
+                evidence_json TEXT NOT NULL,
+                source_kind TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS heuristic_versions (
+                heuristic_id TEXT NOT NULL REFERENCES heuristics(id) ON DELETE CASCADE,
+                version INTEGER NOT NULL,
+                source TEXT NOT NULL,
+                source_kind TEXT NOT NULL,
+                compiled_json TEXT NOT NULL,
+                required_features_json TEXT NOT NULL,
+                maximum_steps INTEGER NOT NULL,
+                created_at INTEGER NOT NULL,
+                PRIMARY KEY(heuristic_id, version)
+            );
+
+            CREATE TABLE IF NOT EXISTS heuristic_finding_responses (
+                finding_id TEXT PRIMARY KEY REFERENCES heuristic_findings(id) ON DELETE CASCADE,
+                dismissed_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS heuristic_evaluations (
+                message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+                heuristic_id TEXT NOT NULL REFERENCES heuristics(id) ON DELETE CASCADE,
+                heuristic_version INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                detail TEXT,
+                evaluated_at INTEGER NOT NULL,
+                PRIMARY KEY(message_id, heuristic_id)
+            );
+
             CREATE INDEX IF NOT EXISTS messages_received
                 ON messages(received_at DESC, id DESC);
             CREATE INDEX IF NOT EXISTS messages_sender
@@ -132,8 +234,16 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 ON message_instances(account_id, folder_id, message_id);
             CREATE INDEX IF NOT EXISTS local_memberships_folder
                 ON local_folder_memberships(folder_id, message_id);
+            CREATE INDEX IF NOT EXISTS message_links_message
+                ON message_links(message_id, ordinal);
             CREATE INDEX IF NOT EXISTS changes_sequence
                 ON changes(sequence);
+            CREATE INDEX IF NOT EXISTS filter_rules_execution
+                ON filter_rules(enabled, priority, id);
+            CREATE INDEX IF NOT EXISTS heuristic_findings_message
+                ON heuristic_findings(message_id, presentation, severity, id);
+            CREATE INDEX IF NOT EXISTS heuristics_execution
+                ON heuristics(enabled, id);
             "#,
         )
         .await?;
@@ -191,7 +301,33 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
             .await?;
         version = 3;
     }
-    if version != 3 {
+    if version == 3 {
+        connection
+            .execute("UPDATE schema_meta SET version = 4", ())
+            .await?;
+        version = 4;
+    }
+    if version == 4 {
+        let mut rows = connection.query("PRAGMA table_info(messages)", ()).await?;
+        let mut has_dkim_json = false;
+        while let Some(row) = rows.next().await? {
+            has_dkim_json |= row.get::<String>(1)? == "dkim_json";
+        }
+        drop(rows);
+        if !has_dkim_json {
+            connection
+                .execute(
+                    r#"ALTER TABLE messages ADD COLUMN dkim_json TEXT NOT NULL DEFAULT '{"status":"not_evaluated","signatures":[],"evaluated_at":0,"detail":"DKIM was not evaluated before this schema version"}'"#,
+                    (),
+                )
+                .await?;
+        }
+        connection
+            .execute("UPDATE schema_meta SET version = 5", ())
+            .await?;
+        version = 5;
+    }
+    if version != 5 {
         return Err(crate::BackendError::InvalidInput(format!(
             "unsupported database schema version {version}"
         )));
@@ -229,6 +365,7 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 user_classification TEXT,
                 content_state TEXT NOT NULL,
                 search_metadata TEXT NOT NULL,
+                dkim_json TEXT NOT NULL,
                 created_at INTEGER NOT NULL,
                 PRIMARY KEY(batch_id, position)
             );
@@ -308,7 +445,7 @@ mod tests {
             .await
             .unwrap();
         let row = rows.next().await.unwrap().unwrap();
-        assert_eq!(row.get::<i64>(0).unwrap(), 3);
+        assert_eq!(row.get::<i64>(0).unwrap(), 5);
         assert_eq!(row.get::<String>(1).unwrap(), r#"{"received_at":123}"#);
         drop(rows);
 
@@ -351,7 +488,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap(),
-            3
+            5
         );
     }
 }

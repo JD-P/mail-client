@@ -1,0 +1,95 @@
+[package]
+name = "mail-auth"
+description = "Lizard's hardened vendored mail authentication library"
+version = "0.15.1-lizard.1"
+edition = "2024"
+authors = [ "Stalwart Labs LLC <hello@stalw.art>"]
+license = "Apache-2.0"
+publish = false
+rust-version = "1.100"
+repository = "https://github.com/stalwartlabs/mail-auth"
+keywords = ["dkim", "dmarc", "spf", "arc", "mail"]
+categories = ["email", "authentication"]
+readme = "README.md"
+resolver = "2"
+
+[lib]
+doctest = false
+
+[features]
+default = ["aws-lc-rs", "dns-hickory"]
+aws-lc-rs = ["dep:aws-lc-rs", "dep:aws-lc-sys", "dns-hickory", "hickory-resolver/tls-aws-lc-rs", "hickory-resolver/dnssec-aws-lc-rs", "hickory-resolver/rustls-platform-verifier"]
+dns-tls-ring = ["dns-hickory", "hickory-resolver/tls-ring", "hickory-resolver/dnssec-ring", "hickory-resolver/webpki-roots"]
+rust-crypto = ["rsa", "ed25519-dalek", "sha1", "sha2"]
+rust-crypto-sign = ["rust-crypto", "rand", "ml-dsa", "rsa/getrandom"]
+generate = ["rsa/getrandom", "rand"]
+dns-hickory = ["dep:hickory-resolver"]
+dns-doh = ["dep:reqwest", "dep:web-time", "dep:hickory-proto"]
+arc = []
+test = []
+
+[dependencies]
+encodify = "1.0"
+mail-parser = { version = "1.0", features = ["full_encoding"] }
+hashify =  { version = "0.3" }
+idna = "1.1"
+memchr = "2.7"
+simdutf8 = "0.1.5"
+aws-lc-rs = { version = "1.18.2", optional = true }
+aws-lc-sys = { version = "0.46", optional = true, default-features = false }
+rsa = { version = "0.10", optional = true, default-features = false, features = ["std", "encoding", "pkcs1v15"] }
+ed25519-dalek = { version = "3", optional = true, features = ["pkcs8", "alloc"] }
+sha1 = { version = "0.11", optional = true }
+sha2 = { version = "0.11", optional = true }
+ml-dsa = { version = "0.1.1", optional = true, default-features = false, features = ["alloc", "rand_core"] }
+rustls-pki-types = "1.15"
+web-time = { version = "1", optional = true }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+similar = "3"
+hickory-resolver = { version = "0.26", optional = true }
+hickory-proto = { version = "0.26", optional = true }
+rand = { version = "0.10", optional = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "webpki-roots", "http2", "json", "query"], optional = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+reqwest = { version = "0.13", default-features = false, features = ["json", "query"], optional = true }
+hickory-proto = { version = "0.26", optional = true, features = ["wasm-bindgen"] }
+getrandom = { version = "0.2", features = ["js"] }
+getrandom_v04 = { package = "getrandom", version = "0.4", features = ["wasm_js"] }
+
+[dev-dependencies]
+tokio = { version = "1.54", features = ["net", "io-util", "time", "rt-multi-thread", "macros"] }
+testcontainers = "0.28"
+tempfile = "3"
+criterion = { version = "0.8", default-features = false }
+
+[[bench]]
+name = "canonicalize"
+harness = false
+required-features = ["test"]
+
+[[example]]
+name = "arc_seal"
+required-features = ["arc", "aws-lc-rs"]
+
+[[example]]
+name = "arc_verify"
+required-features = ["arc", "aws-lc-rs"]
+
+[[example]]
+name = "dkim_verify"
+required-features = ["aws-lc-rs"]
+
+[[example]]
+name = "dmarc_verify"
+required-features = ["aws-lc-rs"]
+
+[[example]]
+name = "spf_verify"
+required-features = ["aws-lc-rs"]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)"] }

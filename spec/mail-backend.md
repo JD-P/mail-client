@@ -10,11 +10,10 @@ complete fetch results from the hardened vendored client and routes them
 through the same idempotent ingestion path as local imports.
 
 The current slice does **not** yet open IMAP network sessions or retrieve
-credentials, run DKIM/OpenPGP verification, execute user-authored rules,
-extract every security heuristic, synchronize mutations back to a server,
-send mail, or expose inter-process transport. Those are tracked here as the
-next layers; the presence of their data-model requirements below is not a
-claim that they are implemented.
+credentials, run OpenPGP verification, extract every security heuristic,
+synchronize mutations back to a server, send mail, or expose inter-process
+transport. Those are tracked here as the next layers; the presence of their
+data-model requirements below is not a claim that they are implemented.
 
 Related frontend requirements: [security-ui.md](security-ui.md).
 
@@ -296,63 +295,47 @@ hardware.
 
 ## Filtering, sorting and stateful rules
 
-### One condition model
+### Filters are not searches
 
-Searches, saved views and rule conditions should share the same typed AST where
-their semantics overlap. A user should be able to run a search, preview its
-matches and choose "create rule from this search" without translating between
-languages.
+Gmail-shaped search is a retrieval language with substring and current-state
+semantics. Filter conditions are a separate structured model with exact typed
+fields. A filter is an ordered series of pure Boolean checks with an implicit
+AND; evaluation stops on the first false check, and an empty series is an
+explicit catch-all. A UI may explicitly translate an unambiguous search into a
+filter, but the two do not share an AST.
 
-Rule actions are separate from conditions. Initial actions should include:
+Filter authority is confined to organization of the message being evaluated.
+The current read-only-IMAP slice supports:
 
-- add/remove local folder or label;
-- request an IMAP move/copy where supported;
-- archive, mark read/unread, star, mute or set priority;
-- set a user classification;
-- add a structured heuristic finding or frontend annotation;
-- set retention/expiry policy; and
-- stop later ordered actions when explicitly requested.
+- add/remove a local folder;
+- move between local folders; and
+- stop later ordered filters.
+
+Server-side move/copy/trash actions belong behind the later IMAP mutation
+outbox. Filters cannot modify contacts or trust, train classification, create
+folders or rules, send mail, invoke external services, or mutate other
+messages. Raw message content is immutable.
 
 Actions must be idempotent. Each application records message, rule ID, rule
 version, matched condition, actions and timestamp. This supports "why is this
 here?", undo, rule debugging and deterministic re-evaluation after a rule is
 edited.
 
-### Rule language research direction
+### Filter representation
 
-[Sieve](https://www.rfc-editor.org/rfc/rfc5228.html) is important precedent: it
-was designed specifically for mail filtering, GUI generation and safe
-server-side execution, and its base language deliberately has no loops,
-functions or shell access. Its final-delivery execution model and extension
-history do not directly solve local replay, search, UI annotations or typed
-evidence, so adopting Sieve syntax wholesale is not yet recommended.
-
-[CEL](https://github.com/cel-expr/cel-spec) is useful precedent for the
-condition core: it is mutation-free, non-Turing-complete, type-checkable and
-designed for bounded evaluation of untrusted expressions. Current Rust CEL
-implementations should be conformance-, maintenance- and performance-tested
-before adoption. A smaller mail-specific language may be easier to optimize,
-document and keep stable.
-
-"Compiled" should initially mean:
+Filter conditions and actions are persisted as typed structured values suitable
+for GUI construction. "Compiled" means:
 
 1. parse and type-check once;
 2. resolve field/function references;
 3. estimate and reject excessive worst-case cost;
-4. lower to a compact immutable decision DAG or bytecode;
+4. lower to a compact immutable decision plan;
 5. reorder pure conjunctions by cost/selectivity; and
 6. evaluate in-process with no parser startup, I/O, dynamic code loading or
    unbounded allocation.
 
-Native machine-code generation is unnecessary and would add portability,
-cache-invalidation and code-execution risk. Evaluation dispatch is unlikely to
-dominate MIME parsing, Unicode processing, database I/O or text scanning, but
-the benchmark must decide.
-
-The language must have no loops, recursion, mutation, filesystem/network
-access, clock access except an injected evaluation time, or user-defined
-functions. All strings, collections, regexes and evaluation steps have explicit
-budgets. Regex support must use a guaranteed-linear engine.
+The current implementation directly short-circuits the structured checks;
+shared activation indexes and decision-plan lowering remain optimization work.
 
 ### Avoid evaluating every rule expensively
 
@@ -381,9 +364,28 @@ discrimination network shared across rules is a later optimization if ordinary
 indexed activation plus short-circuit evaluation is insufficient for realistic
 hundreds-of-rules workloads.
 
-### Frontend hooks
+## Heuristic programs and findings
 
-Custom rules may emit structured annotations to a finite set of hooks, for
+Heuristics are not filter predicates. They are bounded evidence-producing
+computations over typed backend features. Lizard Rules uses Python-shaped
+syntax, parsed by a Python grammar but compiled into a serialized application
+IR. No Python runtime executes it.
+
+The accepted subset includes pure `if`, bare `return`, immutable top-level
+bindings, bounded `for` over approved message collections, comparisons, Boolean
+operators, approved string functions, and `yield Finding(...)`. Imports,
+mutation, `while`, recursion, arbitrary calls, reflection, exceptions, async,
+filesystem and network access are compile errors. Every program has static and
+runtime step limits, collection limits, finding limits and string limits.
+
+Native extractors produce reusable typed features such as MIME attachments,
+parsed links and registrable domains. Later extractors will add DKIM/OpenPGP,
+Unicode-confusable analysis, magic-byte file types and local semantic intent.
+Programs consume those features; they do not implement parsers or cryptography.
+
+### Finite presentation vocabulary
+
+Heuristics emit structured findings to a finite set of presentation types, for
 example:
 
 ```text
@@ -394,15 +396,18 @@ link_interstitial
 attachment_interstitial
 ```
 
-The API result includes severity, plain text, responsible rule/origin and
-permitted action identifiers. Rules cannot inject HTML, impersonate built-in
-chrome or invent arbitrary callbacks. Frontends must distinguish built-in,
-user-authored and third-party-authored rules.
+Findings are materialized in Turso with message, heuristic/version, severity,
+target, evidence and origin. Message reads return active findings and their
+separate dismissal state. Stable finding IDs preserve responses across an
+identical re-evaluation. Programs cannot inject HTML, control layout or invent
+callbacks. Frontends switch over the finite presentation enum and distinguish
+built-in, user-authored and third-party-authored findings.
 
-Before activation, the API provides parse/type errors, estimated cost, required
-features, a sample preview, affected-message count and an explanation trace.
-A manual page should document the grammar and include reviewed examples usable
-as an LLM prompt, but generated rules receive no authority until the user
+Before activation, the current compile API provides parse/validation errors,
+estimated maximum cost and required features. Sample-message preview,
+affected-message counts and richer explanation traces remain API work. The
+implemented grammar and reviewed examples are documented in
+`lizard-rules.md`; generated programs receive no authority until the user
 previews and activates them.
 
 ### Sorting
@@ -443,13 +448,38 @@ policy and clear acknowledgement that POP3 has no server folder model.
 TLS protects the connection to the account server; it does not authenticate a
 message author. Certificate exceptions must never be silently persisted.
 
-For DKIM, preserve:
+DKIM verification is implemented at ingestion from the exact stored RFC 5322
+bytes. `mail-auth` 0.15.1 is vendored under Apache-2.0 and hardened locally.
+The backend preserves:
 
 - each signature and exact signing domain/selector;
 - pass, fail, temporary failure, absence and unsupported-algorithm results;
 - whether a valid signature aligns with the visible From domain;
 - which headers/body were covered; and
 - verification source and time.
+
+The verifier rejects duplicate tags, a missing or displaced `v=1`, a missing
+`a=`, signatures that omit `From` from `h=`, obsolete RSA-SHA1, all `l=` body
+length signatures (including `l=0`), malformed numeric values and unsupported
+query methods. Selector records enforce `h=` and `s=` restrictions, reject
+multiple TXT answers and RSA keys below 1024 bits. RSA verification uses the
+0.10 RustCrypto line rather than the timing-advisory-affected 0.9 line.
+
+Every physical signature header produces an ordered evidence record, even if
+it is malformed or above the 16-signature work limit. Verification is bounded
+to 16 DNS lookups and 15 seconds; parser header/authentication budgets run
+before tag decoding and body-hash allocation. ATPS and RFC 6651 report-address
+discovery are off by default so attacker-controlled headers cannot request
+extra network traffic. The strong resolver default is Quad9 over DNS-over-TLS
+with local DNSSEC validation; `DkimDnsResolver::System` is an explicit option
+for private split-DNS deployments.
+
+`Message::dkim` exposes the overall state plus per-signature status, stable
+reason code, domain, selector, identity, algorithm, signed headers, alignment,
+key size/testing flag, header position and untrusted raw value. Heuristics can
+read `message.authentication.dkim.status` and
+`message.authentication.dkim.has_aligned_pass`. A schema migration labels
+pre-verifier messages `not_evaluated`; it never invents a clean verdict.
 
 An IMAP client usually learns delivery-time SPF/DKIM/DMARC results through
 `Authentication-Results`. That header is attacker-forgeable outside the
@@ -636,7 +666,7 @@ would vary by client.
 3. Search grammar, native Tantivy projection and the scaling benchmark.
 4. Local folders/labels, stateful rules, explanations and replay.
 5. Backend address book plus Warm/Cold query predicates.
-6. DKIM/OpenPGP evidence and the bounded heuristic feature pipeline.
+6. OpenPGP evidence and the remaining built-in heuristic feature pipeline.
 7. Change-stream API and official CLI/GUI integration.
 8. IMAP mutations, drafts and SMTP submission.
 9. POP3 and import/export adapters.
