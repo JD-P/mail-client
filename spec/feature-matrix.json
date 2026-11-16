@@ -1,0 +1,3082 @@
+[
+  {
+    "slug": "css-accent-color",
+    "feature": "accent-color",
+    "importance": "1",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "0.001%",
+    "decision": "Later",
+    "notes": "Omission: Omitting accent-color removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Small static paint/state feature; little incremental authority. Limits: Static paint only; no input widgets or platform appearance leakage; apply global budgets."
+  },
+  {
+    "slug": "css-align-items",
+    "feature": "align-items",
+    "importance": "4",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "0.3%",
+    "decision": "Later",
+    "notes": "Omission: Omitting align-items removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Iterative layout, intrinsic sizing and reflow add algorithmic DoS and ordering complexity. Limits: Later bundle: implement flex layout together, bounded sizing/reflow steps; keep DOM, accessibility and copy order consistent."
+  },
+  {
+    "slug": "css-animation",
+    "feature": "animation",
+    "importance": "2",
+    "risk_full": "6",
+    "risk_bounded": "3",
+    "impact": "0.08%",
+    "decision": "Reject",
+    "notes": "Omission: Omitting animation removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Repeated repaint/timing, attention manipulation and high ongoing CPU. Limits: Use a stable static representation, never hide all content waiting for animation."
+  },
+  {
+    "slug": "css-aspect-ratio",
+    "feature": "aspect-ratio",
+    "importance": "5",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "0.08%",
+    "decision": "Later",
+    "notes": "Omission: Sizing/aspect constraints affect image and column fit. Threat: Huge/cyclic dimensions, intrinsic measurement and clipping cause DoS or obscured content. Limits: Finite bounded dimensions; cap intrinsic/reflow work and decoded image sizes. Never affect application chrome."
+  },
+  {
+    "slug": "css-at-font-face",
+    "feature": "@font-face",
+    "importance": "3",
+    "risk_full": "8",
+    "risk_bounded": "5",
+    "impact": "0.4%",
+    "decision": "Reject",
+    "notes": "Omission: Brand font falls back to local fonts; text normally remains readable. Threat: Font loading is a network sink and conditional glyph/font selection can exfiltrate text. Limits: Reject downloadable or sender-supplied fonts, including embedded fonts. Use fixed local fallback fonts."
+  },
+  {
+    "slug": "css-at-import",
+    "feature": "@import",
+    "importance": "3",
+    "risk_full": "8",
+    "risk_bounded": "6",
+    "impact": "0.5%",
+    "decision": "Reject",
+    "notes": "Omission: Externally styled templates lose formatting; many uses are optional font imports. Threat: External sheets import further URLs/rules, add tracking and change code after parsing. Limits: Reject imports and external author stylesheets. Keep embedded/inline styles with scoped parsing."
+  },
+  {
+    "slug": "css-at-keyframes",
+    "feature": "@keyframes",
+    "importance": "2",
+    "risk_full": "6",
+    "risk_bounded": "3",
+    "impact": "0.05%",
+    "decision": "Reject",
+    "notes": "Omission: Omitting @keyframes removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Repeated repaint/timing, attention manipulation and high ongoing CPU. Limits: Use a stable static representation, never hide all content waiting for animation."
+  },
+  {
+    "slug": "css-at-media-device-pixel-ratio",
+    "feature": "@media (-webkit-device-pixel-ratio)",
+    "importance": "3",
+    "risk_full": "5",
+    "risk_bounded": "2",
+    "impact": "0.15%",
+    "decision": "Later",
+    "notes": "Omission: Omitting @media (-webkit-device-pixel-ratio) removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Queries expose device characteristics and conditional styling adds state paths. Limits: Defer hardware/device queries. If implemented, use fixed client-controlled values; never initiate requests on a query match."
+  },
+  {
+    "slug": "css-at-media-hover",
+    "feature": "@media (hover), @media (any-hover)",
+    "importance": "2",
+    "risk_full": "5",
+    "risk_bounded": "2",
+    "impact": "0.002%",
+    "decision": "Later",
+    "notes": "Omission: Omitting @media (hover), @media (any-hover) removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Queries expose device characteristics and conditional styling adds state paths. Limits: Defer hardware/device queries. If implemented, use fixed client-controlled values; never initiate requests on a query match."
+  },
+  {
+    "slug": "css-at-media-orientation",
+    "feature": "@media (orientation)",
+    "importance": "3",
+    "risk_full": "4",
+    "risk_bounded": "2",
+    "impact": "0.05%",
+    "decision": "Later",
+    "notes": "Omission: Omitting @media (orientation) removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Queries expose device characteristics and conditional styling adds state paths. Limits: Defer hardware/device queries. If implemented, use fixed client-controlled values; never initiate requests on a query match."
+  },
+  {
+    "slug": "css-at-media-prefers-color-scheme",
+    "feature": "@media (prefers-color-scheme)",
+    "importance": "6",
+    "risk_full": "4",
+    "risk_bounded": "2",
+    "impact": "1%",
+    "decision": "Later",
+    "notes": "Omission: Dark/light colors may lose contrast; explicit client-owned message theme is a useful fallback. Threat: Conditional styles can fingerprint settings and create invisible text under theme rewriting. Limits: Evaluate against one explicit message theme; couple foreground/background contrast. No OS probing or query-triggered requests."
+  },
+  {
+    "slug": "css-at-media-prefers-reduced-motion",
+    "feature": "@media (prefers-reduced-motion)",
+    "importance": "3",
+    "risk_full": "3",
+    "risk_bounded": "1",
+    "impact": "0.001%",
+    "decision": "Later",
+    "notes": "Omission: Omitting @media (prefers-reduced-motion) removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Preference probing adds a state bit; unnecessary when motion is disabled. Limits: Return a fixed reduce result; still render static fallback. Do not probe host settings."
+  },
+  {
+    "slug": "css-at-media",
+    "feature": "@media",
+    "importance": "9",
+    "risk_full": "5",
+    "risk_bounded": "2",
+    "impact": "25%",
+    "decision": "Bounded",
+    "notes": "Omission: Narrow-screen layouts stay wide or show duplicate desktop/mobile sections; desktop impact is lower. Threat: Conditional CSS can fingerprint and interact with resource requests and reflow. Limits: Only screen/all, min/max-width and Boolean combinations over message viewport; cap nesting. Device-width may alias viewport. No request-on-match."
+  },
+  {
+    "slug": "css-at-supports",
+    "feature": "@supports",
+    "importance": "4",
+    "risk_full": "5",
+    "risk_bounded": "2",
+    "impact": "0.15%",
+    "decision": "Later",
+    "notes": "Omission: Omitting @supports removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Capability queries expose the implementation and select potentially different content. Limits: Evaluate against the fixed advertised subset only; no networking or host queries; same parser for support and actual declarations."
+  },
+  {
+    "slug": "css-backdrop-filter",
+    "feature": "backdrop-filter",
+    "importance": "1",
+    "risk_full": "6",
+    "risk_bounded": "4",
+    "impact": "0.001%",
+    "decision": "Reject",
+    "notes": "Omission: Omitting backdrop-filter removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Complex compositing, external references, geometry or hidden content increase DoS and deception. Limits: Defer/reject effects. Any later implementation must clip to message surface and cap work; prohibit URL filters/masks."
+  },
+  {
+    "slug": "css-background-blend-mode",
+    "feature": "background-blend-mode",
+    "importance": "2",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "0.03%",
+    "decision": "Later",
+    "notes": "Omission: Omitting background-blend-mode removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Small static paint/state feature; little incremental authority. Limits: Static paint only; no input widgets or platform appearance leakage; apply global budgets."
+  },
+  {
+    "slug": "css-background-clip",
+    "feature": "background-clip",
+    "importance": "4",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "0.3%",
+    "decision": "Bounded",
+    "notes": "Omission: Omitting background-clip removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Static paint can hide or misrepresent content, but does not need network or execution. Limits: Clip to message surface, bound paint complexity, and preserve user-controlled readable view."
+  },
+  {
+    "slug": "css-background-color",
+    "feature": "background-color",
+    "importance": "9",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "45%",
+    "decision": "Support",
+    "notes": "Omission: Omitting background-color removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Static paint can hide or misrepresent content, but does not need network or execution. Limits: Clip to message surface, bound paint complexity, and preserve user-controlled readable view."
+  },
+  {
+    "slug": "css-background-image",
+    "feature": "background-image",
+    "importance": "6",
+    "risk_full": "7",
+    "risk_bounded": "3",
+    "impact": "5%",
+    "decision": "Bounded",
+    "notes": "Omission: Background or decorative images disappear; text/solid-color fallback often preserves the action. Threat: URL-valued CSS/attributes are automatic request sinks, including tracking and local-network access. Limits: Resolve only to pre-authorized image capabilities; no arbitrary fetch from layout. CID and approved raster data first; user-approved HTTPS images through broker."
+  },
+  {
+    "slug": "css-background-origin",
+    "feature": "background-origin",
+    "importance": "3",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "0.05%",
+    "decision": "Support",
+    "notes": "Omission: Omitting background-origin removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Static paint can hide or misrepresent content, but does not need network or execution. Limits: Clip to message surface, bound paint complexity, and preserve user-controlled readable view."
+  },
+  {
+    "slug": "css-background-position",
+    "feature": "background-position",
+    "importance": "5",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "2%",
+    "decision": "Support",
+    "notes": "Omission: Omitting background-position removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Static paint can hide or misrepresent content, but does not need network or execution. Limits: Clip to message surface, bound paint complexity, and preserve user-controlled readable view."
+  },
+  {
+    "slug": "css-background-repeat",
+    "feature": "background-repeat",
+    "importance": "5",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "2%",
+    "decision": "Support",
+    "notes": "Omission: Omitting background-repeat removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Static paint can hide or misrepresent content, but does not need network or execution. Limits: Clip to message surface, bound paint complexity, and preserve user-controlled readable view."
+  },
+  {
+    "slug": "css-background-size",
+    "feature": "background-size",
+    "importance": "6",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "3%",
+    "decision": "Support",
+    "notes": "Omission: Sizing/aspect constraints affect image and column fit. Threat: Huge/cyclic dimensions, intrinsic measurement and clipping cause DoS or obscured content. Limits: Finite bounded dimensions; cap intrinsic/reflow work and decoded image sizes. Never affect application chrome."
+  },
+  {
+    "slug": "css-background",
+    "feature": "background",
+    "importance": "9",
+    "risk_full": "7",
+    "risk_bounded": "3",
+    "impact": "20%",
+    "decision": "Bounded",
+    "notes": "Omission: Background or decorative images disappear; text/solid-color fallback often preserves the action. Threat: URL-valued CSS/attributes are automatic request sinks, including tracking and local-network access. Limits: Resolve only to pre-authorized image capabilities; no arbitrary fetch from layout. CID and approved raster data first; user-approved HTTPS images through broker."
+  },
+  {
+    "slug": "css-block-inline-size",
+    "feature": "block-size & inline-size",
+    "importance": "6",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "0.2%",
+    "decision": "Support",
+    "notes": "Omission: Omitting block-size & inline-size removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Logical-to-physical mapping and bidi interactions add specification edge cases. Limits: Resolve logical axes once from scoped direction/writing mode; bound dimensions; initially horizontal writing."
+  },
+  {
+    "slug": "css-border-collapse",
+    "feature": "border-collapse",
+    "importance": "8",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "18%",
+    "decision": "Support",
+    "notes": "Omission: Nested tabular newsletters/receipts lose structure and alignment. Threat: Nested table/span/intrinsic-size algorithms can be expensive and visually reorder content. Limits: Bound nodes, nesting, spans, grid dimensions and layout steps; preserve table semantics and reading order."
+  },
+  {
+    "slug": "css-border-image",
+    "feature": "border-image",
+    "importance": "2",
+    "risk_full": "7",
+    "risk_bounded": "3",
+    "impact": "0.01%",
+    "decision": "Later",
+    "notes": "Omission: Background or decorative images disappear; text/solid-color fallback often preserves the action. Threat: URL-valued CSS/attributes are automatic request sinks, including tracking and local-network access. Limits: Resolve only to pre-authorized image capabilities; no arbitrary fetch from layout. CID and approved raster data first; user-approved HTTPS images through broker."
+  },
+  {
+    "slug": "css-border-inline-block-individual",
+    "feature": "border-inline & border-block individual logical properties",
+    "importance": "4",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "0.01%",
+    "decision": "Later",
+    "notes": "Omission: Omitting border-inline & border-block individual logical properties removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Logical-to-physical mapping and bidi interactions add specification edge cases. Limits: Resolve logical axes once from scoped direction/writing mode; bound dimensions; initially horizontal writing."
+  },
+  {
+    "slug": "css-border-inline-block-longhand",
+    "feature": "border-inline & border-block longhand properties",
+    "importance": "4",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "0.01%",
+    "decision": "Later",
+    "notes": "Omission: Omitting border-inline & border-block longhand properties removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Logical-to-physical mapping and bidi interactions add specification edge cases. Limits: Resolve logical axes once from scoped direction/writing mode; bound dimensions; initially horizontal writing."
+  },
+  {
+    "slug": "css-border-inline-block",
+    "feature": "border-inline & border-block",
+    "importance": "4",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "0.02%",
+    "decision": "Later",
+    "notes": "Omission: Omitting border-inline & border-block removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Logical-to-physical mapping and bidi interactions add specification edge cases. Limits: Resolve logical axes once from scoped direction/writing mode; bound dimensions; initially horizontal writing."
+  },
+  {
+    "slug": "css-border-radius-logical",
+    "feature": "border-radius logical properties",
+    "importance": "3",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "0.005%",
+    "decision": "Later",
+    "notes": "Omission: Omitting border-radius logical properties removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Logical-to-physical mapping and bidi interactions add specification edge cases. Limits: Resolve logical axes once from scoped direction/writing mode; bound dimensions; initially horizontal writing."
+  },
+  {
+    "slug": "css-border-radius",
+    "feature": "border-radius",
+    "importance": "4",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "12%",
+    "decision": "Support",
+    "notes": "Omission: Omitting border-radius removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Static paint can hide or misrepresent content, but does not need network or execution. Limits: Clip to message surface, bound paint complexity, and preserve user-controlled readable view."
+  },
+  {
+    "slug": "css-border-spacing",
+    "feature": "border-spacing",
+    "importance": "8",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "12%",
+    "decision": "Support",
+    "notes": "Omission: Nested tabular newsletters/receipts lose structure and alignment. Threat: Nested table/span/intrinsic-size algorithms can be expensive and visually reorder content. Limits: Bound nodes, nesting, spans, grid dimensions and layout steps; preserve table semantics and reading order."
+  },
+  {
+    "slug": "css-border",
+    "feature": "border",
+    "importance": "8",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "30%",
+    "decision": "Support",
+    "notes": "Omission: Omitting border removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Static paint can hide or misrepresent content, but does not need network or execution. Limits: Clip to message surface, bound paint complexity, and preserve user-controlled readable view."
+  },
+  {
+    "slug": "css-box-shadow",
+    "feature": "box-shadow",
+    "importance": "3",
+    "risk_full": "5",
+    "risk_bounded": "2",
+    "impact": "1%",
+    "decision": "Later",
+    "notes": "Omission: Omitting box-shadow removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Large blur radii/layers expand paint cost and obscured content. Limits: Cap layer count, radius and painted area; no arbitrary compositor graph."
+  },
+  {
+    "slug": "css-box-sizing",
+    "feature": "box-sizing",
+    "importance": "8",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "12%",
+    "decision": "Support",
+    "notes": "Omission: Sizing/aspect constraints affect image and column fit. Threat: Huge/cyclic dimensions, intrinsic measurement and clipping cause DoS or obscured content. Limits: Finite bounded dimensions; cap intrinsic/reflow work and decoded image sizes. Never affect application chrome."
+  },
+  {
+    "slug": "css-caption-side",
+    "feature": "caption-side",
+    "importance": "4",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "0.01%",
+    "decision": "Support",
+    "notes": "Omission: Nested tabular newsletters/receipts lose structure and alignment. Threat: Nested table/span/intrinsic-size algorithms can be expensive and visually reorder content. Limits: Bound nodes, nesting, spans, grid dimensions and layout steps; preserve table semantics and reading order."
+  },
+  {
+    "slug": "css-clear",
+    "feature": "clear",
+    "importance": "6",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "1%",
+    "decision": "Support",
+    "notes": "Omission: Omitting clear removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Float placement and shrink-to-fit interact with tables and repeated layout. Limits: Support bounded ordinary left/right floats, no shape-outside, no escape beyond message. Verify termination/work budget."
+  },
+  {
+    "slug": "css-clip-path",
+    "feature": "clip-path",
+    "importance": "2",
+    "risk_full": "6",
+    "risk_bounded": "4",
+    "impact": "0.02%",
+    "decision": "Reject",
+    "notes": "Omission: Omitting clip-path removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Complex compositing, external references, geometry or hidden content increase DoS and deception. Limits: Defer/reject effects. Any later implementation must clip to message surface and cap work; prohibit URL filters/masks."
+  },
+  {
+    "slug": "css-color-scheme",
+    "feature": "color-scheme CSS property",
+    "importance": "7",
+    "risk_full": "4",
+    "risk_bounded": "2",
+    "impact": "0.5%",
+    "decision": "Later",
+    "notes": "Omission: Dark/light colors may lose contrast; explicit client-owned message theme is a useful fallback. Threat: Conditional styles can fingerprint settings and create invisible text under theme rewriting. Limits: Evaluate against one explicit message theme; couple foreground/background contrast. No OS probing or query-triggered requests."
+  },
+  {
+    "slug": "css-column-count",
+    "feature": "column-count",
+    "importance": "3",
+    "risk_full": "4",
+    "risk_bounded": "3",
+    "impact": "0.01%",
+    "decision": "Later",
+    "notes": "Omission: Omitting column-count removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Column balancing/reordering adds repeated layout and reading-order ambiguity. Limits: Defer; bound balance iterations and preserve semantic reading order if added."
+  },
+  {
+    "slug": "css-column-layout-properties",
+    "feature": "css column properties",
+    "importance": "3",
+    "risk_full": "4",
+    "risk_bounded": "3",
+    "impact": "0.01%",
+    "decision": "Later",
+    "notes": "Omission: Omitting css column properties removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Column balancing/reordering adds repeated layout and reading-order ambiguity. Limits: Defer; bound balance iterations and preserve semantic reading order if added."
+  },
+  {
+    "slug": "css-comments",
+    "feature": "CSS comments",
+    "importance": "9",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "15%",
+    "decision": "Support",
+    "notes": "Omission: Omitting CSS comments removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Tokenizer inconsistencies can change the meaning of later declarations or markup. Limits: One forgiving tokenizer; comments do not execute; strict linear/work bounds and parser-to-renderer agreement."
+  },
+  {
+    "slug": "css-conic-gradient",
+    "feature": "conic-gradient()",
+    "importance": "1",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "0.001%",
+    "decision": "Later",
+    "notes": "Omission: Omitting conic-gradient() removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Static interpolation/stop lists add paint cost without requiring network. Limits: Bound stop count and painted area; no animation. Initially linear gradients only."
+  },
+  {
+    "slug": "css-cursor",
+    "feature": "cursor",
+    "importance": "2",
+    "risk_full": "5",
+    "risk_bounded": "2",
+    "impact": "0.05%",
+    "decision": "Later",
+    "notes": "Omission: Omitting cursor removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Sender cursors can conceal links or imitate trusted app controls; URL cursor is a network sink. Limits: Allow simple cursor keywords only; trusted link destination UI always wins. No url() cursors."
+  },
+  {
+    "slug": "css-direction",
+    "feature": "direction",
+    "importance": "9",
+    "risk_full": "5",
+    "risk_bounded": "2",
+    "impact": "1%",
+    "decision": "Bounded",
+    "notes": "Omission: Text order or alignment is wrong for RTL/CJK/mixed-direction messages and identifiers. Threat: Visual/logical order differences enable spoofing and can mismatch selection and hit tests. Limits: Support actual message language direction. Keep envelope/security UI isolated; show canonical link targets; preserve logical copy/accessibility order."
+  },
+  {
+    "slug": "css-display-flex",
+    "feature": "display:flex",
+    "importance": "5",
+    "risk_full": "4",
+    "risk_bounded": "3",
+    "impact": "0.7%",
+    "decision": "Later",
+    "notes": "Omission: Omitting display:flex removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Iterative layout, intrinsic sizing and reflow add algorithmic DoS and ordering complexity. Limits: Later bundle: implement flex layout together, bounded sizing/reflow steps; keep DOM, accessibility and copy order consistent."
+  },
+  {
+    "slug": "css-display-grid",
+    "feature": "display:grid",
+    "importance": "3",
+    "risk_full": "5",
+    "risk_bounded": "3",
+    "impact": "0.08%",
+    "decision": "Later",
+    "notes": "Omission: Omitting display:grid removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Track sizing and placement create combinatorial layout and resource-budget complexity. Limits: Defer as a bundle; bound tracks, spans and passes before enabling."
+  },
+  {
+    "slug": "css-display-none",
+    "feature": "display:none",
+    "importance": "10",
+    "risk_full": "5",
+    "risk_bounded": "2",
+    "impact": "35%",
+    "decision": "Support",
+    "notes": "Omission: Hidden preheaders or alternative versions may become visible/duplicated, or intended content disappears. Threat: Hidden, transparent and alternative content can disagree with preview, copying or accessibility. Limits: Implement hidden semantics consistently in render/copy/accessibility; preserve a user-readable text view; no cross-message state."
+  },
+  {
+    "slug": "css-display",
+    "feature": "display",
+    "importance": "10",
+    "risk_full": "5",
+    "risk_bounded": "2",
+    "impact": "50%",
+    "decision": "Bounded",
+    "notes": "Omission: Omitting display removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Display changes can hide duplicate branches, reorganize boxes or expose content unexpectedly. Limits: Implement none, block, inline, inline-block and table roles together. Flex/grid values remain unsupported and do not pass @supports."
+  },
+  {
+    "slug": "css-empty-cells",
+    "feature": "empty-cells",
+    "importance": "3",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "0.01%",
+    "decision": "Support",
+    "notes": "Omission: Nested tabular newsletters/receipts lose structure and alignment. Threat: Nested table/span/intrinsic-size algorithms can be expensive and visually reorder content. Limits: Bound nodes, nesting, spans, grid dimensions and layout steps; preserve table semantics and reading order."
+  },
+  {
+    "slug": "css-filter",
+    "feature": "filter",
+    "importance": "2",
+    "risk_full": "7",
+    "risk_bounded": "4",
+    "impact": "0.04%",
+    "decision": "Reject",
+    "notes": "Omission: Omitting filter removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Complex compositing, external references, geometry or hidden content increase DoS and deception. Limits: Defer/reject effects. Any later implementation must clip to message surface and cap work; prohibit URL filters/masks."
+  },
+  {
+    "slug": "css-flex-direction",
+    "feature": "flex-direction:column",
+    "importance": "4",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "0.25%",
+    "decision": "Later",
+    "notes": "Omission: Omitting flex-direction:column removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Iterative layout, intrinsic sizing and reflow add algorithmic DoS and ordering complexity. Limits: Later bundle: implement flex layout together, bounded sizing/reflow steps; keep DOM, accessibility and copy order consistent."
+  },
+  {
+    "slug": "css-flex-wrap",
+    "feature": "flex-wrap: wrap",
+    "importance": "4",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "0.2%",
+    "decision": "Later",
+    "notes": "Omission: Omitting flex-wrap: wrap removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Iterative layout, intrinsic sizing and reflow add algorithmic DoS and ordering complexity. Limits: Later bundle: implement flex layout together, bounded sizing/reflow steps; keep DOM, accessibility and copy order consistent."
+  },
+  {
+    "slug": "css-float",
+    "feature": "float",
+    "importance": "7",
+    "risk_full": "4",
+    "risk_bounded": "3",
+    "impact": "4%",
+    "decision": "Bounded",
+    "notes": "Omission: Omitting float removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Float placement and shrink-to-fit interact with tables and repeated layout. Limits: Support bounded ordinary left/right floats, no shape-outside, no escape beyond message. Verify termination/work budget."
+  },
+  {
+    "slug": "css-font-kerning",
+    "feature": "font-kerning",
+    "importance": "3",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "0.02%",
+    "decision": "Support",
+    "notes": "Omission: Loss changes text readability, emphasis, spacing or language-specific rendering. Threat: Text shaping, line breaking and huge lengths require resource bounds; sender styling can reduce readability. Limits: Use local fonts and bounded shaping/layout; keep readable fallback, selection and accessibility; never parse text as markup."
+  },
+  {
+    "slug": "css-font-size-adjust",
+    "feature": "font-size-adjust",
+    "importance": "3",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "0.01%",
+    "decision": "Later",
+    "notes": "Omission: Loss changes text readability, emphasis, spacing or language-specific rendering. Threat: Text shaping, line breaking and huge lengths require resource bounds; sender styling can reduce readability. Limits: Use local fonts and bounded shaping/layout; keep readable fallback, selection and accessibility; never parse text as markup."
+  },
+  {
+    "slug": "css-font-size",
+    "feature": "font-size",
+    "importance": "9",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "55%",
+    "decision": "Support",
+    "notes": "Omission: Loss changes text readability, emphasis, spacing or language-specific rendering. Threat: Text shaping, line breaking and huge lengths require resource bounds; sender styling can reduce readability. Limits: Use local fonts and bounded shaping/layout; keep readable fallback, selection and accessibility; never parse text as markup."
+  },
+  {
+    "slug": "css-font-stretch",
+    "feature": "font-stretch",
+    "importance": "2",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "0.01%",
+    "decision": "Later",
+    "notes": "Omission: Loss changes text readability, emphasis, spacing or language-specific rendering. Threat: Text shaping, line breaking and huge lengths require resource bounds; sender styling can reduce readability. Limits: Use local fonts and bounded shaping/layout; keep readable fallback, selection and accessibility; never parse text as markup."
+  },
+  {
+    "slug": "css-font-weight",
+    "feature": "font-weight",
+    "importance": "8",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "35%",
+    "decision": "Support",
+    "notes": "Omission: Loss changes text readability, emphasis, spacing or language-specific rendering. Threat: Text shaping, line breaking and huge lengths require resource bounds; sender styling can reduce readability. Limits: Use local fonts and bounded shaping/layout; keep readable fallback, selection and accessibility; never parse text as markup."
+  },
+  {
+    "slug": "css-font",
+    "feature": "font shorthand",
+    "importance": "8",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "5%",
+    "decision": "Support",
+    "notes": "Omission: Loss changes text readability, emphasis, spacing or language-specific rendering. Threat: Text shaping, line breaking and huge lengths require resource bounds; sender styling can reduce readability. Limits: Use local fonts and bounded shaping/layout; keep readable fallback, selection and accessibility; never parse text as markup."
+  },
+  {
+    "slug": "css-function-clamp",
+    "feature": "clamp()",
+    "importance": "5",
+    "risk_full": "4",
+    "risk_bounded": "2",
+    "impact": "0.03%",
+    "decision": "Later",
+    "notes": "Omission: Omitting clamp() removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Nested calculations, unit cycles and non-finite/extreme values can exhaust work or violate geometry invariants. Limits: Typed finite arithmetic; bound AST and steps; checked/rational geometry. Initially calc() with length/percentage add/subtract and literal scaling."
+  },
+  {
+    "slug": "css-function-light-dark",
+    "feature": "light-dark()",
+    "importance": "4",
+    "risk_full": "4",
+    "risk_bounded": "2",
+    "impact": "0.005%",
+    "decision": "Later",
+    "notes": "Omission: Dark/light colors may lose contrast; explicit client-owned message theme is a useful fallback. Threat: Conditional styles can fingerprint settings and create invisible text under theme rewriting. Limits: Evaluate against one explicit message theme; couple foreground/background contrast. No OS probing or query-triggered requests."
+  },
+  {
+    "slug": "css-function-max",
+    "feature": "max()",
+    "importance": "5",
+    "risk_full": "4",
+    "risk_bounded": "2",
+    "impact": "0.1%",
+    "decision": "Later",
+    "notes": "Omission: Omitting max() removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Nested calculations, unit cycles and non-finite/extreme values can exhaust work or violate geometry invariants. Limits: Typed finite arithmetic; bound AST and steps; checked/rational geometry. Initially calc() with length/percentage add/subtract and literal scaling."
+  },
+  {
+    "slug": "css-function-min",
+    "feature": "min()",
+    "importance": "5",
+    "risk_full": "4",
+    "risk_bounded": "2",
+    "impact": "0.1%",
+    "decision": "Later",
+    "notes": "Omission: Omitting min() removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Nested calculations, unit cycles and non-finite/extreme values can exhaust work or violate geometry invariants. Limits: Typed finite arithmetic; bound AST and steps; checked/rational geometry. Initially calc() with length/percentage add/subtract and literal scaling."
+  },
+  {
+    "slug": "css-gap",
+    "feature": "gap, column-gap, row-gap",
+    "importance": "4",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "0.25%",
+    "decision": "Later",
+    "notes": "Omission: Omitting gap, column-gap, row-gap removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Iterative layout, intrinsic sizing and reflow add algorithmic DoS and ordering complexity. Limits: Later bundle: implement flex layout together, bounded sizing/reflow steps; keep DOM, accessibility and copy order consistent."
+  },
+  {
+    "slug": "css-grid-template",
+    "feature": "grid-template-* properties",
+    "importance": "3",
+    "risk_full": "5",
+    "risk_bounded": "3",
+    "impact": "0.05%",
+    "decision": "Later",
+    "notes": "Omission: Omitting grid-template-* properties removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Track sizing and placement create combinatorial layout and resource-budget complexity. Limits: Defer as a bundle; bound tracks, spans and passes before enabling."
+  },
+  {
+    "slug": "css-height",
+    "feature": "height property",
+    "importance": "8",
+    "risk_full": "4",
+    "risk_bounded": "2",
+    "impact": "25%",
+    "decision": "Bounded",
+    "notes": "Omission: Sizing/aspect constraints affect image and column fit. Threat: Huge/cyclic dimensions, intrinsic measurement and clipping cause DoS or obscured content. Limits: Finite bounded dimensions; cap intrinsic/reflow work and decoded image sizes. Never affect application chrome."
+  },
+  {
+    "slug": "css-hyphenate-character",
+    "feature": "hyphenate-character",
+    "importance": "2",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "0.001%",
+    "decision": "Later",
+    "notes": "Omission: Loss changes text readability, emphasis, spacing or language-specific rendering. Threat: Text shaping, line breaking and huge lengths require resource bounds; sender styling can reduce readability. Limits: Use local fonts and bounded shaping/layout; keep readable fallback, selection and accessibility; never parse text as markup."
+  },
+  {
+    "slug": "css-hyphenate-limit-chars",
+    "feature": "hyphenate-limit-chars",
+    "importance": "2",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "0.001%",
+    "decision": "Later",
+    "notes": "Omission: Loss changes text readability, emphasis, spacing or language-specific rendering. Threat: Text shaping, line breaking and huge lengths require resource bounds; sender styling can reduce readability. Limits: Use local fonts and bounded shaping/layout; keep readable fallback, selection and accessibility; never parse text as markup."
+  },
+  {
+    "slug": "css-hyphens",
+    "feature": "hyphens",
+    "importance": "4",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "0.3%",
+    "decision": "Later",
+    "notes": "Omission: Loss changes text readability, emphasis, spacing or language-specific rendering. Threat: Text shaping, line breaking and huge lengths require resource bounds; sender styling can reduce readability. Limits: Use local fonts and bounded shaping/layout; keep readable fallback, selection and accessibility; never parse text as markup."
+  },
+  {
+    "slug": "css-important",
+    "feature": "!important keyword",
+    "importance": "9",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "40%",
+    "decision": "Support",
+    "notes": "Omission: Incorrect rule application affects many properties at once. Threat: Specificity, inheritance and malformed-rule recovery affect hiding and scope; parser disagreement can bypass policy. Limits: Scoped per-message cascade, one parser, bounded rules/selectors/declarations, correct !important and individual-declaration recovery."
+  },
+  {
+    "slug": "css-inert-attribute",
+    "feature": "inert",
+    "importance": "2",
+    "risk_full": "4",
+    "risk_bounded": "2",
+    "impact": "0.001%",
+    "decision": "Later",
+    "notes": "Omission: Omitting inert removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Changes hit testing, focus and accessibility without a visual cue. Limits: Defer author inert state; never let it disable trusted controls or hide required UI."
+  },
+  {
+    "slug": "css-inline-size",
+    "feature": "inline-size",
+    "importance": "6",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "0.15%",
+    "decision": "Support",
+    "notes": "Omission: Omitting inline-size removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Logical-to-physical mapping and bidi interactions add specification edge cases. Limits: Resolve logical axes once from scoped direction/writing mode; bound dimensions; initially horizontal writing."
+  },
+  {
+    "slug": "css-inset",
+    "feature": "inset",
+    "importance": "3",
+    "risk_full": "5",
+    "risk_bounded": "3",
+    "impact": "0.01%",
+    "decision": "Reject",
+    "notes": "Omission: Omitting inset removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Overlays, offscreen content and layout/hit-test disagreement can spoof the client or cover links. Limits: Only static positioning initially. Ignore offsets/z-index; all paint and hit tests clipped to message surface. Enable relative/absolute only after separate review."
+  },
+  {
+    "slug": "css-intrinsic-size",
+    "feature": "fit-content, min-content, max-content",
+    "importance": "5",
+    "risk_full": "4",
+    "risk_bounded": "2",
+    "impact": "0.05%",
+    "decision": "Later",
+    "notes": "Omission: Sizing/aspect constraints affect image and column fit. Threat: Huge/cyclic dimensions, intrinsic measurement and clipping cause DoS or obscured content. Limits: Finite bounded dimensions; cap intrinsic/reflow work and decoded image sizes. Never affect application chrome."
+  },
+  {
+    "slug": "css-justify-content",
+    "feature": "justify-content",
+    "importance": "4",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "0.3%",
+    "decision": "Later",
+    "notes": "Omission: Omitting justify-content removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Iterative layout, intrinsic sizing and reflow add algorithmic DoS and ordering complexity. Limits: Later bundle: implement flex layout together, bounded sizing/reflow steps; keep DOM, accessibility and copy order consistent."
+  },
+  {
+    "slug": "css-left-right-top-bottom",
+    "feature": "left, right, top, bottom",
+    "importance": "4",
+    "risk_full": "5",
+    "risk_bounded": "3",
+    "impact": "0.3%",
+    "decision": "Reject",
+    "notes": "Omission: Omitting left, right, top, bottom removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Overlays, offscreen content and layout/hit-test disagreement can spoof the client or cover links. Limits: Only static positioning initially. Ignore offsets/z-index; all paint and hit tests clipped to message surface. Enable relative/absolute only after separate review."
+  },
+  {
+    "slug": "css-letter-spacing",
+    "feature": "letter-spacing",
+    "importance": "5",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "8%",
+    "decision": "Support",
+    "notes": "Omission: Loss changes text readability, emphasis, spacing or language-specific rendering. Threat: Text shaping, line breaking and huge lengths require resource bounds; sender styling can reduce readability. Limits: Use local fonts and bounded shaping/layout; keep readable fallback, selection and accessibility; never parse text as markup."
+  },
+  {
+    "slug": "css-line-height",
+    "feature": "line-height",
+    "importance": "9",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "45%",
+    "decision": "Support",
+    "notes": "Omission: Loss changes text readability, emphasis, spacing or language-specific rendering. Threat: Text shaping, line breaking and huge lengths require resource bounds; sender styling can reduce readability. Limits: Use local fonts and bounded shaping/layout; keep readable fallback, selection and accessibility; never parse text as markup."
+  },
+  {
+    "slug": "css-linear-gradient",
+    "feature": "linear-gradient()",
+    "importance": "3",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "1%",
+    "decision": "Support",
+    "notes": "Omission: Omitting linear-gradient() removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Static interpolation/stop lists add paint cost without requiring network. Limits: Bound stop count and painted area; no animation. Initially linear gradients only."
+  },
+  {
+    "slug": "css-list-style-image",
+    "feature": "list-style-image",
+    "importance": "3",
+    "risk_full": "7",
+    "risk_bounded": "3",
+    "impact": "0.02%",
+    "decision": "Later",
+    "notes": "Omission: Background or decorative images disappear; text/solid-color fallback often preserves the action. Threat: URL-valued CSS/attributes are automatic request sinks, including tracking and local-network access. Limits: Resolve only to pre-authorized image capabilities; no arbitrary fetch from layout. CID and approved raster data first; user-approved HTTPS images through broker."
+  },
+  {
+    "slug": "css-list-style-position",
+    "feature": "list-style-position",
+    "importance": "5",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "0.2%",
+    "decision": "Support",
+    "notes": "Omission: Loss changes text readability, emphasis, spacing or language-specific rendering. Threat: Text shaping, line breaking and huge lengths require resource bounds; sender styling can reduce readability. Limits: Use local fonts and bounded shaping/layout; keep readable fallback, selection and accessibility; never parse text as markup."
+  },
+  {
+    "slug": "css-list-style-type",
+    "feature": "list-style-type",
+    "importance": "7",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "3%",
+    "decision": "Support",
+    "notes": "Omission: Loss changes text readability, emphasis, spacing or language-specific rendering. Threat: Text shaping, line breaking and huge lengths require resource bounds; sender styling can reduce readability. Limits: Use local fonts and bounded shaping/layout; keep readable fallback, selection and accessibility; never parse text as markup."
+  },
+  {
+    "slug": "css-list-style",
+    "feature": "list-style",
+    "importance": "7",
+    "risk_full": "7",
+    "risk_bounded": "2",
+    "impact": "1%",
+    "decision": "Bounded",
+    "notes": "Omission: Omitting list-style removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: List shorthand can contain URL images; list counters and nesting add layout state. Limits: Support marker type/position; ignore list image URLs initially; cap depth and counter arithmetic."
+  },
+  {
+    "slug": "css-margin-block-start-end",
+    "feature": "margin-block-start & margin-block-end",
+    "importance": "6",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "0.8%",
+    "decision": "Support",
+    "notes": "Omission: Omitting margin-block-start & margin-block-end removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Logical-to-physical mapping and bidi interactions add specification edge cases. Limits: Resolve logical axes once from scoped direction/writing mode; bound dimensions; initially horizontal writing."
+  },
+  {
+    "slug": "css-margin-inline-block",
+    "feature": "margin-inline & margin-block",
+    "importance": "6",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "0.1%",
+    "decision": "Support",
+    "notes": "Omission: Omitting margin-inline & margin-block removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Logical-to-physical mapping and bidi interactions add specification edge cases. Limits: Resolve logical axes once from scoped direction/writing mode; bound dimensions; initially horizontal writing."
+  },
+  {
+    "slug": "css-margin-inline-start-end",
+    "feature": "margin-inline-start & margin-inline-end",
+    "importance": "6",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "0.4%",
+    "decision": "Support",
+    "notes": "Omission: Omitting margin-inline-start & margin-inline-end removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Logical-to-physical mapping and bidi interactions add specification edge cases. Limits: Resolve logical axes once from scoped direction/writing mode; bound dimensions; initially horizontal writing."
+  },
+  {
+    "slug": "css-margin",
+    "feature": "margin",
+    "importance": "9",
+    "risk_full": "4",
+    "risk_bounded": "2",
+    "impact": "40%",
+    "decision": "Bounded",
+    "notes": "Omission: Omitting margin removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Extreme or negative spacing can overlap content or force expensive/huge layout. Limits: Bound finite geometry. Negative margins remain within clipped message surface and cannot cover trusted UI."
+  },
+  {
+    "slug": "css-mask-image",
+    "feature": "mask-image",
+    "importance": "2",
+    "risk_full": "7",
+    "risk_bounded": "4",
+    "impact": "0.01%",
+    "decision": "Reject",
+    "notes": "Omission: Omitting mask-image removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Complex compositing, external references, geometry or hidden content increase DoS and deception. Limits: Defer/reject effects. Any later implementation must clip to message surface and cap work; prohibit URL filters/masks."
+  },
+  {
+    "slug": "css-max-block-size",
+    "feature": "max-block-size",
+    "importance": "4",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "0.005%",
+    "decision": "Later",
+    "notes": "Omission: Omitting max-block-size removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Logical-to-physical mapping and bidi interactions add specification edge cases. Limits: Resolve logical axes once from scoped direction/writing mode; bound dimensions; initially horizontal writing."
+  },
+  {
+    "slug": "css-max-height",
+    "feature": "max-height property",
+    "importance": "8",
+    "risk_full": "4",
+    "risk_bounded": "2",
+    "impact": "20%",
+    "decision": "Bounded",
+    "notes": "Omission: Sizing/aspect constraints affect image and column fit. Threat: Huge/cyclic dimensions, intrinsic measurement and clipping cause DoS or obscured content. Limits: Finite bounded dimensions; cap intrinsic/reflow work and decoded image sizes. Never affect application chrome."
+  },
+  {
+    "slug": "css-max-inline-size",
+    "feature": "max-inline-size",
+    "importance": "5",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "0.03%",
+    "decision": "Support",
+    "notes": "Omission: Omitting max-inline-size removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Logical-to-physical mapping and bidi interactions add specification edge cases. Limits: Resolve logical axes once from scoped direction/writing mode; bound dimensions; initially horizontal writing."
+  },
+  {
+    "slug": "css-max-width",
+    "feature": "max-width",
+    "importance": "9",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "40%",
+    "decision": "Support",
+    "notes": "Omission: Sizing/aspect constraints affect image and column fit. Threat: Huge/cyclic dimensions, intrinsic measurement and clipping cause DoS or obscured content. Limits: Finite bounded dimensions; cap intrinsic/reflow work and decoded image sizes. Never affect application chrome."
+  },
+  {
+    "slug": "css-min-block-size",
+    "feature": "min-block-size",
+    "importance": "4",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "0.005%",
+    "decision": "Later",
+    "notes": "Omission: Omitting min-block-size removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Logical-to-physical mapping and bidi interactions add specification edge cases. Limits: Resolve logical axes once from scoped direction/writing mode; bound dimensions; initially horizontal writing."
+  },
+  {
+    "slug": "css-min-height",
+    "feature": "min-height property",
+    "importance": "6",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "3%",
+    "decision": "Support",
+    "notes": "Omission: Sizing/aspect constraints affect image and column fit. Threat: Huge/cyclic dimensions, intrinsic measurement and clipping cause DoS or obscured content. Limits: Finite bounded dimensions; cap intrinsic/reflow work and decoded image sizes. Never affect application chrome."
+  },
+  {
+    "slug": "css-min-inline-size",
+    "feature": "min-inline-size",
+    "importance": "5",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "0.02%",
+    "decision": "Support",
+    "notes": "Omission: Omitting min-inline-size removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Logical-to-physical mapping and bidi interactions add specification edge cases. Limits: Resolve logical axes once from scoped direction/writing mode; bound dimensions; initially horizontal writing."
+  },
+  {
+    "slug": "css-min-width",
+    "feature": "min-width property",
+    "importance": "8",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "15%",
+    "decision": "Bounded",
+    "notes": "Omission: Sizing/aspect constraints affect image and column fit. Threat: Huge/cyclic dimensions, intrinsic measurement and clipping cause DoS or obscured content. Limits: Finite bounded dimensions; cap intrinsic/reflow work and decoded image sizes. Never affect application chrome."
+  },
+  {
+    "slug": "css-mix-blend-mode",
+    "feature": "mix-blend-mode",
+    "importance": "3",
+    "risk_full": "5",
+    "risk_bounded": "3",
+    "impact": "0.05%",
+    "decision": "Later",
+    "notes": "Omission: Omitting mix-blend-mode removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Complex compositing, external references, geometry or hidden content increase DoS and deception. Limits: Defer/reject effects. Any later implementation must clip to message surface and cap work; prohibit URL filters/masks."
+  },
+  {
+    "slug": "css-modern-color",
+    "feature": "lch(), oklch(), lab(), oklab()",
+    "importance": "3",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "0.01%",
+    "decision": "Later",
+    "notes": "Omission: Omitting lch(), oklch(), lab(), oklab() removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Color parsing/interpolation and transparency have contrast and numeric edge cases. Limits: Finite clamped components; coherent theme conversion and readable fallback. No external profiles or host color probing."
+  },
+  {
+    "slug": "css-nesting",
+    "feature": "CSS Nesting",
+    "importance": "3",
+    "risk_full": "6",
+    "risk_bounded": "3",
+    "impact": "0.02%",
+    "decision": "Later",
+    "notes": "Omission: Omitting CSS Nesting removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Selector expansion, nesting recovery and conditional-rule handling can diverge across policy and rendering passes. Limits: Defer nesting until one parser and bounded selector expansion are implemented; reject unsupported nested rules without dropping unrelated declarations."
+  },
+  {
+    "slug": "css-object-fit",
+    "feature": "object-fit",
+    "importance": "6",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "0.8%",
+    "decision": "Support",
+    "notes": "Omission: Sizing/aspect constraints affect image and column fit. Threat: Huge/cyclic dimensions, intrinsic measurement and clipping cause DoS or obscured content. Limits: Finite bounded dimensions; cap intrinsic/reflow work and decoded image sizes. Never affect application chrome."
+  },
+  {
+    "slug": "css-object-position",
+    "feature": "object-position",
+    "importance": "4",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "0.03%",
+    "decision": "Support",
+    "notes": "Omission: Sizing/aspect constraints affect image and column fit. Threat: Huge/cyclic dimensions, intrinsic measurement and clipping cause DoS or obscured content. Limits: Finite bounded dimensions; cap intrinsic/reflow work and decoded image sizes. Never affect application chrome."
+  },
+  {
+    "slug": "css-opacity",
+    "feature": "opacity",
+    "importance": "6",
+    "risk_full": "5",
+    "risk_bounded": "2",
+    "impact": "5%",
+    "decision": "Bounded",
+    "notes": "Omission: Hidden preheaders or alternative versions may become visible/duplicated, or intended content disappears. Threat: Hidden, transparent and alternative content can disagree with preview, copying or accessibility. Limits: Implement hidden semantics consistently in render/copy/accessibility; preserve a user-readable text view; no cross-message state."
+  },
+  {
+    "slug": "css-orphans",
+    "feature": "orphans",
+    "importance": "2",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "0.001%",
+    "decision": "Later",
+    "notes": "Omission: Omitting orphans removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Pagination adds state and repeated layout; little relevance to reading messages. Limits: Defer print-only behavior; do not allow pagination rules to hide reader content."
+  },
+  {
+    "slug": "css-outline-offset",
+    "feature": "outline-offset",
+    "importance": "2",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "0.01%",
+    "decision": "Later",
+    "notes": "Omission: Omitting outline-offset removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Static paint can hide or misrepresent content, but does not need network or execution. Limits: Clip to message surface, bound paint complexity, and preserve user-controlled readable view."
+  },
+  {
+    "slug": "css-outline",
+    "feature": "outline",
+    "importance": "4",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "0.2%",
+    "decision": "Bounded",
+    "notes": "Omission: Omitting outline removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Author rules can hide keyboard focus or alter actionable-link cues. Limits: Trusted keyboard focus indicator cannot be suppressed; allow harmless message styling beneath it."
+  },
+  {
+    "slug": "css-overflow-wrap",
+    "feature": "overflow-wrap",
+    "importance": "8",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "3%",
+    "decision": "Support",
+    "notes": "Omission: Loss changes text readability, emphasis, spacing or language-specific rendering. Threat: Text shaping, line breaking and huge lengths require resource bounds; sender styling can reduce readability. Limits: Use local fonts and bounded shaping/layout; keep readable fallback, selection and accessibility; never parse text as markup."
+  },
+  {
+    "slug": "css-overflow",
+    "feature": "overflow",
+    "importance": "8",
+    "risk_full": "5",
+    "risk_bounded": "2",
+    "impact": "20%",
+    "decision": "Bounded",
+    "notes": "Omission: Omitting overflow removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Clipping can conceal important content; scroll containers and hit testing add state. Limits: Support visible/hidden clipping; expose clipped content in reader text view. No nested scroll widgets initially."
+  },
+  {
+    "slug": "css-padding-block-start-end",
+    "feature": "padding-block-start & padding-block-end",
+    "importance": "6",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "0.1%",
+    "decision": "Support",
+    "notes": "Omission: Omitting padding-block-start & padding-block-end removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Logical-to-physical mapping and bidi interactions add specification edge cases. Limits: Resolve logical axes once from scoped direction/writing mode; bound dimensions; initially horizontal writing."
+  },
+  {
+    "slug": "css-padding-inline-block",
+    "feature": "padding-inline & padding-block",
+    "importance": "6",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "0.1%",
+    "decision": "Support",
+    "notes": "Omission: Omitting padding-inline & padding-block removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Logical-to-physical mapping and bidi interactions add specification edge cases. Limits: Resolve logical axes once from scoped direction/writing mode; bound dimensions; initially horizontal writing."
+  },
+  {
+    "slug": "css-padding-inline-start-end",
+    "feature": "padding-inline-start & padding-inline-end",
+    "importance": "6",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "0.3%",
+    "decision": "Support",
+    "notes": "Omission: Omitting padding-inline-start & padding-inline-end removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Logical-to-physical mapping and bidi interactions add specification edge cases. Limits: Resolve logical axes once from scoped direction/writing mode; bound dimensions; initially horizontal writing."
+  },
+  {
+    "slug": "css-padding",
+    "feature": "padding",
+    "importance": "9",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "50%",
+    "decision": "Support",
+    "notes": "Omission: Omitting padding removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Extreme or negative spacing can overlap content or force expensive/huge layout. Limits: Bound finite geometry. Negative margins remain within clipped message surface and cannot cover trusted UI."
+  },
+  {
+    "slug": "css-position",
+    "feature": "position",
+    "importance": "5",
+    "risk_full": "6",
+    "risk_bounded": "3",
+    "impact": "0.6%",
+    "decision": "Later",
+    "notes": "Omission: Omitting position removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Overlays, offscreen content and layout/hit-test disagreement can spoof the client or cover links. Limits: Only static positioning initially. Ignore offsets/z-index; all paint and hit tests clipped to message surface. Enable relative/absolute only after separate review."
+  },
+  {
+    "slug": "css-pseudo-class-active",
+    "feature": ":active",
+    "importance": "3",
+    "risk_full": "4",
+    "risk_bounded": "2",
+    "impact": "0.03%",
+    "decision": "Later",
+    "notes": "Omission: Omitting :active removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Event-dependent CSS can gate content, mislead clicks, or become a request side channel. Limits: Only benign hover/active/focus styling on links; no forms, checkbox-driven apps, request-on-state or sender focus grabs."
+  },
+  {
+    "slug": "css-pseudo-class-checked",
+    "feature": ":checked",
+    "importance": "2",
+    "risk_full": "6",
+    "risk_bounded": "3",
+    "impact": "0.04%",
+    "decision": "Reject",
+    "notes": "Omission: Omitting :checked removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Event-dependent CSS can gate content, mislead clicks, or become a request side channel. Limits: Only benign hover/active/focus styling on links; no forms, checkbox-driven apps, request-on-state or sender focus grabs."
+  },
+  {
+    "slug": "css-pseudo-class-default",
+    "feature": ":default",
+    "importance": "1",
+    "risk_full": "4",
+    "risk_bounded": "2",
+    "impact": "0.001%",
+    "decision": "Reject",
+    "notes": "Omission: Omitting :default removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Event-dependent CSS can gate content, mislead clicks, or become a request side channel. Limits: Only benign hover/active/focus styling on links; no forms, checkbox-driven apps, request-on-state or sender focus grabs."
+  },
+  {
+    "slug": "css-pseudo-class-first-child",
+    "feature": ":first-child",
+    "importance": "5",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "0.1%",
+    "decision": "Later",
+    "notes": "Omission: Styles selected by this mechanism stop applying; templates often contain fallback rules. Threat: Selector matching can be costly and cross document/style boundaries if incorrectly scoped. Limits: Match message tree only, cap selector AST/depth/work, no history or surrounding DOM access."
+  },
+  {
+    "slug": "css-pseudo-class-first-of-type",
+    "feature": ":first-of-type",
+    "importance": "4",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "0.02%",
+    "decision": "Later",
+    "notes": "Omission: Styles selected by this mechanism stop applying; templates often contain fallback rules. Threat: Selector matching can be costly and cross document/style boundaries if incorrectly scoped. Limits: Match message tree only, cap selector AST/depth/work, no history or surrounding DOM access."
+  },
+  {
+    "slug": "css-pseudo-class-focus-visible",
+    "feature": ":focus-visible",
+    "importance": "7",
+    "risk_full": "3",
+    "risk_bounded": "1",
+    "impact": "0.01%",
+    "decision": "Bounded",
+    "notes": "Omission: Omitting :focus-visible removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. High importance for affected users is not discounted just because the whole-population estimate is small. Threat: Author rules can hide keyboard focus or alter actionable-link cues. Limits: Trusted keyboard focus indicator cannot be suppressed; allow harmless message styling beneath it."
+  },
+  {
+    "slug": "css-pseudo-class-focus-within",
+    "feature": ":focus-within",
+    "importance": "3",
+    "risk_full": "4",
+    "risk_bounded": "2",
+    "impact": "0.005%",
+    "decision": "Later",
+    "notes": "Omission: Omitting :focus-within removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Event-dependent CSS can gate content, mislead clicks, or become a request side channel. Limits: Only benign hover/active/focus styling on links; no forms, checkbox-driven apps, request-on-state or sender focus grabs."
+  },
+  {
+    "slug": "css-pseudo-class-focus",
+    "feature": ":focus",
+    "importance": "7",
+    "risk_full": "3",
+    "risk_bounded": "1",
+    "impact": "0.1%",
+    "decision": "Bounded",
+    "notes": "Omission: Omitting :focus removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. High importance for affected users is not discounted just because the whole-population estimate is small. Threat: Author rules can hide keyboard focus or alter actionable-link cues. Limits: Trusted keyboard focus indicator cannot be suppressed; allow harmless message styling beneath it."
+  },
+  {
+    "slug": "css-pseudo-class-has",
+    "feature": ":has()",
+    "importance": "2",
+    "risk_full": "7",
+    "risk_bounded": "4",
+    "impact": "0.001%",
+    "decision": "Reject",
+    "notes": "Omission: Omitting :has() removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Relational traversal/invalidation can explode work and amplify conditional side channels. Limits: Reject :has() initially; if later added, strict work limits and no network/state access."
+  },
+  {
+    "slug": "css-pseudo-class-hover",
+    "feature": ":hover",
+    "importance": "4",
+    "risk_full": "4",
+    "risk_bounded": "2",
+    "impact": "0.3%",
+    "decision": "Bounded",
+    "notes": "Omission: Omitting :hover removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Event-dependent CSS can gate content, mislead clicks, or become a request side channel. Limits: Only benign hover/active/focus styling on links; no forms, checkbox-driven apps, request-on-state or sender focus grabs."
+  },
+  {
+    "slug": "css-pseudo-class-lang",
+    "feature": "lang()",
+    "importance": "6",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "0.01%",
+    "decision": "Later",
+    "notes": "Omission: Styles selected by this mechanism stop applying; templates often contain fallback rules. Threat: Selector matching can be costly and cross document/style boundaries if incorrectly scoped. Limits: Match message tree only, cap selector AST/depth/work, no history or surrounding DOM access."
+  },
+  {
+    "slug": "css-pseudo-class-last-child",
+    "feature": ":last-child",
+    "importance": "4",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "0.05%",
+    "decision": "Later",
+    "notes": "Omission: Styles selected by this mechanism stop applying; templates often contain fallback rules. Threat: Selector matching can be costly and cross document/style boundaries if incorrectly scoped. Limits: Match message tree only, cap selector AST/depth/work, no history or surrounding DOM access."
+  },
+  {
+    "slug": "css-pseudo-class-last-of-type",
+    "feature": ":last-of-type",
+    "importance": "3",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "0.01%",
+    "decision": "Later",
+    "notes": "Omission: Styles selected by this mechanism stop applying; templates often contain fallback rules. Threat: Selector matching can be costly and cross document/style boundaries if incorrectly scoped. Limits: Match message tree only, cap selector AST/depth/work, no history or surrounding DOM access."
+  },
+  {
+    "slug": "css-pseudo-class-link",
+    "feature": ":link",
+    "importance": "6",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "0.4%",
+    "decision": "Later",
+    "notes": "Omission: Styles selected by this mechanism stop applying; templates often contain fallback rules. Threat: Selector matching can be costly and cross document/style boundaries if incorrectly scoped. Limits: Match message tree only, cap selector AST/depth/work, no history or surrounding DOM access."
+  },
+  {
+    "slug": "css-pseudo-class-not",
+    "feature": ":not",
+    "importance": "5",
+    "risk_full": "4",
+    "risk_bounded": "2",
+    "impact": "0.1%",
+    "decision": "Later",
+    "notes": "Omission: Styles selected by this mechanism stop applying; templates often contain fallback rules. Threat: Selector matching can be costly and cross document/style boundaries if incorrectly scoped. Limits: Match message tree only, cap selector AST/depth/work, no history or surrounding DOM access."
+  },
+  {
+    "slug": "css-pseudo-class-nth-child",
+    "feature": ":nth-child",
+    "importance": "4",
+    "risk_full": "4",
+    "risk_bounded": "2",
+    "impact": "0.03%",
+    "decision": "Later",
+    "notes": "Omission: Styles selected by this mechanism stop applying; templates often contain fallback rules. Threat: Selector matching can be costly and cross document/style boundaries if incorrectly scoped. Limits: Match message tree only, cap selector AST/depth/work, no history or surrounding DOM access."
+  },
+  {
+    "slug": "css-pseudo-class-nth-last-child",
+    "feature": ":nth-last-child",
+    "importance": "3",
+    "risk_full": "4",
+    "risk_bounded": "2",
+    "impact": "0.005%",
+    "decision": "Later",
+    "notes": "Omission: Styles selected by this mechanism stop applying; templates often contain fallback rules. Threat: Selector matching can be costly and cross document/style boundaries if incorrectly scoped. Limits: Match message tree only, cap selector AST/depth/work, no history or surrounding DOM access."
+  },
+  {
+    "slug": "css-pseudo-class-nth-last-of-type",
+    "feature": ":nth-last-of-type",
+    "importance": "3",
+    "risk_full": "4",
+    "risk_bounded": "2",
+    "impact": "0.003%",
+    "decision": "Later",
+    "notes": "Omission: Styles selected by this mechanism stop applying; templates often contain fallback rules. Threat: Selector matching can be costly and cross document/style boundaries if incorrectly scoped. Limits: Match message tree only, cap selector AST/depth/work, no history or surrounding DOM access."
+  },
+  {
+    "slug": "css-pseudo-class-nth-of-type",
+    "feature": ":nth-of-type",
+    "importance": "4",
+    "risk_full": "4",
+    "risk_bounded": "2",
+    "impact": "0.01%",
+    "decision": "Later",
+    "notes": "Omission: Styles selected by this mechanism stop applying; templates often contain fallback rules. Threat: Selector matching can be costly and cross document/style boundaries if incorrectly scoped. Limits: Match message tree only, cap selector AST/depth/work, no history or surrounding DOM access."
+  },
+  {
+    "slug": "css-pseudo-class-only-child",
+    "feature": ":only-child",
+    "importance": "3",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "0.01%",
+    "decision": "Later",
+    "notes": "Omission: Styles selected by this mechanism stop applying; templates often contain fallback rules. Threat: Selector matching can be costly and cross document/style boundaries if incorrectly scoped. Limits: Match message tree only, cap selector AST/depth/work, no history or surrounding DOM access."
+  },
+  {
+    "slug": "css-pseudo-class-only-of-type",
+    "feature": ":only-of-type",
+    "importance": "3",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "0.005%",
+    "decision": "Later",
+    "notes": "Omission: Styles selected by this mechanism stop applying; templates often contain fallback rules. Threat: Selector matching can be costly and cross document/style boundaries if incorrectly scoped. Limits: Match message tree only, cap selector AST/depth/work, no history or surrounding DOM access."
+  },
+  {
+    "slug": "css-pseudo-class-target",
+    "feature": ":target",
+    "importance": "2",
+    "risk_full": "4",
+    "risk_bounded": "2",
+    "impact": "0.002%",
+    "decision": "Later",
+    "notes": "Omission: Omitting :target removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Event-dependent CSS can gate content, mislead clicks, or become a request side channel. Limits: Only benign hover/active/focus styling on links; no forms, checkbox-driven apps, request-on-state or sender focus grabs."
+  },
+  {
+    "slug": "css-pseudo-class-visited",
+    "feature": ":visited",
+    "importance": "1",
+    "risk_full": "8",
+    "risk_bounded": "4",
+    "impact": "0.01%",
+    "decision": "Reject",
+    "notes": "Omission: Omitting :visited removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: History matching reveals cross-message or browser browsing information. Limits: Never expose :visited state to author CSS. Render as ordinary link with client-owned styling."
+  },
+  {
+    "slug": "css-pseudo-element-after",
+    "feature": "::after",
+    "importance": "4",
+    "risk_full": "5",
+    "risk_bounded": "3",
+    "impact": "0.2%",
+    "decision": "Later",
+    "notes": "Omission: Omitting ::after removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Generated text can differ from copied/accessible text; content:url and attr() create additional channels. Limits: Literal bounded text only for before/after, no URL or attr/counter functions initially; keep render/copy/accessibility consistent."
+  },
+  {
+    "slug": "css-pseudo-element-before",
+    "feature": "::before",
+    "importance": "4",
+    "risk_full": "5",
+    "risk_bounded": "3",
+    "impact": "0.2%",
+    "decision": "Later",
+    "notes": "Omission: Omitting ::before removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Generated text can differ from copied/accessible text; content:url and attr() create additional channels. Limits: Literal bounded text only for before/after, no URL or attr/counter functions initially; keep render/copy/accessibility consistent."
+  },
+  {
+    "slug": "css-pseudo-element-first-letter",
+    "feature": "::first-letter",
+    "importance": "2",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "0.002%",
+    "decision": "Later",
+    "notes": "Omission: Loss changes text readability, emphasis, spacing or language-specific rendering. Threat: Text shaping, line breaking and huge lengths require resource bounds; sender styling can reduce readability. Limits: Use local fonts and bounded shaping/layout; keep readable fallback, selection and accessibility; never parse text as markup."
+  },
+  {
+    "slug": "css-pseudo-element-first-line",
+    "feature": "::first-line",
+    "importance": "2",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "0.002%",
+    "decision": "Later",
+    "notes": "Omission: Loss changes text readability, emphasis, spacing or language-specific rendering. Threat: Text shaping, line breaking and huge lengths require resource bounds; sender styling can reduce readability. Limits: Use local fonts and bounded shaping/layout; keep readable fallback, selection and accessibility; never parse text as markup."
+  },
+  {
+    "slug": "css-pseudo-element-marker",
+    "feature": "::marker",
+    "importance": "3",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "0.005%",
+    "decision": "Later",
+    "notes": "Omission: Omitting ::marker removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Generated text can differ from copied/accessible text; content:url and attr() create additional channels. Limits: Literal bounded text only for before/after, no URL or attr/counter functions initially; keep render/copy/accessibility consistent."
+  },
+  {
+    "slug": "css-pseudo-element-placeholder",
+    "feature": "::placeholder",
+    "importance": "1",
+    "risk_full": "4",
+    "risk_bounded": "2",
+    "impact": "0.001%",
+    "decision": "Reject",
+    "notes": "Omission: Omitting ::placeholder removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Event-dependent CSS can gate content, mislead clicks, or become a request side channel. Limits: Only benign hover/active/focus styling on links; no forms, checkbox-driven apps, request-on-state or sender focus grabs."
+  },
+  {
+    "slug": "css-radial-gradient",
+    "feature": "radial-gradient()",
+    "importance": "2",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "0.02%",
+    "decision": "Later",
+    "notes": "Omission: Omitting radial-gradient() removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Static interpolation/stop lists add paint cost without requiring network. Limits: Bound stop count and painted area; no animation. Initially linear gradients only."
+  },
+  {
+    "slug": "css-resize",
+    "feature": "resize",
+    "importance": "1",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "0.001%",
+    "decision": "Reject",
+    "notes": "Omission: Omitting resize removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Event-dependent CSS can gate content, mislead clicks, or become a request side channel. Limits: Only benign hover/active/focus styling on links; no forms, checkbox-driven apps, request-on-state or sender focus grabs."
+  },
+  {
+    "slug": "css-rgb",
+    "feature": "rgb()",
+    "importance": "8",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "12%",
+    "decision": "Support",
+    "notes": "Omission: Omitting rgb() removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Color parsing/interpolation and transparency have contrast and numeric edge cases. Limits: Finite clamped components; coherent theme conversion and readable fallback. No external profiles or host color probing."
+  },
+  {
+    "slug": "css-rgba",
+    "feature": "rgba()",
+    "importance": "7",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "5%",
+    "decision": "Support",
+    "notes": "Omission: Omitting rgba() removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Color parsing/interpolation and transparency have contrast and numeric edge cases. Limits: Finite clamped components; coherent theme conversion and readable fallback. No external profiles or host color probing."
+  },
+  {
+    "slug": "css-scroll-snap",
+    "feature": "scroll-snap",
+    "importance": "1",
+    "risk_full": "4",
+    "risk_bounded": "3",
+    "impact": "0.001%",
+    "decision": "Reject",
+    "notes": "Omission: Omitting scroll-snap removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Event-dependent CSS can gate content, mislead clicks, or become a request side channel. Limits: Only benign hover/active/focus styling on links; no forms, checkbox-driven apps, request-on-state or sender focus grabs."
+  },
+  {
+    "slug": "css-selector-adjacent-sibling",
+    "feature": "Adjacent sibling combinator",
+    "importance": "4",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "0.05%",
+    "decision": "Support",
+    "notes": "Omission: Styles selected by this mechanism stop applying; templates often contain fallback rules. Threat: Selector matching can be costly and cross document/style boundaries if incorrectly scoped. Limits: Match message tree only, cap selector AST/depth/work, no history or surrounding DOM access."
+  },
+  {
+    "slug": "css-selector-attribute",
+    "feature": "Attribute selector",
+    "importance": "7",
+    "risk_full": "5",
+    "risk_bounded": "2",
+    "impact": "4%",
+    "decision": "Bounded",
+    "notes": "Omission: Omitting Attribute selector removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Attribute probes combined with URL sinks can extract secrets placed in the matched tree. Limits: Message-only nonsecret attributes, bounded matching, no CSS-triggered network. Never expose app/authentication attributes to selectors."
+  },
+  {
+    "slug": "css-selector-chaining",
+    "feature": "Chaining selectors",
+    "importance": "8",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "8%",
+    "decision": "Support",
+    "notes": "Omission: Styles selected by this mechanism stop applying; templates often contain fallback rules. Threat: Selector matching can be costly and cross document/style boundaries if incorrectly scoped. Limits: Match message tree only, cap selector AST/depth/work, no history or surrounding DOM access."
+  },
+  {
+    "slug": "css-selector-child",
+    "feature": "Child combinator",
+    "importance": "7",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "3%",
+    "decision": "Support",
+    "notes": "Omission: Styles selected by this mechanism stop applying; templates often contain fallback rules. Threat: Selector matching can be costly and cross document/style boundaries if incorrectly scoped. Limits: Match message tree only, cap selector AST/depth/work, no history or surrounding DOM access."
+  },
+  {
+    "slug": "css-selector-class",
+    "feature": "Class selector",
+    "importance": "10",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "45%",
+    "decision": "Support",
+    "notes": "Omission: Styles selected by this mechanism stop applying; templates often contain fallback rules. Threat: Selector matching can be costly and cross document/style boundaries if incorrectly scoped. Limits: Match message tree only, cap selector AST/depth/work, no history or surrounding DOM access."
+  },
+  {
+    "slug": "css-selector-descendant",
+    "feature": "Descendant combinator",
+    "importance": "9",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "20%",
+    "decision": "Support",
+    "notes": "Omission: Styles selected by this mechanism stop applying; templates often contain fallback rules. Threat: Selector matching can be costly and cross document/style boundaries if incorrectly scoped. Limits: Match message tree only, cap selector AST/depth/work, no history or surrounding DOM access."
+  },
+  {
+    "slug": "css-selector-general-sibling",
+    "feature": "General sibling combinator",
+    "importance": "4",
+    "risk_full": "4",
+    "risk_bounded": "2",
+    "impact": "0.03%",
+    "decision": "Support",
+    "notes": "Omission: Styles selected by this mechanism stop applying; templates often contain fallback rules. Threat: Selector matching can be costly and cross document/style boundaries if incorrectly scoped. Limits: Match message tree only, cap selector AST/depth/work, no history or surrounding DOM access."
+  },
+  {
+    "slug": "css-selector-grouping",
+    "feature": "Grouping selectors",
+    "importance": "9",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "40%",
+    "decision": "Support",
+    "notes": "Omission: Styles selected by this mechanism stop applying; templates often contain fallback rules. Threat: Selector matching can be costly and cross document/style boundaries if incorrectly scoped. Limits: Match message tree only, cap selector AST/depth/work, no history or surrounding DOM access."
+  },
+  {
+    "slug": "css-selector-id",
+    "feature": "ID selector",
+    "importance": "8",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "10%",
+    "decision": "Support",
+    "notes": "Omission: Styles selected by this mechanism stop applying; templates often contain fallback rules. Threat: Selector matching can be costly and cross document/style boundaries if incorrectly scoped. Limits: Match message tree only, cap selector AST/depth/work, no history or surrounding DOM access."
+  },
+  {
+    "slug": "css-selector-type",
+    "feature": "Type selector",
+    "importance": "10",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "40%",
+    "decision": "Support",
+    "notes": "Omission: Styles selected by this mechanism stop applying; templates often contain fallback rules. Threat: Selector matching can be costly and cross document/style boundaries if incorrectly scoped. Limits: Match message tree only, cap selector AST/depth/work, no history or surrounding DOM access."
+  },
+  {
+    "slug": "css-selector-universal",
+    "feature": "Universal selector *",
+    "importance": "8",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "8%",
+    "decision": "Support",
+    "notes": "Omission: Styles selected by this mechanism stop applying; templates often contain fallback rules. Threat: Selector matching can be costly and cross document/style boundaries if incorrectly scoped. Limits: Match message tree only, cap selector AST/depth/work, no history or surrounding DOM access."
+  },
+  {
+    "slug": "css-shape-margin",
+    "feature": "shape-margin",
+    "importance": "1",
+    "risk_full": "4",
+    "risk_bounded": "3",
+    "impact": "0.001%",
+    "decision": "Reject",
+    "notes": "Omission: Omitting shape-margin removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Complex compositing, external references, geometry or hidden content increase DoS and deception. Limits: Defer/reject effects. Any later implementation must clip to message surface and cap work; prohibit URL filters/masks."
+  },
+  {
+    "slug": "css-shape-outside",
+    "feature": "shape-outside",
+    "importance": "2",
+    "risk_full": "6",
+    "risk_bounded": "4",
+    "impact": "0.001%",
+    "decision": "Reject",
+    "notes": "Omission: Omitting shape-outside removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Complex compositing, external references, geometry or hidden content increase DoS and deception. Limits: Defer/reject effects. Any later implementation must clip to message surface and cap work; prohibit URL filters/masks."
+  },
+  {
+    "slug": "css-sytem-ui",
+    "feature": "system-ui, ui-serif, ui-sans-serif, ui-rounded, ui-monospace",
+    "importance": "5",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "0.5%",
+    "decision": "Support",
+    "notes": "Omission: Loss changes text readability, emphasis, spacing or language-specific rendering. Threat: Text shaping, line breaking and huge lengths require resource bounds; sender styling can reduce readability. Limits: Use local fonts and bounded shaping/layout; keep readable fallback, selection and accessibility; never parse text as markup."
+  },
+  {
+    "slug": "css-tab-size",
+    "feature": "tab-size",
+    "importance": "5",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "0.01%",
+    "decision": "Later",
+    "notes": "Omission: Loss changes text readability, emphasis, spacing or language-specific rendering. Threat: Text shaping, line breaking and huge lengths require resource bounds; sender styling can reduce readability. Limits: Use local fonts and bounded shaping/layout; keep readable fallback, selection and accessibility; never parse text as markup."
+  },
+  {
+    "slug": "css-table-layout",
+    "feature": "table-layout",
+    "importance": "8",
+    "risk_full": "4",
+    "risk_bounded": "2",
+    "impact": "12%",
+    "decision": "Support",
+    "notes": "Omission: Nested tabular newsletters/receipts lose structure and alignment. Threat: Nested table/span/intrinsic-size algorithms can be expensive and visually reorder content. Limits: Bound nodes, nesting, spans, grid dimensions and layout steps; preserve table semantics and reading order."
+  },
+  {
+    "slug": "css-text-align-last",
+    "feature": "text-align-last",
+    "importance": "3",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "0.005%",
+    "decision": "Later",
+    "notes": "Omission: Loss changes text readability, emphasis, spacing or language-specific rendering. Threat: Text shaping, line breaking and huge lengths require resource bounds; sender styling can reduce readability. Limits: Use local fonts and bounded shaping/layout; keep readable fallback, selection and accessibility; never parse text as markup."
+  },
+  {
+    "slug": "css-text-align",
+    "feature": "text-align",
+    "importance": "9",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "45%",
+    "decision": "Support",
+    "notes": "Omission: Loss changes text readability, emphasis, spacing or language-specific rendering. Threat: Text shaping, line breaking and huge lengths require resource bounds; sender styling can reduce readability. Limits: Use local fonts and bounded shaping/layout; keep readable fallback, selection and accessibility; never parse text as markup."
+  },
+  {
+    "slug": "css-text-decoration-color",
+    "feature": "text-decoration-color",
+    "importance": "4",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "0.3%",
+    "decision": "Support",
+    "notes": "Omission: Loss changes text readability, emphasis, spacing or language-specific rendering. Threat: Text shaping, line breaking and huge lengths require resource bounds; sender styling can reduce readability. Limits: Use local fonts and bounded shaping/layout; keep readable fallback, selection and accessibility; never parse text as markup."
+  },
+  {
+    "slug": "css-text-decoration-line",
+    "feature": "text-decoration-line",
+    "importance": "6",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "0.5%",
+    "decision": "Support",
+    "notes": "Omission: Loss changes text readability, emphasis, spacing or language-specific rendering. Threat: Text shaping, line breaking and huge lengths require resource bounds; sender styling can reduce readability. Limits: Use local fonts and bounded shaping/layout; keep readable fallback, selection and accessibility; never parse text as markup."
+  },
+  {
+    "slug": "css-text-decoration-skip-ink",
+    "feature": "text-decoration-skip-ink",
+    "importance": "2",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "0.005%",
+    "decision": "Later",
+    "notes": "Omission: Loss changes text readability, emphasis, spacing or language-specific rendering. Threat: Text shaping, line breaking and huge lengths require resource bounds; sender styling can reduce readability. Limits: Use local fonts and bounded shaping/layout; keep readable fallback, selection and accessibility; never parse text as markup."
+  },
+  {
+    "slug": "css-text-decoration-style",
+    "feature": "text-decoration-style",
+    "importance": "3",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "0.1%",
+    "decision": "Support",
+    "notes": "Omission: Loss changes text readability, emphasis, spacing or language-specific rendering. Threat: Text shaping, line breaking and huge lengths require resource bounds; sender styling can reduce readability. Limits: Use local fonts and bounded shaping/layout; keep readable fallback, selection and accessibility; never parse text as markup."
+  },
+  {
+    "slug": "css-text-decoration-thickness",
+    "feature": "text-decoration-thickness",
+    "importance": "3",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "0.05%",
+    "decision": "Later",
+    "notes": "Omission: Loss changes text readability, emphasis, spacing or language-specific rendering. Threat: Text shaping, line breaking and huge lengths require resource bounds; sender styling can reduce readability. Limits: Use local fonts and bounded shaping/layout; keep readable fallback, selection and accessibility; never parse text as markup."
+  },
+  {
+    "slug": "css-text-decoration",
+    "feature": "text-decoration",
+    "importance": "9",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "35%",
+    "decision": "Bounded",
+    "notes": "Omission: Loss changes text readability, emphasis, spacing or language-specific rendering. Threat: Text shaping, line breaking and huge lengths require resource bounds; sender styling can reduce readability. Limits: Use local fonts and bounded shaping/layout; keep readable fallback, selection and accessibility; never parse text as markup."
+  },
+  {
+    "slug": "css-text-emphasis-position",
+    "feature": "text-emphasis-position",
+    "importance": "3",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "0.001%",
+    "decision": "Later",
+    "notes": "Omission: Loss changes text readability, emphasis, spacing or language-specific rendering. Threat: Text shaping, line breaking and huge lengths require resource bounds; sender styling can reduce readability. Limits: Use local fonts and bounded shaping/layout; keep readable fallback, selection and accessibility; never parse text as markup."
+  },
+  {
+    "slug": "css-text-emphasis",
+    "feature": "text-emphasis",
+    "importance": "4",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "0.003%",
+    "decision": "Later",
+    "notes": "Omission: Loss changes text readability, emphasis, spacing or language-specific rendering. Threat: Text shaping, line breaking and huge lengths require resource bounds; sender styling can reduce readability. Limits: Use local fonts and bounded shaping/layout; keep readable fallback, selection and accessibility; never parse text as markup."
+  },
+  {
+    "slug": "css-text-indent",
+    "feature": "text-indent",
+    "importance": "5",
+    "risk_full": "4",
+    "risk_bounded": "2",
+    "impact": "0.2%",
+    "decision": "Bounded",
+    "notes": "Omission: Omitting text-indent removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Extreme or negative spacing can overlap content or force expensive/huge layout. Limits: Bound finite geometry. Negative margins remain within clipped message surface and cannot cover trusted UI."
+  },
+  {
+    "slug": "css-text-justify",
+    "feature": "text-justify",
+    "importance": "3",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "0.005%",
+    "decision": "Later",
+    "notes": "Omission: Loss changes text readability, emphasis, spacing or language-specific rendering. Threat: Text shaping, line breaking and huge lengths require resource bounds; sender styling can reduce readability. Limits: Use local fonts and bounded shaping/layout; keep readable fallback, selection and accessibility; never parse text as markup."
+  },
+  {
+    "slug": "css-text-orientation",
+    "feature": "text-orientation",
+    "importance": "5",
+    "risk_full": "4",
+    "risk_bounded": "2",
+    "impact": "0.005%",
+    "decision": "Later",
+    "notes": "Omission: Text order or alignment is wrong for RTL/CJK/mixed-direction messages and identifiers. Threat: Visual/logical order differences enable spoofing and can mismatch selection and hit tests. Limits: Support actual message language direction. Keep envelope/security UI isolated; show canonical link targets; preserve logical copy/accessibility order."
+  },
+  {
+    "slug": "css-text-overflow",
+    "feature": "text-overflow",
+    "importance": "5",
+    "risk_full": "5",
+    "risk_bounded": "2",
+    "impact": "0.05%",
+    "decision": "Bounded",
+    "notes": "Omission: Omitting text-overflow removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Clipping can conceal important content; scroll containers and hit testing add state. Limits: Support visible/hidden clipping; expose clipped content in reader text view. No nested scroll widgets initially."
+  },
+  {
+    "slug": "css-text-shadow",
+    "feature": "text-shadow",
+    "importance": "3",
+    "risk_full": "5",
+    "risk_bounded": "2",
+    "impact": "0.2%",
+    "decision": "Later",
+    "notes": "Omission: Omitting text-shadow removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Large blur radii/layers expand paint cost and obscured content. Limits: Cap layer count, radius and painted area; no arbitrary compositor graph."
+  },
+  {
+    "slug": "css-text-transform",
+    "feature": "text-transform",
+    "importance": "5",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "6%",
+    "decision": "Support",
+    "notes": "Omission: Loss changes text readability, emphasis, spacing or language-specific rendering. Threat: Text shaping, line breaking and huge lengths require resource bounds; sender styling can reduce readability. Limits: Use local fonts and bounded shaping/layout; keep readable fallback, selection and accessibility; never parse text as markup."
+  },
+  {
+    "slug": "css-text-underline-offset",
+    "feature": "text-underline-offset",
+    "importance": "3",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "0.05%",
+    "decision": "Later",
+    "notes": "Omission: Loss changes text readability, emphasis, spacing or language-specific rendering. Threat: Text shaping, line breaking and huge lengths require resource bounds; sender styling can reduce readability. Limits: Use local fonts and bounded shaping/layout; keep readable fallback, selection and accessibility; never parse text as markup."
+  },
+  {
+    "slug": "css-text-underline-position",
+    "feature": "text-underline-position",
+    "importance": "3",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "0.01%",
+    "decision": "Support",
+    "notes": "Omission: Loss changes text readability, emphasis, spacing or language-specific rendering. Threat: Text shaping, line breaking and huge lengths require resource bounds; sender styling can reduce readability. Limits: Use local fonts and bounded shaping/layout; keep readable fallback, selection and accessibility; never parse text as markup."
+  },
+  {
+    "slug": "css-text-wrap",
+    "feature": "text-wrap",
+    "importance": "5",
+    "risk_full": "4",
+    "risk_bounded": "2",
+    "impact": "0.05%",
+    "decision": "Later",
+    "notes": "Omission: Omitting text-wrap removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Balanced/pretty wrapping may require costly repeated line-breaking. Limits: Support normal/wrap/nowrap initially; defer balance/pretty until a measured work bound exists."
+  },
+  {
+    "slug": "css-transform",
+    "feature": "transform",
+    "importance": "3",
+    "risk_full": "6",
+    "risk_bounded": "3",
+    "impact": "0.08%",
+    "decision": "Reject",
+    "notes": "Omission: Omitting transform removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Complex compositing, external references, geometry or hidden content increase DoS and deception. Limits: Defer/reject effects. Any later implementation must clip to message surface and cap work; prohibit URL filters/masks."
+  },
+  {
+    "slug": "css-transition",
+    "feature": "transition",
+    "importance": "2",
+    "risk_full": "5",
+    "risk_bounded": "3",
+    "impact": "0.03%",
+    "decision": "Reject",
+    "notes": "Omission: Omitting transition removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Repeated repaint/timing, attention manipulation and high ongoing CPU. Limits: Use a stable static representation, never hide all content waiting for animation."
+  },
+  {
+    "slug": "css-unit-calc",
+    "feature": "CSS calc() function",
+    "importance": "6",
+    "risk_full": "5",
+    "risk_bounded": "2",
+    "impact": "1%",
+    "decision": "Bounded",
+    "notes": "Omission: Omitting CSS calc() function removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Nested calculations, unit cycles and non-finite/extreme values can exhaust work or violate geometry invariants. Limits: Typed finite arithmetic; bound AST and steps; checked/rational geometry. Initially calc() with length/percentage add/subtract and literal scaling."
+  },
+  {
+    "slug": "css-unit-ch",
+    "feature": "ch unit",
+    "importance": "5",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "0.03%",
+    "decision": "Support",
+    "notes": "Omission: Lengths using the unit fail, changing sizing/spacing. Other declarations may provide fallbacks. Threat: Unit conversion and reference cycles need correct bounded arithmetic. Limits: Convert to bounded finite internal units with defined DPI/font references; reject invalid/non-finite results."
+  },
+  {
+    "slug": "css-unit-cm",
+    "feature": "cm unit",
+    "importance": "4",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "0.02%",
+    "decision": "Support",
+    "notes": "Omission: Lengths using the unit fail, changing sizing/spacing. Other declarations may provide fallbacks. Threat: Unit conversion and reference cycles need correct bounded arithmetic. Limits: Convert to bounded finite internal units with defined DPI/font references; reject invalid/non-finite results."
+  },
+  {
+    "slug": "css-unit-em",
+    "feature": "em unit",
+    "importance": "8",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "8%",
+    "decision": "Support",
+    "notes": "Omission: Lengths using the unit fail, changing sizing/spacing. Other declarations may provide fallbacks. Threat: Unit conversion and reference cycles need correct bounded arithmetic. Limits: Convert to bounded finite internal units with defined DPI/font references; reject invalid/non-finite results."
+  },
+  {
+    "slug": "css-unit-ex",
+    "feature": "ex unit",
+    "importance": "4",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "0.005%",
+    "decision": "Support",
+    "notes": "Omission: Lengths using the unit fail, changing sizing/spacing. Other declarations may provide fallbacks. Threat: Unit conversion and reference cycles need correct bounded arithmetic. Limits: Convert to bounded finite internal units with defined DPI/font references; reject invalid/non-finite results."
+  },
+  {
+    "slug": "css-unit-in",
+    "feature": "in unit",
+    "importance": "5",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "0.3%",
+    "decision": "Support",
+    "notes": "Omission: Lengths using the unit fail, changing sizing/spacing. Other declarations may provide fallbacks. Threat: Unit conversion and reference cycles need correct bounded arithmetic. Limits: Convert to bounded finite internal units with defined DPI/font references; reject invalid/non-finite results."
+  },
+  {
+    "slug": "css-unit-initial",
+    "feature": "initial unit",
+    "importance": "6",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "0.1%",
+    "decision": "Support",
+    "notes": "Omission: Incorrect rule application affects many properties at once. Threat: Specificity, inheritance and malformed-rule recovery affect hiding and scope; parser disagreement can bypass policy. Limits: Scoped per-message cascade, one parser, bounded rules/selectors/declarations, correct !important and individual-declaration recovery."
+  },
+  {
+    "slug": "css-unit-mm",
+    "feature": "mm unit",
+    "importance": "4",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "0.005%",
+    "decision": "Support",
+    "notes": "Omission: Lengths using the unit fail, changing sizing/spacing. Other declarations may provide fallbacks. Threat: Unit conversion and reference cycles need correct bounded arithmetic. Limits: Convert to bounded finite internal units with defined DPI/font references; reject invalid/non-finite results."
+  },
+  {
+    "slug": "css-unit-pc",
+    "feature": "pc unit",
+    "importance": "4",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "0.002%",
+    "decision": "Support",
+    "notes": "Omission: Lengths using the unit fail, changing sizing/spacing. Other declarations may provide fallbacks. Threat: Unit conversion and reference cycles need correct bounded arithmetic. Limits: Convert to bounded finite internal units with defined DPI/font references; reject invalid/non-finite results."
+  },
+  {
+    "slug": "css-unit-percent",
+    "feature": "% unit",
+    "importance": "10",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "60%",
+    "decision": "Support",
+    "notes": "Omission: Lengths using the unit fail, changing sizing/spacing. Other declarations may provide fallbacks. Threat: Unit conversion and reference cycles need correct bounded arithmetic. Limits: Convert to bounded finite internal units with defined DPI/font references; reject invalid/non-finite results."
+  },
+  {
+    "slug": "css-unit-pt",
+    "feature": "pt unit",
+    "importance": "9",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "15%",
+    "decision": "Support",
+    "notes": "Omission: Lengths using the unit fail, changing sizing/spacing. Other declarations may provide fallbacks. Threat: Unit conversion and reference cycles need correct bounded arithmetic. Limits: Convert to bounded finite internal units with defined DPI/font references; reject invalid/non-finite results."
+  },
+  {
+    "slug": "css-unit-px",
+    "feature": "px unit",
+    "importance": "10",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "70%",
+    "decision": "Support",
+    "notes": "Omission: Lengths using the unit fail, changing sizing/spacing. Other declarations may provide fallbacks. Threat: Unit conversion and reference cycles need correct bounded arithmetic. Limits: Convert to bounded finite internal units with defined DPI/font references; reject invalid/non-finite results."
+  },
+  {
+    "slug": "css-unit-rem",
+    "feature": "rem unit",
+    "importance": "7",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "1%",
+    "decision": "Support",
+    "notes": "Omission: Lengths using the unit fail, changing sizing/spacing. Other declarations may provide fallbacks. Threat: Unit conversion and reference cycles need correct bounded arithmetic. Limits: Convert to bounded finite internal units with defined DPI/font references; reject invalid/non-finite results."
+  },
+  {
+    "slug": "css-unit-vh",
+    "feature": "vh unit",
+    "importance": "3",
+    "risk_full": "4",
+    "risk_bounded": "2",
+    "impact": "0.02%",
+    "decision": "Bounded",
+    "notes": "Omission: Omitting vh unit removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Viewport can reveal device size or cause large layout and occlusion. Limits: Resolve only against message viewport, not screen/application size; cap resulting geometry."
+  },
+  {
+    "slug": "css-unit-vmax",
+    "feature": "vmax unit",
+    "importance": "2",
+    "risk_full": "4",
+    "risk_bounded": "2",
+    "impact": "0.001%",
+    "decision": "Later",
+    "notes": "Omission: Omitting vmax unit removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Viewport can reveal device size or cause large layout and occlusion. Limits: Resolve only against message viewport, not screen/application size; cap resulting geometry."
+  },
+  {
+    "slug": "css-unit-vmin",
+    "feature": "vmin unit",
+    "importance": "2",
+    "risk_full": "4",
+    "risk_bounded": "2",
+    "impact": "0.001%",
+    "decision": "Later",
+    "notes": "Omission: Omitting vmin unit removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Viewport can reveal device size or cause large layout and occlusion. Limits: Resolve only against message viewport, not screen/application size; cap resulting geometry."
+  },
+  {
+    "slug": "css-unit-vw",
+    "feature": "vw unit",
+    "importance": "5",
+    "risk_full": "4",
+    "risk_bounded": "2",
+    "impact": "1%",
+    "decision": "Bounded",
+    "notes": "Omission: Omitting vw unit removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Viewport can reveal device size or cause large layout and occlusion. Limits: Resolve only against message viewport, not screen/application size; cap resulting geometry."
+  },
+  {
+    "slug": "css-user-select",
+    "feature": "user-select",
+    "importance": "2",
+    "risk_full": "5",
+    "risk_bounded": "2",
+    "impact": "0.01%",
+    "decision": "Reject",
+    "notes": "Omission: Omitting user-select removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Sender can prevent copying/verifying text or make visible and selected content differ. Limits: Ignore author restrictions; retain user selection and canonical destination access."
+  },
+  {
+    "slug": "css-variables",
+    "feature": "CSS Variables (Custom Properties)",
+    "importance": "5",
+    "risk_full": "6",
+    "risk_bounded": "3",
+    "impact": "0.1%",
+    "decision": "Later",
+    "notes": "Omission: Omitting CSS Variables (Custom Properties) removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Recursive expansion, fallback chains and inherited token streams add expansion DoS and policy ambiguity. Limits: Defer until cycle detection, expansion gas and post-substitution policy checks exist; no URL authority from variable substitution."
+  },
+  {
+    "slug": "css-vertical-align",
+    "feature": "vertical-align",
+    "importance": "8",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "15%",
+    "decision": "Support",
+    "notes": "Omission: Sizing/aspect constraints affect image and column fit. Threat: Huge/cyclic dimensions, intrinsic measurement and clipping cause DoS or obscured content. Limits: Finite bounded dimensions; cap intrinsic/reflow work and decoded image sizes. Never affect application chrome."
+  },
+  {
+    "slug": "css-visibility",
+    "feature": "visibility",
+    "importance": "8",
+    "risk_full": "5",
+    "risk_bounded": "2",
+    "impact": "5%",
+    "decision": "Bounded",
+    "notes": "Omission: Hidden preheaders or alternative versions may become visible/duplicated, or intended content disappears. Threat: Hidden, transparent and alternative content can disagree with preview, copying or accessibility. Limits: Implement hidden semantics consistently in render/copy/accessibility; preserve a user-readable text view; no cross-message state."
+  },
+  {
+    "slug": "css-white-space-collapse",
+    "feature": "white-space-collapse",
+    "importance": "4",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "0.003%",
+    "decision": "Later",
+    "notes": "Omission: Loss changes text readability, emphasis, spacing or language-specific rendering. Threat: Text shaping, line breaking and huge lengths require resource bounds; sender styling can reduce readability. Limits: Use local fonts and bounded shaping/layout; keep readable fallback, selection and accessibility; never parse text as markup."
+  },
+  {
+    "slug": "css-white-space",
+    "feature": "white-space",
+    "importance": "9",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "8%",
+    "decision": "Support",
+    "notes": "Omission: Loss changes text readability, emphasis, spacing or language-specific rendering. Threat: Text shaping, line breaking and huge lengths require resource bounds; sender styling can reduce readability. Limits: Use local fonts and bounded shaping/layout; keep readable fallback, selection and accessibility; never parse text as markup."
+  },
+  {
+    "slug": "css-widows",
+    "feature": "widows",
+    "importance": "2",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "0.001%",
+    "decision": "Later",
+    "notes": "Omission: Omitting widows removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Pagination adds state and repeated layout; little relevance to reading messages. Limits: Defer print-only behavior; do not allow pagination rules to hide reader content."
+  },
+  {
+    "slug": "css-width",
+    "feature": "width property",
+    "importance": "10",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "60%",
+    "decision": "Support",
+    "notes": "Omission: Sizing/aspect constraints affect image and column fit. Threat: Huge/cyclic dimensions, intrinsic measurement and clipping cause DoS or obscured content. Limits: Finite bounded dimensions; cap intrinsic/reflow work and decoded image sizes. Never affect application chrome."
+  },
+  {
+    "slug": "css-word-break",
+    "feature": "word-break",
+    "importance": "8",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "8%",
+    "decision": "Support",
+    "notes": "Omission: Loss changes text readability, emphasis, spacing or language-specific rendering. Threat: Text shaping, line breaking and huge lengths require resource bounds; sender styling can reduce readability. Limits: Use local fonts and bounded shaping/layout; keep readable fallback, selection and accessibility; never parse text as markup."
+  },
+  {
+    "slug": "css-word-spacing",
+    "feature": "word-spacing",
+    "importance": "4",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "0.2%",
+    "decision": "Support",
+    "notes": "Omission: Loss changes text readability, emphasis, spacing or language-specific rendering. Threat: Text shaping, line breaking and huge lengths require resource bounds; sender styling can reduce readability. Limits: Use local fonts and bounded shaping/layout; keep readable fallback, selection and accessibility; never parse text as markup."
+  },
+  {
+    "slug": "css-word-wrap",
+    "feature": "word-wrap",
+    "importance": "8",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "5%",
+    "decision": "Support",
+    "notes": "Omission: Loss changes text readability, emphasis, spacing or language-specific rendering. Threat: Text shaping, line breaking and huge lengths require resource bounds; sender styling can reduce readability. Limits: Use local fonts and bounded shaping/layout; keep readable fallback, selection and accessibility; never parse text as markup."
+  },
+  {
+    "slug": "css-writing-mode",
+    "feature": "writing-mode",
+    "importance": "6",
+    "risk_full": "5",
+    "risk_bounded": "3",
+    "impact": "0.01%",
+    "decision": "Later",
+    "notes": "Omission: Text order or alignment is wrong for RTL/CJK/mixed-direction messages and identifiers. Threat: Visual/logical order differences enable spoofing and can mismatch selection and hit tests. Limits: Support actual message language direction. Keep envelope/security UI isolated; show canonical link targets; preserve logical copy/accessibility order."
+  },
+  {
+    "slug": "css-z-index",
+    "feature": "z-index",
+    "importance": "3",
+    "risk_full": "6",
+    "risk_bounded": "3",
+    "impact": "0.03%",
+    "decision": "Reject",
+    "notes": "Omission: Omitting z-index removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Overlays, offscreen content and layout/hit-test disagreement can spoof the client or cover links. Limits: Only static positioning initially. Ignore offsets/z-index; all paint and hit tests clipped to message surface. Enable relative/absolute only after separate review."
+  },
+  {
+    "slug": "html-abbr",
+    "feature": "<abbr> element",
+    "importance": "4",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "0.005%",
+    "decision": "Support",
+    "notes": "Omission: Omitting <abbr> element removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Mostly static semantics; incorrect default display can destroy reading order. Limits: Preserve text/semantic grouping; unwrap unknown containers safely. No custom element behavior."
+  },
+  {
+    "slug": "html-acronym",
+    "feature": "<acronym> element",
+    "importance": "3",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "0.002%",
+    "decision": "Support",
+    "notes": "Omission: Omitting <acronym> element removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Mostly static semantics; incorrect default display can destroy reading order. Limits: Preserve text/semantic grouping; unwrap unknown containers safely. No custom element behavior."
+  },
+  {
+    "slug": "html-address",
+    "feature": "address",
+    "importance": "4",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "0.02%",
+    "decision": "Support",
+    "notes": "Omission: Omitting address removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Mostly static semantics; incorrect default display can destroy reading order. Limits: Preserve text/semantic grouping; unwrap unknown containers safely. No custom element behavior."
+  },
+  {
+    "slug": "html-align",
+    "feature": "align attribute",
+    "importance": "9",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "45%",
+    "decision": "Support",
+    "notes": "Omission: Sizing/aspect constraints affect image and column fit. Threat: Huge/cyclic dimensions, intrinsic measurement and clipping cause DoS or obscured content. Limits: Finite bounded dimensions; cap intrinsic/reflow work and decoded image sizes. Never affect application chrome."
+  },
+  {
+    "slug": "html-anchor-links",
+    "feature": "Local anchors",
+    "importance": "6",
+    "risk_full": "4",
+    "risk_bounded": "2",
+    "impact": "0.2%",
+    "decision": "Bounded",
+    "notes": "Omission: Omitting Local anchors removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Navigation/fragment handling can leave the message or select an unintended document. Limits: Local IDs resolve within message only; trusted action broker for external links; canonical destination display."
+  },
+  {
+    "slug": "html-aria-describedby",
+    "feature": "aria-describedby attribute",
+    "importance": "9",
+    "risk_full": "4",
+    "risk_bounded": "2",
+    "impact": "0.01%",
+    "decision": "Bounded",
+    "notes": "Omission: Accessible name, relationships, reading order or duplicate-content suppression fails for assistive technology. High importance for affected users is not discounted just because the whole-population estimate is small. Threat: Author labels/roles can misrepresent links or hide content to assistive technology. Limits: Support scoped relationships and safe role subset; actual link target and trusted sender/security information remain client-owned."
+  },
+  {
+    "slug": "html-aria-hidden",
+    "feature": "aria-hidden attribute",
+    "importance": "9",
+    "risk_full": "5",
+    "risk_bounded": "2",
+    "impact": "0.3%",
+    "decision": "Bounded",
+    "notes": "Omission: Accessible name, relationships, reading order or duplicate-content suppression fails for assistive technology. High importance for affected users is not discounted just because the whole-population estimate is small. Threat: Author labels/roles can misrepresent links or hide content to assistive technology. Limits: Support scoped relationships and safe role subset; actual link target and trusted sender/security information remain client-owned."
+  },
+  {
+    "slug": "html-aria-label",
+    "feature": "aria-label attribute",
+    "importance": "9",
+    "risk_full": "5",
+    "risk_bounded": "2",
+    "impact": "0.3%",
+    "decision": "Bounded",
+    "notes": "Omission: Accessible name, relationships, reading order or duplicate-content suppression fails for assistive technology. High importance for affected users is not discounted just because the whole-population estimate is small. Threat: Author labels/roles can misrepresent links or hide content to assistive technology. Limits: Support scoped relationships and safe role subset; actual link target and trusted sender/security information remain client-owned."
+  },
+  {
+    "slug": "html-aria-labelledby",
+    "feature": "aria-labelledby attribute",
+    "importance": "9",
+    "risk_full": "4",
+    "risk_bounded": "2",
+    "impact": "0.01%",
+    "decision": "Bounded",
+    "notes": "Omission: Accessible name, relationships, reading order or duplicate-content suppression fails for assistive technology. High importance for affected users is not discounted just because the whole-population estimate is small. Threat: Author labels/roles can misrepresent links or hide content to assistive technology. Limits: Support scoped relationships and safe role subset; actual link target and trusted sender/security information remain client-owned."
+  },
+  {
+    "slug": "html-aria-live",
+    "feature": "aria-live attribute",
+    "importance": "2",
+    "risk_full": "6",
+    "risk_bounded": "3",
+    "impact": "0.001%",
+    "decision": "Reject",
+    "notes": "Omission: Omitting aria-live attribute removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Live announcements permit focus/attention abuse and unnecessary dynamic state. Limits: Reject author live regions; static accessible document instead."
+  },
+  {
+    "slug": "html-audio",
+    "feature": "<audio> element",
+    "importance": "2",
+    "risk_full": "8",
+    "risk_bounded": "5",
+    "impact": "0.002%",
+    "decision": "Reject",
+    "notes": "Omission: Omitting <audio> element removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Live media or embedded applications add networking, playback, event and isolation state. Limits: Do not execute or embed. Preserve poster, fallback text and ordinary links. No autoplay or active nested documents."
+  },
+  {
+    "slug": "html-background",
+    "feature": "background attribute",
+    "importance": "6",
+    "risk_full": "7",
+    "risk_bounded": "3",
+    "impact": "3%",
+    "decision": "Bounded",
+    "notes": "Omission: Background or decorative images disappear; text/solid-color fallback often preserves the action. Threat: URL-valued CSS/attributes are automatic request sinks, including tracking and local-network access. Limits: Resolve only to pre-authorized image capabilities; no arbitrary fetch from layout. CID and approved raster data first; user-approved HTTPS images through broker."
+  },
+  {
+    "slug": "html-base",
+    "feature": "<base>",
+    "importance": "3",
+    "risk_full": "7",
+    "risk_bounded": "4",
+    "impact": "0.05%",
+    "decision": "Reject",
+    "notes": "Omission: Omitting <base> removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Base URI silently rewrites link/image destinations and complicates policy interpretation. Limits: Ignore base initially; resolve each URI against explicit safe MIME content-location only when independently validated."
+  },
+  {
+    "slug": "html-bdi",
+    "feature": "<bdi> element",
+    "importance": "8",
+    "risk_full": "4",
+    "risk_bounded": "2",
+    "impact": "0.01%",
+    "decision": "Bounded",
+    "notes": "Omission: Text order or alignment is wrong for RTL/CJK/mixed-direction messages and identifiers. Threat: Visual/logical order differences enable spoofing and can mismatch selection and hit tests. Limits: Support actual message language direction. Keep envelope/security UI isolated; show canonical link targets; preserve logical copy/accessibility order."
+  },
+  {
+    "slug": "html-blockquote",
+    "feature": "<blockquote> element",
+    "importance": "9",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "3%",
+    "decision": "Support",
+    "notes": "Omission: Omitting <blockquote> element removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Quoted text may be confused with authenticated content or styled across message boundaries. Limits: Keep quote markers/relationships; sender CSS cannot affect other MIME parts or future replies."
+  },
+  {
+    "slug": "html-body",
+    "feature": "<body> element",
+    "importance": "8",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "15%",
+    "decision": "Support",
+    "notes": "Omission: Default grouping, line breaks and semantics preserve the message structure. Threat: Basic tree/layout semantics; malformed nesting can change interpretation. Limits: Use bounded HTML parsing and a typed renderer tree, no event/script attributes or document side effects."
+  },
+  {
+    "slug": "html-button-reset",
+    "feature": "<button type=\"reset\"> element",
+    "importance": "1",
+    "risk_full": "6",
+    "risk_bounded": "3",
+    "impact": "0.001%",
+    "decision": "Reject",
+    "notes": "Omission: Embedded submission/interaction fails, but standard web-link alternatives should remain usable. Threat: Credential capture, automatic submission, focus, validation and destination state. Limits: No live form controls/submission. Preserve explanatory text and ordinary web links; show disabled labeled controls only if useful."
+  },
+  {
+    "slug": "html-button-submit",
+    "feature": "<button type=\"submit\"> element",
+    "importance": "2",
+    "risk_full": "8",
+    "risk_bounded": "5",
+    "impact": "0.003%",
+    "decision": "Reject",
+    "notes": "Omission: Embedded submission/interaction fails, but standard web-link alternatives should remain usable. Threat: Credential capture, automatic submission, focus, validation and destination state. Limits: No live form controls/submission. Preserve explanatory text and ordinary web links; show disabled labeled controls only if useful."
+  },
+  {
+    "slug": "html-cellpadding",
+    "feature": "cellpadding attribute",
+    "importance": "9",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "35%",
+    "decision": "Support",
+    "notes": "Omission: Nested tabular newsletters/receipts lose structure and alignment. Threat: Nested table/span/intrinsic-size algorithms can be expensive and visually reorder content. Limits: Bound nodes, nesting, spans, grid dimensions and layout steps; preserve table semantics and reading order."
+  },
+  {
+    "slug": "html-cellspacing",
+    "feature": "cellspacing attribute",
+    "importance": "9",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "25%",
+    "decision": "Support",
+    "notes": "Omission: Nested tabular newsletters/receipts lose structure and alignment. Threat: Nested table/span/intrinsic-size algorithms can be expensive and visually reorder content. Limits: Bound nodes, nesting, spans, grid dimensions and layout steps; preserve table semantics and reading order."
+  },
+  {
+    "slug": "html-code",
+    "feature": "<code> element",
+    "importance": "8",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "0.5%",
+    "decision": "Support",
+    "notes": "Omission: Loss changes text readability, emphasis, spacing or language-specific rendering. Threat: Text shaping, line breaking and huge lengths require resource bounds; sender styling can reduce readability. Limits: Use local fonts and bounded shaping/layout; keep readable fallback, selection and accessibility; never parse text as markup."
+  },
+  {
+    "slug": "html-command-attribute",
+    "feature": "command and commandfor attributes",
+    "importance": "1",
+    "risk_full": "7",
+    "risk_bounded": "4",
+    "impact": "0.001%",
+    "decision": "Reject",
+    "notes": "Omission: Omitting command and commandfor attributes removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Live media or embedded applications add networking, playback, event and isolation state. Limits: Do not execute or embed. Preserve poster, fallback text and ordinary links. No autoplay or active nested documents."
+  },
+  {
+    "slug": "html-comments",
+    "feature": "HTML comments",
+    "importance": "9",
+    "risk_full": "3",
+    "risk_bounded": "1",
+    "impact": "20%",
+    "decision": "Bounded",
+    "notes": "Omission: Incorrect comment processing exposes hidden Word-only branches or suppresses normal fallback. Threat: MSO conditional syntax and malformed comments can select a different content branch. Limits: Ordinary HTML comment handling; render non-MSO/downlevel-revealed path, not Word/VML branch. Cap tokenizer work."
+  },
+  {
+    "slug": "html-del",
+    "feature": "<del> element",
+    "importance": "5",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "0.03%",
+    "decision": "Support",
+    "notes": "Omission: Loss changes text readability, emphasis, spacing or language-specific rendering. Threat: Text shaping, line breaking and huge lengths require resource bounds; sender styling can reduce readability. Limits: Use local fonts and bounded shaping/layout; keep readable fallback, selection and accessibility; never parse text as markup."
+  },
+  {
+    "slug": "html-dfn",
+    "feature": "<dfn> element",
+    "importance": "3",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "0.001%",
+    "decision": "Support",
+    "notes": "Omission: Omitting <dfn> element removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Mostly static semantics; incorrect default display can destroy reading order. Limits: Preserve text/semantic grouping; unwrap unknown containers safely. No custom element behavior."
+  },
+  {
+    "slug": "html-dialog",
+    "feature": "<dialog> element",
+    "importance": "1",
+    "risk_full": "8",
+    "risk_bounded": "5",
+    "impact": "0.001%",
+    "decision": "Reject",
+    "notes": "Omission: Omitting <dialog> element removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Live media or embedded applications add networking, playback, event and isolation state. Limits: Do not execute or embed. Preserve poster, fallback text and ordinary links. No autoplay or active nested documents."
+  },
+  {
+    "slug": "html-dir",
+    "feature": "dir attribute",
+    "importance": "9",
+    "risk_full": "5",
+    "risk_bounded": "2",
+    "impact": "1%",
+    "decision": "Bounded",
+    "notes": "Omission: Text order or alignment is wrong for RTL/CJK/mixed-direction messages and identifiers. Threat: Visual/logical order differences enable spoofing and can mismatch selection and hit tests. Limits: Support actual message language direction. Keep envelope/security UI isolated; show canonical link targets; preserve logical copy/accessibility order."
+  },
+  {
+    "slug": "html-div",
+    "feature": "<div> element",
+    "importance": "10",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "35%",
+    "decision": "Support",
+    "notes": "Omission: Default grouping, line breaks and semantics preserve the message structure. Threat: Basic tree/layout semantics; malformed nesting can change interpretation. Limits: Use bounded HTML parsing and a typed renderer tree, no event/script attributes or document side effects."
+  },
+  {
+    "slug": "html-doctype",
+    "feature": "HTML5 doctype",
+    "importance": "7",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "5%",
+    "decision": "Bounded",
+    "notes": "Omission: Omitting HTML5 doctype removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Quirks/standards switching multiplies layout semantics and parser differences. Limits: Use a fixed documented email layout model; do not implement all browser quirks modes. Keep doctype token parsing safe."
+  },
+  {
+    "slug": "html-form",
+    "feature": "<form> element",
+    "importance": "3",
+    "risk_full": "8",
+    "risk_bounded": "5",
+    "impact": "0.08%",
+    "decision": "Reject",
+    "notes": "Omission: Embedded submission/interaction fails, but standard web-link alternatives should remain usable. Threat: Credential capture, automatic submission, focus, validation and destination state. Limits: No live form controls/submission. Preserve explanatory text and ordinary web links; show disabled labeled controls only if useful."
+  },
+  {
+    "slug": "html-h1-h6",
+    "feature": "<h1> to <h6> elements",
+    "importance": "8",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "20%",
+    "decision": "Support",
+    "notes": "Omission: Default grouping, line breaks and semantics preserve the message structure. Threat: Basic tree/layout semantics; malformed nesting can change interpretation. Limits: Use bounded HTML parsing and a typed renderer tree, no event/script attributes or document side effects."
+  },
+  {
+    "slug": "html-height",
+    "feature": "height attribute",
+    "importance": "8",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "25%",
+    "decision": "Support",
+    "notes": "Omission: Sizing/aspect constraints affect image and column fit. Threat: Huge/cyclic dimensions, intrinsic measurement and clipping cause DoS or obscured content. Limits: Finite bounded dimensions; cap intrinsic/reflow work and decoded image sizes. Never affect application chrome."
+  },
+  {
+    "slug": "html-hidden",
+    "feature": "hidden attribute",
+    "importance": "8",
+    "risk_full": "5",
+    "risk_bounded": "2",
+    "impact": "0.2%",
+    "decision": "Bounded",
+    "notes": "Omission: Hidden preheaders or alternative versions may become visible/duplicated, or intended content disappears. Threat: Hidden, transparent and alternative content can disagree with preview, copying or accessibility. Limits: Implement hidden semantics consistently in render/copy/accessibility; preserve a user-readable text view; no cross-message state."
+  },
+  {
+    "slug": "html-hr",
+    "feature": "<hr> element",
+    "importance": "6",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "3%",
+    "decision": "Support",
+    "notes": "Omission: Omitting <hr> element removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Static paint can hide or misrepresent content, but does not need network or execution. Limits: Clip to message surface, bound paint complexity, and preserve user-controlled readable view."
+  },
+  {
+    "slug": "html-image-maps",
+    "feature": "Image maps",
+    "importance": "5",
+    "risk_full": "6",
+    "risk_bounded": "3",
+    "impact": "0.05%",
+    "decision": "Later",
+    "notes": "Omission: Omitting Image maps removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Coordinate transforms and overlapping regions can mismatch displayed and clicked destinations. Limits: Defer image maps. If added, bounded areas and transforms, canonical destination preview, normal brokered click."
+  },
+  {
+    "slug": "html-img",
+    "feature": "<img> element",
+    "importance": "10",
+    "risk_full": "7",
+    "risk_bounded": "3",
+    "impact": "60%",
+    "decision": "Bounded",
+    "notes": "Omission: Logos, screenshots, diagrams, QR codes or image-heavy content disappear; alt text may be insufficient. Threat: Remote requests track readers; decoding and image dimensions can exhaust resources. Limits: CID/raster data and explicitly approved remote raster images through resource broker; no auto fetch, bounded decode and isolated MIME identities."
+  },
+  {
+    "slug": "html-input-checkbox",
+    "feature": "<input type=\"checkbox\"> element",
+    "importance": "2",
+    "risk_full": "6",
+    "risk_bounded": "3",
+    "impact": "0.02%",
+    "decision": "Reject",
+    "notes": "Omission: Embedded submission/interaction fails, but standard web-link alternatives should remain usable. Threat: Credential capture, automatic submission, focus, validation and destination state. Limits: No live form controls/submission. Preserve explanatory text and ordinary web links; show disabled labeled controls only if useful."
+  },
+  {
+    "slug": "html-input-hidden",
+    "feature": "<input type=\"hidden\"> element",
+    "importance": "1",
+    "risk_full": "6",
+    "risk_bounded": "3",
+    "impact": "0.001%",
+    "decision": "Reject",
+    "notes": "Omission: Embedded submission/interaction fails, but standard web-link alternatives should remain usable. Threat: Credential capture, automatic submission, focus, validation and destination state. Limits: No live form controls/submission. Preserve explanatory text and ordinary web links; show disabled labeled controls only if useful."
+  },
+  {
+    "slug": "html-input-radio",
+    "feature": "<input type=\"radio\"> element",
+    "importance": "2",
+    "risk_full": "6",
+    "risk_bounded": "3",
+    "impact": "0.01%",
+    "decision": "Reject",
+    "notes": "Omission: Embedded submission/interaction fails, but standard web-link alternatives should remain usable. Threat: Credential capture, automatic submission, focus, validation and destination state. Limits: No live form controls/submission. Preserve explanatory text and ordinary web links; show disabled labeled controls only if useful."
+  },
+  {
+    "slug": "html-input-reset",
+    "feature": "<input type=\"reset\"> element",
+    "importance": "1",
+    "risk_full": "6",
+    "risk_bounded": "3",
+    "impact": "0.001%",
+    "decision": "Reject",
+    "notes": "Omission: Embedded submission/interaction fails, but standard web-link alternatives should remain usable. Threat: Credential capture, automatic submission, focus, validation and destination state. Limits: No live form controls/submission. Preserve explanatory text and ordinary web links; show disabled labeled controls only if useful."
+  },
+  {
+    "slug": "html-input-submit",
+    "feature": "<input type=\"submit\"> element",
+    "importance": "2",
+    "risk_full": "8",
+    "risk_bounded": "5",
+    "impact": "0.003%",
+    "decision": "Reject",
+    "notes": "Omission: Embedded submission/interaction fails, but standard web-link alternatives should remain usable. Threat: Credential capture, automatic submission, focus, validation and destination state. Limits: No live form controls/submission. Preserve explanatory text and ordinary web links; show disabled labeled controls only if useful."
+  },
+  {
+    "slug": "html-input-text",
+    "feature": "<input type=\"text\"> element",
+    "importance": "3",
+    "risk_full": "8",
+    "risk_bounded": "5",
+    "impact": "0.03%",
+    "decision": "Reject",
+    "notes": "Omission: Embedded submission/interaction fails, but standard web-link alternatives should remain usable. Threat: Credential capture, automatic submission, focus, validation and destination state. Limits: No live form controls/submission. Preserve explanatory text and ordinary web links; show disabled labeled controls only if useful."
+  },
+  {
+    "slug": "html-lang",
+    "feature": "lang attribute",
+    "importance": "9",
+    "risk_full": "3",
+    "risk_bounded": "1",
+    "impact": "0.5%",
+    "decision": "Support",
+    "notes": "Omission: Omitting lang attribute removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. High importance for affected users is not discounted just because the whole-population estimate is small. Threat: Language selection can influence shaping, speech and link appearance. Limits: Preserve scoped BCP47 language metadata; no external language resource fetch or trusted-UI modification."
+  },
+  {
+    "slug": "html-link",
+    "feature": "<link> element",
+    "importance": "3",
+    "risk_full": "8",
+    "risk_bounded": "5",
+    "impact": "0.5%",
+    "decision": "Reject",
+    "notes": "Omission: Externally styled templates lose formatting; many uses are optional font imports. Threat: External sheets import further URLs/rules, add tracking and change code after parsing. Limits: Reject imports and external author stylesheets. Keep embedded/inline styles with scoped parsing."
+  },
+  {
+    "slug": "html-lists",
+    "feature": "<ul>, <ol> and <dl>",
+    "importance": "9",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "6%",
+    "decision": "Support",
+    "notes": "Omission: Default grouping, line breaks and semantics preserve the message structure. Threat: Basic tree/layout semantics; malformed nesting can change interpretation. Limits: Use bounded HTML parsing and a typed renderer tree, no event/script attributes or document side effects."
+  },
+  {
+    "slug": "html-loading-attribute",
+    "feature": "loading attribute",
+    "importance": "2",
+    "risk_full": "6",
+    "risk_bounded": "2",
+    "impact": "0.001%",
+    "decision": "Bounded",
+    "notes": "Omission: Omitting loading attribute removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Scroll/visibility-dependent requests reveal reading progress and bypass up-front permissions. Limits: Author eager/lazy never authorizes a fetch. Client chooses decode scheduling from already-approved resources."
+  },
+  {
+    "slug": "html-mailto-links",
+    "feature": "mailto: links",
+    "importance": "8",
+    "risk_full": "6",
+    "risk_bounded": "2",
+    "impact": "2%",
+    "decision": "Bounded",
+    "notes": "Omission: Omitting mailto: links removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: External action handlers and URL headers can cause header injection or unexpected sending. Limits: User gesture only; compose draft, never send. Validate/strip controls and disallow dangerous headers/attachments and arbitrary OS handlers."
+  },
+  {
+    "slug": "html-marquee",
+    "feature": "<marquee> element",
+    "importance": "1",
+    "risk_full": "5",
+    "risk_bounded": "2",
+    "impact": "0.001%",
+    "decision": "Reject",
+    "notes": "Omission: Omitting <marquee> element removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Repeated repaint/timing, attention manipulation and high ongoing CPU. Limits: Use a stable static representation, never hide all content waiting for animation."
+  },
+  {
+    "slug": "html-meta-color-scheme",
+    "feature": "color-scheme meta tag",
+    "importance": "7",
+    "risk_full": "4",
+    "risk_bounded": "2",
+    "impact": "0.5%",
+    "decision": "Later",
+    "notes": "Omission: Dark/light colors may lose contrast; explicit client-owned message theme is a useful fallback. Threat: Conditional styles can fingerprint settings and create invisible text under theme rewriting. Limits: Evaluate against one explicit message theme; couple foreground/background contrast. No OS probing or query-triggered requests."
+  },
+  {
+    "slug": "html-meter",
+    "feature": "<meter> element",
+    "importance": "2",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "0.001%",
+    "decision": "Later",
+    "notes": "Omission: Omitting <meter> element removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Small static indicator has low additional authority. Limits: Render a bounded static value/label, preserve fallback text; no timers or active state."
+  },
+  {
+    "slug": "html-object",
+    "feature": "<object> element",
+    "importance": "2",
+    "risk_full": "9",
+    "risk_bounded": "6",
+    "impact": "0.003%",
+    "decision": "Reject",
+    "notes": "Omission: Omitting <object> element removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Live media or embedded applications add networking, playback, event and isolation state. Limits: Do not execute or embed. Preserve poster, fallback text and ordinary links. No autoplay or active nested documents."
+  },
+  {
+    "slug": "html-p",
+    "feature": "<p> element",
+    "importance": "10",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "40%",
+    "decision": "Support",
+    "notes": "Omission: Default grouping, line breaks and semantics preserve the message structure. Threat: Basic tree/layout semantics; malformed nesting can change interpretation. Limits: Use bounded HTML parsing and a typed renderer tree, no event/script attributes or document side effects."
+  },
+  {
+    "slug": "html-picture",
+    "feature": "<picture> element",
+    "importance": "4",
+    "risk_full": "7",
+    "risk_bounded": "3",
+    "impact": "0.08%",
+    "decision": "Later",
+    "notes": "Omission: Omitting <picture> element removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Source selection adds hidden resource candidates and device probes. Limits: Always preserve img fallback; only finite width/density selection among pre-approved raster resources, no type-sniff execution or new requests."
+  },
+  {
+    "slug": "html-popover",
+    "feature": "popover attribute",
+    "importance": "1",
+    "risk_full": "8",
+    "risk_bounded": "5",
+    "impact": "0.001%",
+    "decision": "Reject",
+    "notes": "Omission: Omitting popover attribute removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Live media or embedded applications add networking, playback, event and isolation state. Limits: Do not execute or embed. Preserve poster, fallback text and ordinary links. No autoplay or active nested documents."
+  },
+  {
+    "slug": "html-pre",
+    "feature": "<pre> element",
+    "importance": "9",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "1%",
+    "decision": "Support",
+    "notes": "Omission: Loss changes text readability, emphasis, spacing or language-specific rendering. Threat: Text shaping, line breaking and huge lengths require resource bounds; sender styling can reduce readability. Limits: Use local fonts and bounded shaping/layout; keep readable fallback, selection and accessibility; never parse text as markup."
+  },
+  {
+    "slug": "html-progress",
+    "feature": "<progress> element",
+    "importance": "2",
+    "risk_full": "3",
+    "risk_bounded": "1",
+    "impact": "0.001%",
+    "decision": "Later",
+    "notes": "Omission: Omitting <progress> element removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Small static indicator has low additional authority. Limits: Render a bounded static value/label, preserve fallback text; no timers or active state."
+  },
+  {
+    "slug": "html-required",
+    "feature": "required attribute",
+    "importance": "1",
+    "risk_full": "5",
+    "risk_bounded": "3",
+    "impact": "0.001%",
+    "decision": "Reject",
+    "notes": "Omission: Embedded submission/interaction fails, but standard web-link alternatives should remain usable. Threat: Credential capture, automatic submission, focus, validation and destination state. Limits: No live form controls/submission. Preserve explanatory text and ordinary web links; show disabled labeled controls only if useful."
+  },
+  {
+    "slug": "html-role",
+    "feature": "role attribute",
+    "importance": "9",
+    "risk_full": "5",
+    "risk_bounded": "2",
+    "impact": "0.5%",
+    "decision": "Bounded",
+    "notes": "Omission: Accessible name, relationships, reading order or duplicate-content suppression fails for assistive technology. High importance for affected users is not discounted just because the whole-population estimate is small. Threat: Author labels/roles can misrepresent links or hide content to assistive technology. Limits: Support scoped relationships and safe role subset; actual link target and trusted sender/security information remain client-owned."
+  },
+  {
+    "slug": "html-rp",
+    "feature": "<rp> element",
+    "importance": "5",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "0.001%",
+    "decision": "Later",
+    "notes": "Omission: Omitting <rp> element removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Annotations can be lost or duplicated when ruby layout is unsupported. Limits: Keep parenthetical annotation text in linear fallback; Japanese reading aids remain available."
+  },
+  {
+    "slug": "html-rt",
+    "feature": "<rt> element",
+    "importance": "5",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "0.001%",
+    "decision": "Later",
+    "notes": "Omission: Pronunciation annotations matter especially to Japanese readers; linear annotation fallback reduces damage. Threat: Additional annotation layout and line-breaking complexity; high value for Japanese readers. Limits: Later bounded ruby layout. Preserve base and annotation text now; importance rises to 9 for a Japanese-focused client."
+  },
+  {
+    "slug": "html-ruby",
+    "feature": "<ruby> element",
+    "importance": "6",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "0.001%",
+    "decision": "Later",
+    "notes": "Omission: Pronunciation annotations matter especially to Japanese readers; linear annotation fallback reduces damage. Threat: Additional annotation layout and line-breaking complexity; high value for Japanese readers. Limits: Later bounded ruby layout. Preserve base and annotation text now; importance rises to 9 for a Japanese-focused client."
+  },
+  {
+    "slug": "html-select",
+    "feature": "<select> element",
+    "importance": "2",
+    "risk_full": "7",
+    "risk_bounded": "4",
+    "impact": "0.002%",
+    "decision": "Reject",
+    "notes": "Omission: Embedded submission/interaction fails, but standard web-link alternatives should remain usable. Threat: Credential capture, automatic submission, focus, validation and destination state. Limits: No live form controls/submission. Preserve explanatory text and ordinary web links; show disabled labeled controls only if useful."
+  },
+  {
+    "slug": "html-semantics",
+    "feature": "HTML5 semantics",
+    "importance": "7",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "1%",
+    "decision": "Support",
+    "notes": "Omission: Omitting HTML5 semantics removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Mostly static semantics; incorrect default display can destroy reading order. Limits: Preserve text/semantic grouping; unwrap unknown containers safely. No custom element behavior."
+  },
+  {
+    "slug": "html-small",
+    "feature": "<small> element",
+    "importance": "5",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "0.3%",
+    "decision": "Support",
+    "notes": "Omission: Loss changes text readability, emphasis, spacing or language-specific rendering. Threat: Text shaping, line breaking and huge lengths require resource bounds; sender styling can reduce readability. Limits: Use local fonts and bounded shaping/layout; keep readable fallback, selection and accessibility; never parse text as markup."
+  },
+  {
+    "slug": "html-span",
+    "feature": "<span> element",
+    "importance": "10",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "35%",
+    "decision": "Support",
+    "notes": "Omission: Default grouping, line breaks and semantics preserve the message structure. Threat: Basic tree/layout semantics; malformed nesting can change interpretation. Limits: Use bounded HTML parsing and a typed renderer tree, no event/script attributes or document side effects."
+  },
+  {
+    "slug": "html-srcset",
+    "feature": "srcset and sizes attributes",
+    "importance": "4",
+    "risk_full": "7",
+    "risk_bounded": "3",
+    "impact": "0.1%",
+    "decision": "Later",
+    "notes": "Omission: Omitting srcset and sizes attributes removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Source selection adds hidden resource candidates and device probes. Limits: Always preserve img fallback; only finite width/density selection among pre-approved raster resources, no type-sniff execution or new requests."
+  },
+  {
+    "slug": "html-strike",
+    "feature": "<strike> element",
+    "importance": "5",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "0.05%",
+    "decision": "Support",
+    "notes": "Omission: Loss changes text readability, emphasis, spacing or language-specific rendering. Threat: Text shaping, line breaking and huge lengths require resource bounds; sender styling can reduce readability. Limits: Use local fonts and bounded shaping/layout; keep readable fallback, selection and accessibility; never parse text as markup."
+  },
+  {
+    "slug": "html-strong",
+    "feature": "<strong> element",
+    "importance": "8",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "25%",
+    "decision": "Support",
+    "notes": "Omission: Loss changes text readability, emphasis, spacing or language-specific rendering. Threat: Text shaping, line breaking and huge lengths require resource bounds; sender styling can reduce readability. Limits: Use local fonts and bounded shaping/layout; keep readable fallback, selection and accessibility; never parse text as markup."
+  },
+  {
+    "slug": "html-style",
+    "feature": "<style> element",
+    "importance": "10",
+    "risk_full": "5",
+    "risk_bounded": "2",
+    "impact": "45%",
+    "decision": "Bounded",
+    "notes": "Omission: Incorrect rule application affects many properties at once. Threat: Specificity, inheritance and malformed-rule recovery affect hiding and scope; parser disagreement can bypass policy. Limits: Scoped per-message cascade, one parser, bounded rules/selectors/declarations, correct !important and individual-declaration recovery."
+  },
+  {
+    "slug": "html-svg",
+    "feature": "Embedded <svg> image",
+    "importance": "3",
+    "risk_full": "8",
+    "risk_bounded": "5",
+    "impact": "0.03%",
+    "decision": "Reject",
+    "notes": "Omission: Omitting Embedded <svg> image removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: XML, resource references, filters, text layout and foreign content add a large active/document surface. Limits: Reject inline SVG. Later image-only rasterization with no scripts, external refs, foreignObject, network or arbitrary fonts and strict budgets."
+  },
+  {
+    "slug": "html-table",
+    "feature": "<table> element",
+    "importance": "10",
+    "risk_full": "5",
+    "risk_bounded": "3",
+    "impact": "60%",
+    "decision": "Bounded",
+    "notes": "Omission: Nested tabular newsletters/receipts lose structure and alignment. Threat: Nested table/span/intrinsic-size algorithms can be expensive and visually reorder content. Limits: Bound nodes, nesting, spans, grid dimensions and layout steps; preserve table semantics and reading order."
+  },
+  {
+    "slug": "html-target",
+    "feature": "target attribute",
+    "importance": "3",
+    "risk_full": "6",
+    "risk_bounded": "2",
+    "impact": "0.01%",
+    "decision": "Later",
+    "notes": "Omission: Omitting target attribute removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Named windows/opener relationships can escape isolation or reuse trusted surfaces. Limits: Ignore sender target names; external links always use client-owned action policy, no opener access."
+  },
+  {
+    "slug": "html-textarea",
+    "feature": "<textarea> element",
+    "importance": "2",
+    "risk_full": "8",
+    "risk_bounded": "5",
+    "impact": "0.002%",
+    "decision": "Reject",
+    "notes": "Omission: Embedded submission/interaction fails, but standard web-link alternatives should remain usable. Threat: Credential capture, automatic submission, focus, validation and destination state. Limits: No live form controls/submission. Preserve explanatory text and ordinary web links; show disabled labeled controls only if useful."
+  },
+  {
+    "slug": "html-valign",
+    "feature": "valign attribute",
+    "importance": "8",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "20%",
+    "decision": "Support",
+    "notes": "Omission: Nested tabular newsletters/receipts lose structure and alignment. Threat: Nested table/span/intrinsic-size algorithms can be expensive and visually reorder content. Limits: Bound nodes, nesting, spans, grid dimensions and layout steps; preserve table semantics and reading order."
+  },
+  {
+    "slug": "html-video",
+    "feature": "<video> element",
+    "importance": "3",
+    "risk_full": "8",
+    "risk_bounded": "5",
+    "impact": "0.01%",
+    "decision": "Reject",
+    "notes": "Omission: Omitting <video> element removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Live media or embedded applications add networking, playback, event and isolation state. Limits: Do not execute or embed. Preserve poster, fallback text and ordinary links. No autoplay or active nested documents."
+  },
+  {
+    "slug": "html-wbr",
+    "feature": "<wbr> element",
+    "importance": "6",
+    "risk_full": "2",
+    "risk_bounded": "1",
+    "impact": "0.05%",
+    "decision": "Support",
+    "notes": "Omission: Loss changes text readability, emphasis, spacing or language-specific rendering. Threat: Text shaping, line breaking and huge lengths require resource bounds; sender styling can reduce readability. Limits: Use local fonts and bounded shaping/layout; keep readable fallback, selection and accessibility; never parse text as markup."
+  },
+  {
+    "slug": "html-width",
+    "feature": "width attribute",
+    "importance": "10",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "55%",
+    "decision": "Support",
+    "notes": "Omission: Sizing/aspect constraints affect image and column fit. Threat: Huge/cyclic dimensions, intrinsic measurement and clipping cause DoS or obscured content. Limits: Finite bounded dimensions; cap intrinsic/reflow work and decoded image sizes. Never affect application chrome."
+  },
+  {
+    "slug": "image-apng",
+    "feature": "Animated PNG image format",
+    "importance": "3",
+    "risk_full": "5",
+    "risk_bounded": "2",
+    "impact": "0.01%",
+    "decision": "Bounded",
+    "notes": "Omission: Omitting the format loses the image. A static frame is useful but may omit later-frame content. Threat: Animation frames and decode work permit persistent CPU use and content changes after inspection. Limits: Render a meaningful static first frame/poster; decoded-pixel, input-byte and work budgets. No ongoing animation in initial profile."
+  },
+  {
+    "slug": "image-avif",
+    "feature": "AVIF image format",
+    "importance": "4",
+    "risk_full": "6",
+    "risk_bounded": "3",
+    "impact": "0.03%",
+    "decision": "Later",
+    "notes": "Omission: Unsupported raster images are missing; common formats matter much more than rare formats. Threat: Complex decoding, decompression bombs and color/metadata handling remain resource/specification risks in safe Rust. Limits: Rust/verified decoder where available; pixel/input/work budgets; ignore active metadata and external references. Separate attachment preview policy."
+  },
+  {
+    "slug": "image-base64",
+    "feature": "Base 64 image format",
+    "importance": "7",
+    "risk_full": "5",
+    "risk_bounded": "2",
+    "impact": "0.5%",
+    "decision": "Bounded",
+    "notes": "Omission: Omitting Base 64 image format removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Data URIs can smuggle active MIME types or enormous inline resources. Limits: Strict data:image raster allowlist and base64/percent decoding limits; no SVG/HTML/XML, no navigation or origin inheritance."
+  },
+  {
+    "slug": "image-bmp",
+    "feature": "BMP image format",
+    "importance": "4",
+    "risk_full": "3",
+    "risk_bounded": "2",
+    "impact": "0.005%",
+    "decision": "Later",
+    "notes": "Omission: Unsupported raster images are missing; common formats matter much more than rare formats. Threat: Complex decoding, decompression bombs and color/metadata handling remain resource/specification risks in safe Rust. Limits: Rust/verified decoder where available; pixel/input/work budgets; ignore active metadata and external references. Separate attachment preview policy."
+  },
+  {
+    "slug": "image-gif",
+    "feature": "GIF image format",
+    "importance": "8",
+    "risk_full": "6",
+    "risk_bounded": "2",
+    "impact": "15%",
+    "decision": "Bounded",
+    "notes": "Omission: Omitting the format loses the image. A static frame is useful but may omit later-frame content. Threat: Animation frames and decode work permit persistent CPU use and content changes after inspection. Limits: Render a meaningful static first frame/poster; decoded-pixel, input-byte and work budgets. No ongoing animation in initial profile."
+  },
+  {
+    "slug": "image-hdr",
+    "feature": "HDR image format",
+    "importance": "1",
+    "risk_full": "6",
+    "risk_bounded": "4",
+    "impact": "0.001%",
+    "decision": "Reject",
+    "notes": "Omission: Unsupported raster images are missing; common formats matter much more than rare formats. Threat: Complex decoding, decompression bombs and color/metadata handling remain resource/specification risks in safe Rust. Limits: Rust/verified decoder where available; pixel/input/work budgets; ignore active metadata and external references. Separate attachment preview policy."
+  },
+  {
+    "slug": "image-heif",
+    "feature": "HEIF image format",
+    "importance": "3",
+    "risk_full": "6",
+    "risk_bounded": "3",
+    "impact": "0.02%",
+    "decision": "Later",
+    "notes": "Omission: Unsupported raster images are missing; common formats matter much more than rare formats. Threat: Complex decoding, decompression bombs and color/metadata handling remain resource/specification risks in safe Rust. Limits: Rust/verified decoder where available; pixel/input/work budgets; ignore active metadata and external references. Separate attachment preview policy."
+  },
+  {
+    "slug": "image-ico",
+    "feature": "ICO image format",
+    "importance": "2",
+    "risk_full": "4",
+    "risk_bounded": "2",
+    "impact": "0.001%",
+    "decision": "Later",
+    "notes": "Omission: Unsupported raster images are missing; common formats matter much more than rare formats. Threat: Complex decoding, decompression bombs and color/metadata handling remain resource/specification risks in safe Rust. Limits: Rust/verified decoder where available; pixel/input/work budgets; ignore active metadata and external references. Separate attachment preview policy."
+  },
+  {
+    "slug": "image-jpg",
+    "feature": "JPG image format",
+    "importance": "10",
+    "risk_full": "5",
+    "risk_bounded": "2",
+    "impact": "45%",
+    "decision": "Bounded",
+    "notes": "Omission: Unsupported raster images are missing; common formats matter much more than rare formats. Threat: Complex decoding, decompression bombs and color/metadata handling remain resource/specification risks in safe Rust. Limits: Rust/verified decoder where available; pixel/input/work budgets; ignore active metadata and external references. Separate attachment preview policy."
+  },
+  {
+    "slug": "image-mp4",
+    "feature": "Video as Image Assets",
+    "importance": "1",
+    "risk_full": "8",
+    "risk_bounded": "5",
+    "impact": "0.001%",
+    "decision": "Reject",
+    "notes": "Omission: Omitting Video as Image Assets removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Live media or embedded applications add networking, playback, event and isolation state. Limits: Do not execute or embed. Preserve poster, fallback text and ordinary links. No autoplay or active nested documents."
+  },
+  {
+    "slug": "image-png",
+    "feature": "PNG image format",
+    "importance": "10",
+    "risk_full": "5",
+    "risk_bounded": "2",
+    "impact": "55%",
+    "decision": "Bounded",
+    "notes": "Omission: Unsupported raster images are missing; common formats matter much more than rare formats. Threat: Complex decoding, decompression bombs and color/metadata handling remain resource/specification risks in safe Rust. Limits: Rust/verified decoder where available; pixel/input/work budgets; ignore active metadata and external references. Separate attachment preview policy."
+  },
+  {
+    "slug": "image-svg",
+    "feature": "SVG image format",
+    "importance": "4",
+    "risk_full": "8",
+    "risk_bounded": "4",
+    "impact": "0.2%",
+    "decision": "Later",
+    "notes": "Omission: Omitting SVG image format removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: XML, resource references, filters, text layout and foreign content add a large active/document surface. Limits: Reject inline SVG. Later image-only rasterization with no scripts, external refs, foreignObject, network or arbitrary fonts and strict budgets."
+  },
+  {
+    "slug": "image-tiff",
+    "feature": "TIFF image format",
+    "importance": "3",
+    "risk_full": "5",
+    "risk_bounded": "3",
+    "impact": "0.005%",
+    "decision": "Later",
+    "notes": "Omission: Unsupported raster images are missing; common formats matter much more than rare formats. Threat: Complex decoding, decompression bombs and color/metadata handling remain resource/specification risks in safe Rust. Limits: Rust/verified decoder where available; pixel/input/work budgets; ignore active metadata and external references. Separate attachment preview policy."
+  },
+  {
+    "slug": "image-webp",
+    "feature": "webP image format",
+    "importance": "7",
+    "risk_full": "6",
+    "risk_bounded": "3",
+    "impact": "0.5%",
+    "decision": "Bounded",
+    "notes": "Omission: Omitting the format loses the image. A static frame is useful but may omit later-frame content. Threat: Animation frames and decode work permit persistent CPU use and content changes after inspection. Limits: Render a meaningful static first frame/poster; decoded-pixel, input-byte and work budgets. No ongoing animation in initial profile."
+  },
+  {
+    "slug": "amp",
+    "feature": "AMP for Email",
+    "importance": "2",
+    "risk_full": "9",
+    "risk_bounded": "7",
+    "impact": "0.03%",
+    "decision": "Reject",
+    "notes": "Omission: Omitting AMP for Email removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Live media or embedded applications add networking, playback, event and isolation state. Limits: Do not execute or embed. Preserve poster, fallback text and ordinary links. No autoplay or active nested documents."
+  },
+  {
+    "slug": "bimi",
+    "feature": "BIMI",
+    "importance": "3",
+    "risk_full": "7",
+    "risk_bounded": "4",
+    "impact": "0.05%",
+    "decision": "Later",
+    "notes": "Omission: Omitting BIMI removes this presentation/interaction capability; ordinary text and link fallback reduce the loss. Threat: Externally obtained brand assets and identity claims can be confused with authentication. Limits: Later: independently validate BIMI/DMARC and issuer policy; use separately trusted chrome, strict SVG subset, and isolated fetch."
+  }
+]

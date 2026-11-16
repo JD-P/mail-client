@@ -1,0 +1,46 @@
+[package]
+name = "lizard"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Bounded HTML email frontend for WebRender/SWGL"
+
+[workspace]
+members = ["."]
+
+[workspace.dependencies]
+gleam = "0.16"
+glean = "=70.3.0"
+
+[dependencies]
+vstd = "=0.0.0-2026-11-01-0251"
+html5ever = "=0.40.1"
+markup5ever_rcdom = "=0.40.1"
+cssparser = "=0.38.0"
+csscolorparser = "=0.9.1"
+rustybuzz = "=0.20.1"
+unicode-bidi = "0.3"
+unicode-linebreak = "0.1"
+unicode-segmentation = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+png = "0.17"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+base64 = "0.22"
+webrender = { path = "vendor/wr/webrender", features = ["sw_compositor"] }
+swgl = { path = "vendor/wr/swgl" }
+gleam = "0.16"
+rayon = "1"
+libc = "0.2"
+
+[patch.crates-io]
+gl_generator = { git = "https://github.com/jamienicol/gl-rs", rev = "71c792dbfe0ec5caeb242fc90937e19098386342" }
+wr_malloc_size_of = { path = "vendor/wr/wr_malloc_size_of" }
+firefox-on-glean = { path = "vendor/wr/fog" }
+
+[profile.release]
+debug = 1
+panic = "abort"
+
+[profile.release.package.glsl]
+opt-level = 2

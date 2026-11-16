@@ -1,0 +1,1977 @@
+{
+  "firefox": "160.0",
+  "git_revision": "2887d9de1f69c0e9776413da80e7ba0d1225dd9b",
+  "hg_revision": "d84e7a6936554efe26097d9d9b24a0e11330e630",
+  "wr_tree": "01c4aa9898cde0adc8fb1e1b57f7ee4f860852c9",
+  "entries": [
+    {
+      "path": "Cargo.lock",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "750f478b66cff137ff53ab5a2f087b75e5656da9",
+      "size": 180803,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/750f478b66cff137ff53ab5a2f087b75e5656da9"
+    },
+    {
+      "path": "Cargo.toml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "7de436f8c09e1a44122ccd629681f1e024c3a655",
+      "size": 708,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/7de436f8c09e1a44122ccd629681f1e024c3a655"
+    },
+    {
+      "path": "LICENSE",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "398385c9fb9b5241b4649d92d92070671c137675",
+      "size": 15648,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/398385c9fb9b5241b4649d92d92070671c137675"
+    },
+    {
+      "path": "glsl-to-cxx/Cargo.toml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "8161060c91dfd016badbf0ab532858cdadf1d637",
+      "size": 277,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/8161060c91dfd016badbf0ab532858cdadf1d637"
+    },
+    {
+      "path": "glsl-to-cxx/README.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "54dcbc7d612172e1fd1d5a6c31f776c5f1b27247",
+      "size": 1012,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/54dcbc7d612172e1fd1d5a6c31f776c5f1b27247"
+    },
+    {
+      "path": "glsl-to-cxx/src/hir.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "26d31cfc361ee9d3b38c369ba7aef150d174b0c6",
+      "size": 147948,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/26d31cfc361ee9d3b38c369ba7aef150d174b0c6"
+    },
+    {
+      "path": "glsl-to-cxx/src/lib.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "0faac75fd09beff3d500415830b0c67f96a4cfc7",
+      "size": 127389,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/0faac75fd09beff3d500415830b0c67f96a4cfc7"
+    },
+    {
+      "path": "glsl-to-cxx/src/main.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e40262c84e11859e71f6488029d38ba7e7e54370",
+      "size": 302,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/e40262c84e11859e71f6488029d38ba7e7e54370"
+    },
+    {
+      "path": "peek-poke/Cargo.toml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "a2dc99065baa3df5c4871cb57aefb9357a63b7ae",
+      "size": 555,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/a2dc99065baa3df5c4871cb57aefb9357a63b7ae"
+    },
+    {
+      "path": "peek-poke/LICENSE-APACHE",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "16fe87b06e802f094b3fbb0894b137bca2b16ef1",
+      "size": 10847,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/16fe87b06e802f094b3fbb0894b137bca2b16ef1"
+    },
+    {
+      "path": "peek-poke/LICENSE-MIT",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "110bb347123ffb0a9862feb426a39cb3f25f64e9",
+      "size": 2222,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/110bb347123ffb0a9862feb426a39cb3f25f64e9"
+    },
+    {
+      "path": "peek-poke/README.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "1c379aa1211fda8e59fb706d732a1613db52abfc",
+      "size": 2042,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/1c379aa1211fda8e59fb706d732a1613db52abfc"
+    },
+    {
+      "path": "peek-poke/peek-poke-derive/Cargo.toml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "d781c43ec0cafe129bd0a61b92b0798a0fa5757c",
+      "size": 372,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/d781c43ec0cafe129bd0a61b92b0798a0fa5757c"
+    },
+    {
+      "path": "peek-poke/peek-poke-derive/LICENSE-APACHE",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "16fe87b06e802f094b3fbb0894b137bca2b16ef1",
+      "size": 10847,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/16fe87b06e802f094b3fbb0894b137bca2b16ef1"
+    },
+    {
+      "path": "peek-poke/peek-poke-derive/LICENSE-MIT",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "110bb347123ffb0a9862feb426a39cb3f25f64e9",
+      "size": 2222,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/110bb347123ffb0a9862feb426a39cb3f25f64e9"
+    },
+    {
+      "path": "peek-poke/peek-poke-derive/README.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "1c379aa1211fda8e59fb706d732a1613db52abfc",
+      "size": 2042,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/1c379aa1211fda8e59fb706d732a1613db52abfc"
+    },
+    {
+      "path": "peek-poke/peek-poke-derive/src/lib.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "7f84cab71d245767df22440dac14910440ba99f1",
+      "size": 7318,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/7f84cab71d245767df22440dac14910440ba99f1"
+    },
+    {
+      "path": "peek-poke/src/euclid.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "dd267b7d5110db0330c021623b2fc9afddb09763",
+      "size": 6788,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/dd267b7d5110db0330c021623b2fc9afddb09763"
+    },
+    {
+      "path": "peek-poke/src/lib.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "d5c0c4e1646e78b3157d818e6285cfc51764a921",
+      "size": 13493,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/d5c0c4e1646e78b3157d818e6285cfc51764a921"
+    },
+    {
+      "path": "peek-poke/src/slice_ext.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "f987693eca8cc9a6a5f397e5a6329def660be7f5",
+      "size": 723,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/f987693eca8cc9a6a5f397e5a6329def660be7f5"
+    },
+    {
+      "path": "peek-poke/src/vec_ext.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "91438ee26add7e2ca4441b84e44494532c245507",
+      "size": 871,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/91438ee26add7e2ca4441b84e44494532c245507"
+    },
+    {
+      "path": "peek-poke/tests/max_size.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "67cd1ca4a68c631cf7ae0b226cf7a7dd225fc1d6",
+      "size": 3019,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/67cd1ca4a68c631cf7ae0b226cf7a7dd225fc1d6"
+    },
+    {
+      "path": "peek-poke/tests/round_trip.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "1dfc7483c72e88011c0383110ed5e2aad29566ae",
+      "size": 4658,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/1dfc7483c72e88011c0383110ed5e2aad29566ae"
+    },
+    {
+      "path": "swgl/Cargo.toml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "0455372e1fb136478e7c49d34fa0b3e8a16fac0c",
+      "size": 361,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/0455372e1fb136478e7c49d34fa0b3e8a16fac0c"
+    },
+    {
+      "path": "swgl/README.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "2c43ed881957398548ce9658f018a9ea7eb8855f",
+      "size": 11859,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/2c43ed881957398548ce9658f018a9ea7eb8855f"
+    },
+    {
+      "path": "swgl/build.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "650b09efb56261e92ecf058a98ce8be6474204da",
+      "size": 10031,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/650b09efb56261e92ecf058a98ce8be6474204da"
+    },
+    {
+      "path": "swgl/src/blend.h",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "333b664b196c52096a3dace1a2849be39d67ab6d",
+      "size": 32644,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/333b664b196c52096a3dace1a2849be39d67ab6d"
+    },
+    {
+      "path": "swgl/src/composite.h",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "aff43fb4c783427d374fb747ba2d543d71f0002a",
+      "size": 54346,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/aff43fb4c783427d374fb747ba2d543d71f0002a"
+    },
+    {
+      "path": "swgl/src/gl.cc",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "1187399f6a0e769405aa5a4bacb6a458cc60f410",
+      "size": 93443,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/1187399f6a0e769405aa5a4bacb6a458cc60f410"
+    },
+    {
+      "path": "swgl/src/gl_defs.h",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "b60eaad0ece78b1cb29f1d0f8764e2b8588f2322",
+      "size": 6150,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/b60eaad0ece78b1cb29f1d0f8764e2b8588f2322"
+    },
+    {
+      "path": "swgl/src/glsl.h",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "533d891aaa5beb7e407bccd621f3ae935ec6ad00",
+      "size": 83537,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/533d891aaa5beb7e407bccd621f3ae935ec6ad00"
+    },
+    {
+      "path": "swgl/src/lib.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e8fc030e0c91c74e82564352121e06501b4ab582",
+      "size": 318,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/e8fc030e0c91c74e82564352121e06501b4ab582"
+    },
+    {
+      "path": "swgl/src/program.h",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "9ea7c6dd6eb45237e93858a06a415b9ca4dd6b0d",
+      "size": 6201,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/9ea7c6dd6eb45237e93858a06a415b9ca4dd6b0d"
+    },
+    {
+      "path": "swgl/src/rasterize.h",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "2da161fdd9a7e764b317ade7af63056981ba3389",
+      "size": 76653,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/2da161fdd9a7e764b317ade7af63056981ba3389"
+    },
+    {
+      "path": "swgl/src/swgl_ext.h",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "0f155d3dd0e58973a7a6d1c2cd3fcee9c7bb8799",
+      "size": 108950,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/0f155d3dd0e58973a7a6d1c2cd3fcee9c7bb8799"
+    },
+    {
+      "path": "swgl/src/swgl_fns.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "d77fc0825b51be8271567488548cb7c96b95b07a",
+      "size": 63664,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/d77fc0825b51be8271567488548cb7c96b95b07a"
+    },
+    {
+      "path": "swgl/src/texture.h",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "2f0a2ab55b024fa3ad42170d63d09975f6cb9aac",
+      "size": 45631,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/2f0a2ab55b024fa3ad42170d63d09975f6cb9aac"
+    },
+    {
+      "path": "swgl/src/vector_type.h",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "36226aa00f8db028d9e74a0c294af81592049a9d",
+      "size": 17165,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/36226aa00f8db028d9e74a0c294af81592049a9d"
+    },
+    {
+      "path": "webrender/Cargo.toml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "748e54c35cc2fed55f6e7ecc17de26c50ec785ff",
+      "size": 3068,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/748e54c35cc2fed55f6e7ecc17de26c50ec785ff"
+    },
+    {
+      "path": "webrender/build.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e1699117ed436fc0e856240e61ddc6ce62245f98",
+      "size": 14968,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/e1699117ed436fc0e856240e61ddc6ce62245f98"
+    },
+    {
+      "path": "webrender/doc/CLIPPING_AND_POSITIONING.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "4aa8d0c6848fdbbae054a783323438fdc7dd5acf",
+      "size": 8416,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/4aa8d0c6848fdbbae054a783323438fdc7dd5acf"
+    },
+    {
+      "path": "webrender/doc/blob.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "b910f6f76a37d96278d866f6fe85140a2c1bbf67",
+      "size": 4504,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/b910f6f76a37d96278d866f6fe85140a2c1bbf67"
+    },
+    {
+      "path": "webrender/doc/code-review.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "71cd5f153a2ed928dad03c9556609e4e8d8b1252",
+      "size": 1237,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/71cd5f153a2ed928dad03c9556609e4e8d8b1252"
+    },
+    {
+      "path": "webrender/doc/coordinate-spaces.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "f963c036975bbe07ca1a7f5b421b01a4aff67b8d",
+      "size": 14472,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/f963c036975bbe07ca1a7f5b421b01a4aff67b8d"
+    },
+    {
+      "path": "webrender/doc/swizzling.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "4b38791940e7a08e0bd622d7f3c2e79b9353613e",
+      "size": 3365,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/4b38791940e7a08e0bd622d7f3c2e79b9353613e"
+    },
+    {
+      "path": "webrender/doc/text-rendering.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "0ac945ac19d18b6f28a7518f0637ead8f2fd44c7",
+      "size": 15406,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/0ac945ac19d18b6f28a7518f0637ead8f2fd44c7"
+    },
+    {
+      "path": "webrender/res/Proggy.ttf",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "308d3e1ac9b89f4866fdef05289aaf59411c1c17",
+      "size": 5284,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/308d3e1ac9b89f4866fdef05289aaf59411c1c17"
+    },
+    {
+      "path": "webrender/res/area-lut.tga",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "5edcddc3d16058b22265792febf739529044b5a8",
+      "size": 65580,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/5edcddc3d16058b22265792febf739529044b5a8"
+    },
+    {
+      "path": "webrender/res/base.glsl",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e381ff6ca9c96a9308ef62bfd11b75d394b26add",
+      "size": 2551,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/e381ff6ca9c96a9308ef62bfd11b75d394b26add"
+    },
+    {
+      "path": "webrender/res/blend.glsl",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "d78d472e413b88a419eb5fd519dac1a036aceb5c",
+      "size": 9349,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/d78d472e413b88a419eb5fd519dac1a036aceb5c"
+    },
+    {
+      "path": "webrender/res/border_shared.glsl",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "3c67c27b15d0863b55ef05ba2ccd7bc8d2d0b55e",
+      "size": 1513,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/3c67c27b15d0863b55ef05ba2ccd7bc8d2d0b55e"
+    },
+    {
+      "path": "webrender/res/composite.glsl",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "f219dcdd6f56eb7aa068003de0424c8a7f6d7cec",
+      "size": 9193,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/f219dcdd6f56eb7aa068003de0424c8a7f6d7cec"
+    },
+    {
+      "path": "webrender/res/cs_blur.glsl",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "94adcef27d1997b5b71f03418f922375df8c4ad5",
+      "size": 7670,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/94adcef27d1997b5b71f03418f922375df8c4ad5"
+    },
+    {
+      "path": "webrender/res/cs_border_segment.glsl",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "72291069942e22d044c272fdbe15eaad210101d1",
+      "size": 18073,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/72291069942e22d044c272fdbe15eaad210101d1"
+    },
+    {
+      "path": "webrender/res/cs_border_solid.glsl",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "05d314571ea3ea3b5efd600b74c7bb3f08b52fc6",
+      "size": 7249,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/05d314571ea3ea3b5efd600b74c7bb3f08b52fc6"
+    },
+    {
+      "path": "webrender/res/cs_line_decoration.glsl",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "00ed2e249a2dfa017271c604ae72c766d0f43a84",
+      "size": 5861,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/00ed2e249a2dfa017271c604ae72c766d0f43a84"
+    },
+    {
+      "path": "webrender/res/cs_path_tile.glsl",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "37b2deaad56b220028dbd2cc59b4377c8c7dda36",
+      "size": 1551,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/37b2deaad56b220028dbd2cc59b4377c8c7dda36"
+    },
+    {
+      "path": "webrender/res/cs_scale.glsl",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "c7fabf5e59f37104f0d0c83aaf34db16191a5021",
+      "size": 2177,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/c7fabf5e59f37104f0d0c83aaf34db16191a5021"
+    },
+    {
+      "path": "webrender/res/cs_svg_filter_node.glsl",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "5db85e17292e0b05e3eb09784ef9a2e59c19ce4e",
+      "size": 34639,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/5db85e17292e0b05e3eb09784ef9a2e59c19ce4e"
+    },
+    {
+      "path": "webrender/res/debug.glsl",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "7684f33722bb998cd60aa6bfd870741642ce3cba",
+      "size": 1280,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/7684f33722bb998cd60aa6bfd870741642ce3cba"
+    },
+    {
+      "path": "webrender/res/debug_color.glsl",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "12b530cda0e82f81ab01f0d4508bf85b41e23cc9",
+      "size": 577,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/12b530cda0e82f81ab01f0d4508bf85b41e23cc9"
+    },
+    {
+      "path": "webrender/res/debug_font.glsl",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "3b08f1b2fe191b7647d0c3c81aa7ea221546a096",
+      "size": 735,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/3b08f1b2fe191b7647d0c3c81aa7ea221546a096"
+    },
+    {
+      "path": "webrender/res/dithering.glsl",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "3b797baca2928be1faf7348bada383b44d454c18",
+      "size": 894,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/3b797baca2928be1faf7348bada383b44d454c18"
+    },
+    {
+      "path": "webrender/res/ellipse.glsl",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "7ce1bcacb46ceb717e5e632678a8f30c87863c11",
+      "size": 15778,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/7ce1bcacb46ceb717e5e632678a8f30c87863c11"
+    },
+    {
+      "path": "webrender/res/gpu_buffer.glsl",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "c649ab1807f2a42d9d495f8440fe67d52aec4c8e",
+      "size": 3171,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/c649ab1807f2a42d9d495f8440fe67d52aec4c8e"
+    },
+    {
+      "path": "webrender/res/image_source.glsl",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "c679057f4a74b1adf6506e54b58e6e4c55ab906e",
+      "size": 1472,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/c679057f4a74b1adf6506e54b58e6e4c55ab906e"
+    },
+    {
+      "path": "webrender/res/path_tile.glsl",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "3c2faac7dce9548b43e0d8b5b416f2ff0603d488",
+      "size": 4750,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/3c2faac7dce9548b43e0d8b5b416f2ff0603d488"
+    },
+    {
+      "path": "webrender/res/prim_shared.glsl",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "2cbea3643bafe56d9c0ef7348117b16a07977eb7",
+      "size": 8458,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/2cbea3643bafe56d9c0ef7348117b16a07977eb7"
+    },
+    {
+      "path": "webrender/res/ps_clear.glsl",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "567dea978d2ada2fa6feccd538a6171e326986b1",
+      "size": 631,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/567dea978d2ada2fa6feccd538a6171e326986b1"
+    },
+    {
+      "path": "webrender/res/ps_copy.glsl",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "b4e43f1556357da5d0440fc61698069aab50ef42",
+      "size": 958,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/b4e43f1556357da5d0440fc61698069aab50ef42"
+    },
+    {
+      "path": "webrender/res/ps_quad.glsl",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "2fb75d93048936fe9bcac7f069bd4e537148fd19",
+      "size": 13956,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/2fb75d93048936fe9bcac7f069bd4e537148fd19"
+    },
+    {
+      "path": "webrender/res/ps_quad_backdrop.glsl",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "9a60d97b421087177bf0d7aea7df8942cb07d618",
+      "size": 2536,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/9a60d97b421087177bf0d7aea7df8942cb07d618"
+    },
+    {
+      "path": "webrender/res/ps_quad_blend.glsl",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "6ec8676861bd04851993b6bba56245db72d16972",
+      "size": 2259,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/6ec8676861bd04851993b6bba56245db72d16972"
+    },
+    {
+      "path": "webrender/res/ps_quad_box_shadow.glsl",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "73514b7c4e0862a7286af2fa68a01d3a8ab1aacb",
+      "size": 9068,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/73514b7c4e0862a7286af2fa68a01d3a8ab1aacb"
+    },
+    {
+      "path": "webrender/res/ps_quad_gradient.glsl",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "27c3786c4b42451de553753adfa6df2ecd0431f0",
+      "size": 14572,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/27c3786c4b42451de553753adfa6df2ecd0431f0"
+    },
+    {
+      "path": "webrender/res/ps_quad_mask.glsl",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "351f300fbc4699f114212500b1daf3b96bee91af",
+      "size": 19347,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/351f300fbc4699f114212500b1daf3b96bee91af"
+    },
+    {
+      "path": "webrender/res/ps_quad_mix_blend.glsl",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "fef9098db0aaf2719a64d6ede12fc64864bad355",
+      "size": 8843,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/fef9098db0aaf2719a64d6ede12fc64864bad355"
+    },
+    {
+      "path": "webrender/res/ps_quad_repeat.glsl",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "ae03527426691c1187be700b67651d967f8413c2",
+      "size": 4521,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/ae03527426691c1187be700b67651d967f8413c2"
+    },
+    {
+      "path": "webrender/res/ps_quad_textured.glsl",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "6d9c7d0cab356827b8fce1456b92c8f43c81e464",
+      "size": 2842,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/6d9c7d0cab356827b8fce1456b92c8f43c81e464"
+    },
+    {
+      "path": "webrender/res/ps_quad_yuv.glsl",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "a20d30d532a9b6f611d019e9031b8dc2a7f140e4",
+      "size": 4575,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/a20d30d532a9b6f611d019e9031b8dc2a7f140e4"
+    },
+    {
+      "path": "webrender/res/ps_split_composite.glsl",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "19ae951b9614eb63d619bee1c992101e17f6c6fc",
+      "size": 3645,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/19ae951b9614eb63d619bee1c992101e17f6c6fc"
+    },
+    {
+      "path": "webrender/res/ps_text_run.glsl",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "05dc7058b50f02a685225b5419061400a298bb41",
+      "size": 13735,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/05dc7058b50f02a685225b5419061400a298bb41"
+    },
+    {
+      "path": "webrender/res/rect.glsl",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "4449d1a5651168fcfae75a6c9987428b9b208294",
+      "size": 1499,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/4449d1a5651168fcfae75a6c9987428b9b208294"
+    },
+    {
+      "path": "webrender/res/render_task.glsl",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e5d0c298cdafb9c939add004397ec446053511fc",
+      "size": 2878,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/e5d0c298cdafb9c939add004397ec446053511fc"
+    },
+    {
+      "path": "webrender/res/sample_color0.glsl",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "d3d11fb697e997b5198a678dde401895d899253e",
+      "size": 1564,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/d3d11fb697e997b5198a678dde401895d899253e"
+    },
+    {
+      "path": "webrender/res/shared.glsl",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "933287443f0f1b228379d5f01a089b9b1b0a06ca",
+      "size": 10666,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/933287443f0f1b228379d5f01a089b9b1b0a06ca"
+    },
+    {
+      "path": "webrender/res/shared_other.glsl",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "03cad173cdb84a85cdc1f516308083a9f5ebe2e9",
+      "size": 1556,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/03cad173cdb84a85cdc1f516308083a9f5ebe2e9"
+    },
+    {
+      "path": "webrender/res/transform.glsl",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "8253437805b14f838d904172d4145c2a57aeda93",
+      "size": 5070,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/8253437805b14f838d904172d4145c2a57aeda93"
+    },
+    {
+      "path": "webrender/res/yuv.glsl",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "2d4bbe3611b94a43e18b19eab9e8f5cae9974232",
+      "size": 8302,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/2d4bbe3611b94a43e18b19eab9e8f5cae9974232"
+    },
+    {
+      "path": "webrender/src/api_resources.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "0364b195b1b0f2f6084aa223eae647efb5df64ce",
+      "size": 12787,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/0364b195b1b0f2f6084aa223eae647efb5df64ce"
+    },
+    {
+      "path": "webrender/src/batch.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "66543e42c60d7dfc46c744b829387db10dd29323",
+      "size": 56193,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/66543e42c60d7dfc46c744b829387db10dd29323"
+    },
+    {
+      "path": "webrender/src/bezier.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "fd9c0aca77952d37e37d96d65086b55ba910dc1e",
+      "size": 6121,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/fd9c0aca77952d37e37d96d65086b55ba910dc1e"
+    },
+    {
+      "path": "webrender/src/border.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "3ced29d8493af538bb2c76ae339162064a3bc17a",
+      "size": 55430,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/3ced29d8493af538bb2c76ae339162064a3bc17a"
+    },
+    {
+      "path": "webrender/src/border_image.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "b675263ad895424699df93cb3fe389d3de0b61bc",
+      "size": 12918,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/b675263ad895424699df93cb3fe389d3de0b61bc"
+    },
+    {
+      "path": "webrender/src/box_shadow.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "7df1a58ff3590522768a60010e01ad3e1012f6f0",
+      "size": 19177,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/7df1a58ff3590522768a60010e01ad3e1012f6f0"
+    },
+    {
+      "path": "webrender/src/bump_allocator.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "11bda8c0fa43eea8d1f9d002e4ac79c7c895b9d9",
+      "size": 15713,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/11bda8c0fa43eea8d1f9d002e4ac79c7c895b9d9"
+    },
+    {
+      "path": "webrender/src/capture.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "7184f44b50c079543e34645c1c35f60958509b6e",
+      "size": 8789,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/7184f44b50c079543e34645c1c35f60958509b6e"
+    },
+    {
+      "path": "webrender/src/clip.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "72f3ca4d6ce49c904de6cbd136d3aadf899f0115",
+      "size": 98514,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/72f3ca4d6ce49c904de6cbd136d3aadf899f0115"
+    },
+    {
+      "path": "webrender/src/command_buffer.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "3d761c628a1e06aba474363df70d7b6c640c98dd",
+      "size": 23295,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/3d761c628a1e06aba474363df70d7b6c640c98dd"
+    },
+    {
+      "path": "webrender/src/composite.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "2d2578c0ec9eebf732b56b7301c4759fd995a0d0",
+      "size": 73491,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/2d2578c0ec9eebf732b56b7301c4759fd995a0d0"
+    },
+    {
+      "path": "webrender/src/compositor/mod.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e517f22719338e8ae89121dd14626a39fd098b84",
+      "size": 263,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/e517f22719338e8ae89121dd14626a39fd098b84"
+    },
+    {
+      "path": "webrender/src/compositor/sw_compositor.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "dcf7981eebf469b926c3c44ac5d9b701fa6589ce",
+      "size": 84107,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/dcf7981eebf469b926c3c44ac5d9b701fa6589ce"
+    },
+    {
+      "path": "webrender/src/debug_colors.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "92fca591f0fb3bf8b9c2eaa9a044c1663ba66680",
+      "size": 14804,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/92fca591f0fb3bf8b9c2eaa9a044c1663ba66680"
+    },
+    {
+      "path": "webrender/src/debug_font_data.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "a891bf0d3873b90583feba92ac0eaedada4b241c",
+      "size": 117993,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/a891bf0d3873b90583feba92ac0eaedada4b241c"
+    },
+    {
+      "path": "webrender/src/debug_item.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "63789d4f2bdb36e73f4e7932bff7a041465883fe",
+      "size": 709,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/63789d4f2bdb36e73f4e7932bff7a041465883fe"
+    },
+    {
+      "path": "webrender/src/debugger.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "b9e0cf0639501c3b7bff217f84aa73a7a2891e98",
+      "size": 23189,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/b9e0cf0639501c3b7bff217f84aa73a7a2891e98"
+    },
+    {
+      "path": "webrender/src/device/gl.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "985855fb1a99db6ec196003e7a03774a1c9feffa",
+      "size": 148410,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/985855fb1a99db6ec196003e7a03774a1c9feffa"
+    },
+    {
+      "path": "webrender/src/device/mod.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "c4cdcb11559be906560217f3a91545932ce00b18",
+      "size": 25244,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/c4cdcb11559be906560217f3a91545932ce00b18"
+    },
+    {
+      "path": "webrender/src/device/query.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "25bb3c65ab822d015234fecaf227e22314277d24",
+      "size": 8938,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/25bb3c65ab822d015234fecaf227e22314277d24"
+    },
+    {
+      "path": "webrender/src/device/types.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "f430d2c716d198c883409c12944e23f94d569790",
+      "size": 33728,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/f430d2c716d198c883409c12944e23f94d569790"
+    },
+    {
+      "path": "webrender/src/device/upload.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "045d370d03c0b7e4647feaf7e048822a9283a5ef",
+      "size": 19734,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/045d370d03c0b7e4647feaf7e048822a9283a5ef"
+    },
+    {
+      "path": "webrender/src/dl_interner.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "815842ceb65aef5f6531cef3f3fcca5987c15ef3",
+      "size": 51442,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/815842ceb65aef5f6531cef3f3fcca5987c15ef3"
+    },
+    {
+      "path": "webrender/src/ellipse.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "fac676598490f06da757c4881125ce66fc2252a3",
+      "size": 6061,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/fac676598490f06da757c4881125ce66fc2252a3"
+    },
+    {
+      "path": "webrender/src/filterdata.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "2d77e2ddd15eda86a82ec43ee6d535d10ce47464",
+      "size": 7160,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/2d77e2ddd15eda86a82ec43ee6d535d10ce47464"
+    },
+    {
+      "path": "webrender/src/frame_allocator.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "5bccb21ce69dfd10f9c7c95c3a758bd905119c19",
+      "size": 16184,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/5bccb21ce69dfd10f9c7c95c3a758bd905119c19"
+    },
+    {
+      "path": "webrender/src/frame_builder.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "6e0cd6b4c4f4eb20d4803c80498b09e1aede152e",
+      "size": 60737,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/6e0cd6b4c4f4eb20d4803c80498b09e1aede152e"
+    },
+    {
+      "path": "webrender/src/freelist.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "914a4b95bb788cbee65ed4e5c8563199b913e082",
+      "size": 7675,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/914a4b95bb788cbee65ed4e5c8563199b913e082"
+    },
+    {
+      "path": "webrender/src/glyph_cache.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "01119d0a1fa38bc3bac881474004901d340b495a",
+      "size": 6815,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/01119d0a1fa38bc3bac881474004901d340b495a"
+    },
+    {
+      "path": "webrender/src/gpu_types.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "d67ee27a27693a1eb210078108a81bd29a70d01d",
+      "size": 24636,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/d67ee27a27693a1eb210078108a81bd29a70d01d"
+    },
+    {
+      "path": "webrender/src/hit_test.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "b7de56c8ece2292d5d2c226c031224cb79a5527c",
+      "size": 18621,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/b7de56c8ece2292d5d2c226c031224cb79a5527c"
+    },
+    {
+      "path": "webrender/src/image_source.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "d7cd05dd9aede86aa5dcf9c6545190dded1ae7e2",
+      "size": 4277,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/d7cd05dd9aede86aa5dcf9c6545190dded1ae7e2"
+    },
+    {
+      "path": "webrender/src/image_tiling.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "4f4ee6e6846d658a6d83c07cee22891b448272f8",
+      "size": 27436,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/4f4ee6e6846d658a6d83c07cee22891b448272f8"
+    },
+    {
+      "path": "webrender/src/intern.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "24be37e4e39247480a35165600446a4e23644e13",
+      "size": 19382,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/24be37e4e39247480a35165600446a4e23644e13"
+    },
+    {
+      "path": "webrender/src/internal_types.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e648a07f22774fc1b908296c0ced2c5c8ef4b4aa",
+      "size": 37754,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/e648a07f22774fc1b908296c0ced2c5c8ef4b4aa"
+    },
+    {
+      "path": "webrender/src/invalidation/cached_surface.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "1d6d1ed8b9643871c5568283f9ea60159d15fb17",
+      "size": 20062,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/1d6d1ed8b9643871c5568283f9ea60159d15fb17"
+    },
+    {
+      "path": "webrender/src/invalidation/compare.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "d7cff73eaf5420edd277ecf419f11f8994cef043",
+      "size": 10962,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/d7cff73eaf5420edd277ecf419f11f8994cef043"
+    },
+    {
+      "path": "webrender/src/invalidation/mod.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "f4d086277d436bc287d9737f5477c4faa598a80b",
+      "size": 4397,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/f4d086277d436bc287d9737f5477c4faa598a80b"
+    },
+    {
+      "path": "webrender/src/invalidation/quadtree.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "6becc4637d0795a43a20ed9941e01499ddda9016",
+      "size": 17694,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/6becc4637d0795a43a20ed9941e01499ddda9016"
+    },
+    {
+      "path": "webrender/src/invalidation/vert_buffer.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "cbf23e1d64450975a3a3aede3d1d178030e589e3",
+      "size": 16750,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/cbf23e1d64450975a3a3aede3d1d178030e589e3"
+    },
+    {
+      "path": "webrender/src/lib.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "099088bf59e95e9c4ddbf41ba6692d78c04a6ef5",
+      "size": 8992,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/099088bf59e95e9c4ddbf41ba6692d78c04a6ef5"
+    },
+    {
+      "path": "webrender/src/lru_cache.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "d53119b77d178aa02e02ca5c0d63d88276adfdec",
+      "size": 23503,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/d53119b77d178aa02e02ca5c0d63d88276adfdec"
+    },
+    {
+      "path": "webrender/src/path_tiler.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "cd346d11226dd75fe1e331dcc84c2f4e33ae3ef0",
+      "size": 45714,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/cd346d11226dd75fe1e331dcc84c2f4e33ae3ef0"
+    },
+    {
+      "path": "webrender/src/pattern/backdrop.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "d5210b82cc126652b838f4a2af0ee9bbbbdb4232",
+      "size": 1893,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/d5210b82cc126652b838f4a2af0ee9bbbbdb4232"
+    },
+    {
+      "path": "webrender/src/pattern/box_shadow.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "0a74e54bd94215671bc3964687cc60e2db091ad7",
+      "size": 4346,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/0a74e54bd94215671bc3964687cc60e2db091ad7"
+    },
+    {
+      "path": "webrender/src/pattern/cutout.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "33b18384aa65bbb1116847145d426be5d3ca2195",
+      "size": 1407,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/33b18384aa65bbb1116847145d426be5d3ca2195"
+    },
+    {
+      "path": "webrender/src/pattern/filter.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "df6ee4c154adc87158596736b3764f2ba64fba18",
+      "size": 1602,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/df6ee4c154adc87158596736b3764f2ba64fba18"
+    },
+    {
+      "path": "webrender/src/pattern/gradient.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "526eb337ca7ddb11dbeae00d9a13bdc08b9d867c",
+      "size": 10687,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/526eb337ca7ddb11dbeae00d9a13bdc08b9d867c"
+    },
+    {
+      "path": "webrender/src/pattern/image.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "1c1a97b03fdc88020b7360067cea6f74052a5398",
+      "size": 2522,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/1c1a97b03fdc88020b7360067cea6f74052a5398"
+    },
+    {
+      "path": "webrender/src/pattern/mix_blend.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "d541c9ccd20764a041706d5659c1d47870543b5e",
+      "size": 2490,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/d541c9ccd20764a041706d5659c1d47870543b5e"
+    },
+    {
+      "path": "webrender/src/pattern/mod.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "225324e72ab9f93857535c941a973a06f0644abb",
+      "size": 6916,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/225324e72ab9f93857535c941a973a06f0644abb"
+    },
+    {
+      "path": "webrender/src/pattern/repeat.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "b52e2b08bcf98cfb604725fcaae3cc1046adcada",
+      "size": 1790,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/b52e2b08bcf98cfb604725fcaae3cc1046adcada"
+    },
+    {
+      "path": "webrender/src/pattern/yuv.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "b6791387b4bf74c05d18719a6fc33621b8cccec0",
+      "size": 7870,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/b6791387b4bf74c05d18719a6fc33621b8cccec0"
+    },
+    {
+      "path": "webrender/src/picture.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "c72f09b6180fcd44ec83f75613cc4c188d08d468",
+      "size": 135926,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/c72f09b6180fcd44ec83f75613cc4c188d08d468"
+    },
+    {
+      "path": "webrender/src/picture_composite_mode.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "8fe6dd4591b1eb78e34ec99144f5dd9a263a3c9e",
+      "size": 58591,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/8fe6dd4591b1eb78e34ec99144f5dd9a263a3c9e"
+    },
+    {
+      "path": "webrender/src/picture_graph.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "9048174dacca683bc1762fc444306b13eef6d2fa",
+      "size": 7652,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/9048174dacca683bc1762fc444306b13eef6d2fa"
+    },
+    {
+      "path": "webrender/src/picture_textures.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "cde454783ed8c48f913f976103b9c455e9af8ab4",
+      "size": 12222,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/cde454783ed8c48f913f976103b9c455e9af8ab4"
+    },
+    {
+      "path": "webrender/src/prepare.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "dbea65183287762d4d2536cbd46c132a85f7c777",
+      "size": 55425,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/dbea65183287762d4d2536cbd46c132a85f7c777"
+    },
+    {
+      "path": "webrender/src/prim_store/backdrop.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "864e8d85ffa513b480c46aec402edb6930448128",
+      "size": 3840,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/864e8d85ffa513b480c46aec402edb6930448128"
+    },
+    {
+      "path": "webrender/src/prim_store/borders.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "0c95e8cf1f6283423367e1f62f5491c97af2d0f5",
+      "size": 20245,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/0c95e8cf1f6283423367e1f62f5491c97af2d0f5"
+    },
+    {
+      "path": "webrender/src/prim_store/gradient/conic.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "5422be9e839bc9d4c42cb0f993004490b83c50a8",
+      "size": 4798,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/5422be9e839bc9d4c42cb0f993004490b83c50a8"
+    },
+    {
+      "path": "webrender/src/prim_store/gradient/linear.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "5790b38e11daaf0ac98b7663d1cb5730372ef83d",
+      "size": 12528,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/5790b38e11daaf0ac98b7663d1cb5730372ef83d"
+    },
+    {
+      "path": "webrender/src/prim_store/gradient/mod.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "6e5938aa4680e4ff89e28b47d39757e2bc5bcba7",
+      "size": 3753,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/6e5938aa4680e4ff89e28b47d39757e2bc5bcba7"
+    },
+    {
+      "path": "webrender/src/prim_store/gradient/radial.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "6745c886255ba6b08560cc8c17ffd247d4f29ed0",
+      "size": 4876,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/6745c886255ba6b08560cc8c17ffd247d4f29ed0"
+    },
+    {
+      "path": "webrender/src/prim_store/image.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "8be9115f7f448462c4ca731419edb4fa65eb9949",
+      "size": 29132,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/8be9115f7f448462c4ca731419edb4fa65eb9949"
+    },
+    {
+      "path": "webrender/src/prim_store/interned.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "4859e4f8c7e3ae2dbc73a4f15ebc5ff79ee79b79",
+      "size": 697,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/4859e4f8c7e3ae2dbc73a4f15ebc5ff79ee79b79"
+    },
+    {
+      "path": "webrender/src/prim_store/line_dec.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "85727195d24ea4200bb7def3714a51917fec8922",
+      "size": 11537,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/85727195d24ea4200bb7def3714a51917fec8922"
+    },
+    {
+      "path": "webrender/src/prim_store/mod.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "b12c03b610eed7dfe98063012257e9153e0fe633",
+      "size": 35610,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/b12c03b610eed7dfe98063012257e9153e0fe633"
+    },
+    {
+      "path": "webrender/src/prim_store/picture.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "d040a8b8a009d9cb1bfd79dac19280c2b071d267",
+      "size": 3029,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/d040a8b8a009d9cb1bfd79dac19280c2b071d267"
+    },
+    {
+      "path": "webrender/src/prim_store/rectangle.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "b65fc07b9cc3db1fa93e486940da0ec6662f6c1a",
+      "size": 1960,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/b65fc07b9cc3db1fa93e486940da0ec6662f6c1a"
+    },
+    {
+      "path": "webrender/src/prim_store/storage.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "18e9993546c9da15b3b80bb4debbe6a314c1c577",
+      "size": 5816,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/18e9993546c9da15b3b80bb4debbe6a314c1c577"
+    },
+    {
+      "path": "webrender/src/prim_store/text_run.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e8d5a08c2b2c22a57ad6ef7f801875b4ea5b298d",
+      "size": 31371,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/e8d5a08c2b2c22a57ad6ef7f801875b4ea5b298d"
+    },
+    {
+      "path": "webrender/src/print_tree.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "56d78525614137ac93bb8844dfc74d5215713bb8",
+      "size": 3278,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/56d78525614137ac93bb8844dfc74d5215713bb8"
+    },
+    {
+      "path": "webrender/src/profiler.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "1ba1ec3d26ceb095f3a2339bfe1719e0ed02eb1e",
+      "size": 82546,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/1ba1ec3d26ceb095f3a2339bfe1719e0ed02eb1e"
+    },
+    {
+      "path": "webrender/src/quad.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "97761d33fa4963aba2eaa2f0093d4ea28544542f",
+      "size": 96004,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/97761d33fa4963aba2eaa2f0093d4ea28544542f"
+    },
+    {
+      "path": "webrender/src/quad_clip.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "3479f43793b06336e0e583bc874d07fea966cee0",
+      "size": 6959,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/3479f43793b06336e0e583bc874d07fea966cee0"
+    },
+    {
+      "path": "webrender/src/rectangle_occlusion.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "f104a3c42bafa5dde22f9f09d0e48d9e830074ab",
+      "size": 7526,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/f104a3c42bafa5dde22f9f09d0e48d9e830074ab"
+    },
+    {
+      "path": "webrender/src/render_api.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "711b90bbe9a0fa808600416fba2984e2af9e9ba1",
+      "size": 71304,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/711b90bbe9a0fa808600416fba2984e2af9e9ba1"
+    },
+    {
+      "path": "webrender/src/render_backend.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "3545e5c131156d81f26b0bf0bf81ca418e8effe5",
+      "size": 118936,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/3545e5c131156d81f26b0bf0bf81ca418e8effe5"
+    },
+    {
+      "path": "webrender/src/render_backend_pool.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "249e1dde9dd6a3b260c06ba339122f099e7501b1",
+      "size": 9836,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/249e1dde9dd6a3b260c06ba339122f099e7501b1"
+    },
+    {
+      "path": "webrender/src/render_target.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "44ca8208d0c0c4bb993bd27b44d4738b69c9f83b",
+      "size": 45005,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/44ca8208d0c0c4bb993bd27b44d4738b69c9f83b"
+    },
+    {
+      "path": "webrender/src/render_task.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "98ee0a8761e10c49401d20dda621dbd63482e9ef",
+      "size": 103857,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/98ee0a8761e10c49401d20dda621dbd63482e9ef"
+    },
+    {
+      "path": "webrender/src/render_task_cache.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "61d61a501bcd57a4292a6d404c549f6760ea7090",
+      "size": 14484,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/61d61a501bcd57a4292a6d404c549f6760ea7090"
+    },
+    {
+      "path": "webrender/src/render_task_graph.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "02a86d58d84e4291274c56e228e3df141167744a",
+      "size": 54390,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/02a86d58d84e4291274c56e228e3df141167744a"
+    },
+    {
+      "path": "webrender/src/renderdoc.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "52d9332f3bcb3b6c93dfc5d08e5ac2758ea10dbe",
+      "size": 10272,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/52d9332f3bcb3b6c93dfc5d08e5ac2758ea10dbe"
+    },
+    {
+      "path": "webrender/src/renderer/composite.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e9ace828bc4aa6668bb3008dcc7262dde5010b6c",
+      "size": 70340,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/e9ace828bc4aa6668bb3008dcc7262dde5010b6c"
+    },
+    {
+      "path": "webrender/src/renderer/debug.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "381059cc2abad9fefd7b1b96bce1ce99b13f81e2",
+      "size": 34106,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/381059cc2abad9fefd7b1b96bce1ce99b13f81e2"
+    },
+    {
+      "path": "webrender/src/renderer/external_image.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "3837af96caae38626e8d6c71e97f6760b73f2c83",
+      "size": 3757,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/3837af96caae38626e8d6c71e97f6760b73f2c83"
+    },
+    {
+      "path": "webrender/src/renderer/gpu_buffer.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "9e1a01545d0043828c7db22f8a3e06d7cf9b1679",
+      "size": 26999,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/9e1a01545d0043828c7db22f8a3e06d7cf9b1679"
+    },
+    {
+      "path": "webrender/src/renderer/init.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "f29a6b9f30981faaa6dbbedf194f619bcbffcc34",
+      "size": 35452,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/f29a6b9f30981faaa6dbbedf194f619bcbffcc34"
+    },
+    {
+      "path": "webrender/src/renderer/mod.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "50f8d301a0e86a7c695373da0b14cc8e21c90cfd",
+      "size": 194821,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/50f8d301a0e86a7c695373da0b14cc8e21c90cfd"
+    },
+    {
+      "path": "webrender/src/renderer/shade.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "f832e03673c24bfdb6faa5bfe344223297b3d226",
+      "size": 48929,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/f832e03673c24bfdb6faa5bfe344223297b3d226"
+    },
+    {
+      "path": "webrender/src/renderer/upload.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "4d4bc3b8626fe14955e634349235b0e55499913e",
+      "size": 33951,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/4d4bc3b8626fe14955e634349235b0e55499913e"
+    },
+    {
+      "path": "webrender/src/renderer/vertex.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "623864a7818307927029a3baefe6cdce58363956",
+      "size": 30047,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/623864a7818307927029a3baefe6cdce58363956"
+    },
+    {
+      "path": "webrender/src/resource_cache.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "757c5cfd6bff1a3106c496e17ee7da2098489e22",
+      "size": 102791,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/757c5cfd6bff1a3106c496e17ee7da2098489e22"
+    },
+    {
+      "path": "webrender/src/scene.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "2ad892c3cf386c00dc99986976c0c827c9eca3ea",
+      "size": 16535,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/2ad892c3cf386c00dc99986976c0c827c9eca3ea"
+    },
+    {
+      "path": "webrender/src/scene_builder_thread.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "4ea144d7941e7989f19c87b7ed7cc19dd53b15cf",
+      "size": 57482,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/4ea144d7941e7989f19c87b7ed7cc19dd53b15cf"
+    },
+    {
+      "path": "webrender/src/scene_building.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "1c25768b93ef5e2f88d486ecc95158639709d1c9",
+      "size": 175844,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/1c25768b93ef5e2f88d486ecc95158639709d1c9"
+    },
+    {
+      "path": "webrender/src/scene_debug.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "b696d71ed2f2e3ad4bd7c3c1efd047b268aa70e2",
+      "size": 12510,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/b696d71ed2f2e3ad4bd7c3c1efd047b268aa70e2"
+    },
+    {
+      "path": "webrender/src/screen_capture.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "43b2c5fcb0c06ddd003f8016459b56f5503ad386",
+      "size": 19953,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/43b2c5fcb0c06ddd003f8016459b56f5503ad386"
+    },
+    {
+      "path": "webrender/src/segment.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "d847423c28ab0eb3e2cec18fbd0f153cf29e38a1",
+      "size": 40775,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/d847423c28ab0eb3e2cec18fbd0f153cf29e38a1"
+    },
+    {
+      "path": "webrender/src/shutdown_test.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "561227c7ffb60c8db0e297612d0e602774ef96b3",
+      "size": 13820,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/561227c7ffb60c8db0e297612d0e602774ef96b3"
+    },
+    {
+      "path": "webrender/src/space.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "9767eb4b627d7ecd7882b901346b1e9003d677b8",
+      "size": 42976,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/9767eb4b627d7ecd7882b901346b1e9003d677b8"
+    },
+    {
+      "path": "webrender/src/spatial_node.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e93dcf2db267bc32166318ca924fe4777f2f4020",
+      "size": 51646,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/e93dcf2db267bc32166318ca924fe4777f2f4020"
+    },
+    {
+      "path": "webrender/src/spatial_tree.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "7c13576e0b8e7008b549ab452b3db606a4ba047a",
+      "size": 76401,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/7c13576e0b8e7008b549ab452b3db606a4ba047a"
+    },
+    {
+      "path": "webrender/src/surface.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "74a5e0603b00ed42cbda120bc2a728f134b0d56d",
+      "size": 39698,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/74a5e0603b00ed42cbda120bc2a728f134b0d56d"
+    },
+    {
+      "path": "webrender/src/svg_filter.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "77d418dd57e5526eb6071dd51d6870db8f1fec0f",
+      "size": 89841,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/77d418dd57e5526eb6071dd51d6870db8f1fec0f"
+    },
+    {
+      "path": "webrender/src/telemetry.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "26013e138e8fd8a654703126b07b01d6b0866653",
+      "size": 2740,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/26013e138e8fd8a654703126b07b01d6b0866653"
+    },
+    {
+      "path": "webrender/src/texture_cache.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "ac3470dc64a2e02061e899a83a93f0d5102b588f",
+      "size": 69885,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/ac3470dc64a2e02061e899a83a93f0d5102b588f"
+    },
+    {
+      "path": "webrender/src/texture_pack/guillotine.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "68a08caf2f4e574d91060166216d2c3b270d9c93",
+      "size": 10011,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/68a08caf2f4e574d91060166216d2c3b270d9c93"
+    },
+    {
+      "path": "webrender/src/texture_pack/mod.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "47de681cbe751335c0b081692b0eb61d0db69f35",
+      "size": 15239,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/47de681cbe751335c0b081692b0eb61d0db69f35"
+    },
+    {
+      "path": "webrender/src/tile_cache/mod.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "91c73bd749e46204cce7d2635612e1fe7a02acff",
+      "size": 159511,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/91c73bd749e46204cce7d2635612e1fe7a02acff"
+    },
+    {
+      "path": "webrender/src/tile_cache/slice_builder.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "a779de487a23c995038f02873e59fc5625a41e22",
+      "size": 33545,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/a779de487a23c995038f02873e59fc5625a41e22"
+    },
+    {
+      "path": "webrender/src/transform.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "9ee33b7e23053090157fea57602b7e626aae4d47",
+      "size": 11130,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/9ee33b7e23053090157fea57602b7e626aae4d47"
+    },
+    {
+      "path": "webrender/src/util.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "50891b9bd5fbf8cdb2e7a1cb0f52a214e474ca74",
+      "size": 42646,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/50891b9bd5fbf8cdb2e7a1cb0f52a214e474ca74"
+    },
+    {
+      "path": "webrender/src/visibility.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "03b0bdcf46e7c9efcdca4f68be69cfe77cc2f737",
+      "size": 41566,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/03b0bdcf46e7c9efcdca4f68be69cfe77cc2f737"
+    },
+    {
+      "path": "webrender/tests/angle_shader_validation.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "c7811d6e3afb2f8003807411f2686f9059cc4396",
+      "size": 3038,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/c7811d6e3afb2f8003807411f2686f9059cc4396"
+    },
+    {
+      "path": "webrender/tests/gl_leaks.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "bf79cb9f98add77f6b0c262fd4c669959107c475",
+      "size": 3873,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/bf79cb9f98add77f6b0c262fd4c669959107c475"
+    },
+    {
+      "path": "webrender_api/Cargo.toml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "61cd402b2dde9744cf68852547adb9a08770747d",
+      "size": 913,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/61cd402b2dde9744cf68852547adb9a08770747d"
+    },
+    {
+      "path": "webrender_api/src/channel.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "7d21c6e4339601be8987e698f781f3edd0f5bb08",
+      "size": 6314,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/7d21c6e4339601be8987e698f781f3edd0f5bb08"
+    },
+    {
+      "path": "webrender_api/src/color.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "38c43b628924cdda77680d4e1b097a5873f191b9",
+      "size": 4885,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/38c43b628924cdda77680d4e1b097a5873f191b9"
+    },
+    {
+      "path": "webrender_api/src/debugger.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "f21a179060f858adf185bfd2891cc7aa859a128d",
+      "size": 9938,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/f21a179060f858adf185bfd2891cc7aa859a128d"
+    },
+    {
+      "path": "webrender_api/src/display_item.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "3bc83ba10c67643ac3190f4afcb90413680a7c88",
+      "size": 103063,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/3bc83ba10c67643ac3190f4afcb90413680a7c88"
+    },
+    {
+      "path": "webrender_api/src/display_list.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "78aeeaf328a09254dfb27fbe90da1d085fc76289",
+      "size": 128451,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/78aeeaf328a09254dfb27fbe90da1d085fc76289"
+    },
+    {
+      "path": "webrender_api/src/fast_transform.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "11ac6798085f00e02948f3bc68387dcc638ead4a",
+      "size": 18333,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/11ac6798085f00e02948f3bc68387dcc638ead4a"
+    },
+    {
+      "path": "webrender_api/src/font.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "6827669ef4b858ec3c50a9d798e0b1d1815deab6",
+      "size": 12712,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/6827669ef4b858ec3c50a9d798e0b1d1815deab6"
+    },
+    {
+      "path": "webrender_api/src/gradient_builder.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "8051f95a312b6d61674f1f3fe2d380b6eeb9aa71",
+      "size": 6705,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/8051f95a312b6d61674f1f3fe2d380b6eeb9aa71"
+    },
+    {
+      "path": "webrender_api/src/image.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "b5edaca3f3768126936df604d5c880d0e235586b",
+      "size": 22044,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/b5edaca3f3768126936df604d5c880d0e235586b"
+    },
+    {
+      "path": "webrender_api/src/interned_prims.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "79e2dc487339ed0af0ffe0affffa49cc012f0b58",
+      "size": 10645,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/79e2dc487339ed0af0ffe0affffa49cc012f0b58"
+    },
+    {
+      "path": "webrender_api/src/interning.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "402ccd484756213ea2c185c84faa8dc06f4259f1",
+      "size": 32695,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/402ccd484756213ea2c185c84faa8dc06f4259f1"
+    },
+    {
+      "path": "webrender_api/src/key_types.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "b78600e619eae70f351bb290e744145c8d999931",
+      "size": 21339,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/b78600e619eae70f351bb290e744145c8d999931"
+    },
+    {
+      "path": "webrender_api/src/lib.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "db82430971bae64acb4c10d9c22690f4d53031a2",
+      "size": 32084,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/db82430971bae64acb4c10d9c22690f4d53031a2"
+    },
+    {
+      "path": "webrender_api/src/path.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "cc4ec8fc00e7023f400dd98bcd19d33afff00808",
+      "size": 12465,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/cc4ec8fc00e7023f400dd98bcd19d33afff00808"
+    },
+    {
+      "path": "webrender_api/src/prim_geometry.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "9c19730de77c7af0e8a9758af59d50ed26a6d7a2",
+      "size": 20364,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/9c19730de77c7af0e8a9758af59d50ed26a6d7a2"
+    },
+    {
+      "path": "webrender_api/src/tile_pool.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "b27f66cd25a0ee8de2ae57b2f5ee13ec9626e54e",
+      "size": 5961,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/b27f66cd25a0ee8de2ae57b2f5ee13ec9626e54e"
+    },
+    {
+      "path": "webrender_api/src/units.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "48b5b3fb492fd9dd6b57adf7dc56b26ddb52ea4c",
+      "size": 12416,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/48b5b3fb492fd9dd6b57adf7dc56b26ddb52ea4c"
+    },
+    {
+      "path": "webrender_build/Cargo.toml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "623291a47612e129448dca5c3c7f7d9b2373733e",
+      "size": 453,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/623291a47612e129448dca5c3c7f7d9b2373733e"
+    },
+    {
+      "path": "webrender_build/src/lib.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "3c55f47dd6e456e9141957388825eff67581b70d",
+      "size": 586,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/3c55f47dd6e456e9141957388825eff67581b70d"
+    },
+    {
+      "path": "webrender_build/src/shader.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "85434dcf4edfe067d34c571cdce9330291d1119a",
+      "size": 18568,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/85434dcf4edfe067d34c571cdce9330291d1119a"
+    },
+    {
+      "path": "webrender_build/src/shader_features.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "2a6ae52a7aef5ecf0de45d433d9b9471c27ed58c",
+      "size": 7267,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/2a6ae52a7aef5ecf0de45d433d9b9471c27ed58c"
+    },
+    {
+      "path": "wr_glyph_rasterizer/Cargo.toml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "de3ffa110ea619b62711308c3e3b2a3118d0a3f8",
+      "size": 1686,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/de3ffa110ea619b62711308c3e3b2a3118d0a3f8"
+    },
+    {
+      "path": "wr_glyph_rasterizer/README.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "0c23554e44495ccf1cf132880983b53168efc1d7",
+      "size": 49,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/0c23554e44495ccf1cf132880983b53168efc1d7"
+    },
+    {
+      "path": "wr_glyph_rasterizer/examples/basic.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "4c594ff9b97779ab9520d5825194c8ed265eccb6",
+      "size": 8773,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/4c594ff9b97779ab9520d5825194c8ed265eccb6"
+    },
+    {
+      "path": "wr_glyph_rasterizer/examples/common/boilerplate.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "8e4a15a5801780960c25d92b3b2a6e76ffae87df",
+      "size": 8193,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/8e4a15a5801780960c25d92b3b2a6e76ffae87df"
+    },
+    {
+      "path": "wr_glyph_rasterizer/src/gamma_lut.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "82555c8a06d870d8c42f472db6420e596ded5d9d",
+      "size": 14129,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/82555c8a06d870d8c42f472db6420e596ded5d9d"
+    },
+    {
+      "path": "wr_glyph_rasterizer/src/lib.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e83a95bae59719a34442229ec0fdfd4904b07215",
+      "size": 1421,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/e83a95bae59719a34442229ec0fdfd4904b07215"
+    },
+    {
+      "path": "wr_glyph_rasterizer/src/platform/macos/font.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "3e18b99adaa5c5ca57fa58ff8a9b44eae149c530",
+      "size": 39023,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/3e18b99adaa5c5ca57fa58ff8a9b44eae149c530"
+    },
+    {
+      "path": "wr_glyph_rasterizer/src/platform/unix/font.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "d53f1462d933bb0821a96edb16394e9573e63f47",
+      "size": 48163,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/d53f1462d933bb0821a96edb16394e9573e63f47"
+    },
+    {
+      "path": "wr_glyph_rasterizer/src/platform/windows/font.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "4a00da26346584bff48985ccf8f23aec9b828e59",
+      "size": 25693,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/4a00da26346584bff48985ccf8f23aec9b828e59"
+    },
+    {
+      "path": "wr_glyph_rasterizer/src/profiler.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "89d126e3fc6f1f9330885fd635c6e6c115b82746",
+      "size": 390,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/89d126e3fc6f1f9330885fd635c6e6c115b82746"
+    },
+    {
+      "path": "wr_glyph_rasterizer/src/rasterizer.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "cfbeb5b42f6fa94d63e876a1f58bf1631a0edc94",
+      "size": 81260,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/cfbeb5b42f6fa94d63e876a1f58bf1631a0edc94"
+    },
+    {
+      "path": "wr_glyph_rasterizer/src/telemetry.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "28000440b28f536dd50ea2d3cceed42d2fbd29bd",
+      "size": 1009,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/28000440b28f536dd50ea2d3cceed42d2fbd29bd"
+    },
+    {
+      "path": "wr_glyph_rasterizer/src/types.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "35dffdc68861b819c1304639bf35c131859c1baf",
+      "size": 452,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/35dffdc68861b819c1304639bf35c131859c1baf"
+    },
+    {
+      "path": "wr_malloc_size_of/Cargo.toml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "44bc7310dcc119d748e43c9315c3384187326cf8",
+      "size": 448,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/44bc7310dcc119d748e43c9315c3384187326cf8"
+    },
+    {
+      "path": "wr_malloc_size_of/LICENSE-APACHE",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "16fe87b06e802f094b3fbb0894b137bca2b16ef1",
+      "size": 10847,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/16fe87b06e802f094b3fbb0894b137bca2b16ef1"
+    },
+    {
+      "path": "wr_malloc_size_of/LICENSE-MIT",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "31aa79387f27e730e33d871925e152e35e428031",
+      "size": 1023,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/31aa79387f27e730e33d871925e152e35e428031"
+    },
+    {
+      "path": "wr_malloc_size_of/lib.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "2becae7dd498cc47eaa19fc559fb0fe076b58e69",
+      "size": 17326,
+      "url": "https://api.github.com/repos/mozilla-firefox/firefox/git/blobs/2becae7dd498cc47eaa19fc559fb0fe076b58e69"
+    }
+  ],
+  "workspace_manifest_modified": true
+}

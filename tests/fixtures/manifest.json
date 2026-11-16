@@ -1,0 +1,840 @@
+{
+  "version": 1,
+  "defaults": {
+    "max_difference": 0,
+    "max_pixels": 0
+  },
+  "cases": [
+    {
+      "name": "block-box",
+      "file": "tests/fixtures/block-box.html",
+      "features": [
+        "css-width",
+        "css-height",
+        "css-padding",
+        "css-border",
+        "css-background-color"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "center-auto",
+      "file": "tests/fixtures/center-auto.html",
+      "features": [
+        "css-margin",
+        "css-width"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "margin-collapse",
+      "file": "tests/fixtures/margin-collapse.html",
+      "features": [
+        "css-margin"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "negative-margins",
+      "file": "tests/fixtures/negative-margins.html",
+      "features": [
+        "css-margin"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "padding-four",
+      "file": "tests/fixtures/padding-four.html",
+      "features": [
+        "css-padding",
+        "css-border"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "border-sides",
+      "file": "tests/fixtures/border-sides.html",
+      "features": [
+        "css-border"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "rounded",
+      "file": "tests/fixtures/rounded.html",
+      "features": [
+        "css-border-radius",
+        "css-border"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "display-none",
+      "file": "tests/fixtures/display-none.html",
+      "features": [
+        "css-display-none",
+        "css-display"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "cascade",
+      "file": "tests/fixtures/cascade.html",
+      "features": [
+        "css-selector-type",
+        "css-selector-class",
+        "css-selector-id",
+        "html-style"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "important",
+      "file": "tests/fixtures/important.html",
+      "features": [
+        "css-important",
+        "html-style"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "shorthand-important",
+      "file": "tests/fixtures/shorthand-important.html",
+      "features": [
+        "css-important",
+        "css-padding"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "invalid-declaration",
+      "file": "tests/fixtures/invalid-declaration.html",
+      "features": [
+        "html-style"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "selectors",
+      "file": "tests/fixtures/selectors.html",
+      "features": [
+        "css-selector-child",
+        "css-selector-adjacent-sibling",
+        "css-selector-attribute",
+        "css-selector-chaining"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "general-sibling",
+      "file": "tests/fixtures/general-sibling.html",
+      "features": [
+        "css-selector-general-sibling"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "descendant-universal",
+      "file": "tests/fixtures/descendant-universal.html",
+      "features": [
+        "css-selector-descendant",
+        "css-selector-universal"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "media",
+      "file": "tests/fixtures/media.html",
+      "features": [
+        "css-at-media"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "media-narrow",
+      "file": "tests/fixtures/media-narrow.html",
+      "features": [
+        "css-at-media"
+      ],
+      "width": 320,
+      "height": 600
+    },
+    {
+      "name": "percent-units",
+      "file": "tests/fixtures/percent-units.html",
+      "features": [
+        "css-unit-percent",
+        "css-width"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "absolute-units",
+      "file": "tests/fixtures/absolute-units.html",
+      "features": [
+        "css-unit-in",
+        "css-unit-pt",
+        "css-unit-pc",
+        "css-unit-cm"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "max-min",
+      "file": "tests/fixtures/max-min.html",
+      "features": [
+        "css-max-width",
+        "css-min-height"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "box-sizing",
+      "file": "tests/fixtures/box-sizing.html",
+      "features": [
+        "css-box-sizing"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "text-basic",
+      "file": "tests/fixtures/text-basic.html",
+      "features": [
+        "html-p",
+        "html-strong",
+        "css-font-weight"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "text-wrap",
+      "file": "tests/fixtures/text-wrap.html",
+      "features": [
+        "css-white-space",
+        "css-font-size"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "text-align",
+      "file": "tests/fixtures/text-align.html",
+      "features": [
+        "css-text-align"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "text-pre",
+      "file": "tests/fixtures/text-pre.html",
+      "features": [
+        "html-pre",
+        "css-white-space"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "text-decoration",
+      "file": "tests/fixtures/text-decoration.html",
+      "features": [
+        "css-text-decoration",
+        "html-del"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "table-fixed",
+      "file": "tests/fixtures/table-fixed.html",
+      "features": [
+        "html-table",
+        "css-table-layout",
+        "css-border-spacing"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "table-span",
+      "file": "tests/fixtures/table-span.html",
+      "features": [
+        "html-table",
+        "css-border-spacing"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "table-rowspan",
+      "file": "tests/fixtures/table-rowspan.html",
+      "features": [
+        "html-table"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "table-text",
+      "file": "tests/fixtures/table-text.html",
+      "features": [
+        "html-table",
+        "css-vertical-align"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "parser-table-repair",
+      "file": "tests/fixtures/parser-table-repair.html",
+      "features": [
+        "html-table",
+        "html-comments"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "parser-foster",
+      "file": "tests/fixtures/parser-foster.html",
+      "features": [
+        "html-table"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "parser-adoption",
+      "file": "tests/fixtures/parser-adoption.html",
+      "features": [
+        "html-p",
+        "html-strong"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "entities",
+      "file": "tests/fixtures/entities.html",
+      "features": [
+        "html-p"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "float",
+      "file": "tests/fixtures/float.html",
+      "features": [
+        "css-float"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "clear",
+      "file": "tests/fixtures/clear.html",
+      "features": [
+        "css-clear",
+        "css-float"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "inline-block",
+      "file": "tests/fixtures/inline-block.html",
+      "features": [
+        "css-display"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "lists",
+      "file": "tests/fixtures/lists.html",
+      "features": [
+        "html-lists",
+        "css-list-style-type"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "rtl",
+      "file": "tests/fixtures/rtl.html",
+      "features": [
+        "html-dir",
+        "css-direction"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "logical",
+      "file": "tests/fixtures/logical.html",
+      "features": [
+        "css-padding-inline-start-end",
+        "css-margin-inline-start-end"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "gradient",
+      "file": "tests/fixtures/gradient.html",
+      "features": [
+        "css-linear-gradient"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "visibility",
+      "file": "tests/fixtures/visibility.html",
+      "features": [
+        "css-visibility"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "opacity",
+      "file": "tests/fixtures/opacity.html",
+      "features": [
+        "css-opacity"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "calc-width",
+      "file": "tests/fixtures/calc-width.html",
+      "features": [
+        "css-unit-calc",
+        "css-unit-percent"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "calc-scale",
+      "file": "tests/fixtures/calc-scale.html",
+      "features": [
+        "css-unit-calc",
+        "css-unit-em"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "unit-rem",
+      "file": "tests/fixtures/unit-rem.html",
+      "features": [
+        "css-unit-rem",
+        "css-unit-em"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "font-zero",
+      "file": "tests/fixtures/font-zero.html",
+      "features": [
+        "css-font-size",
+        "css-line-height",
+        "css-display"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "lineheight-inherit",
+      "file": "tests/fixtures/lineheight-inherit.html",
+      "features": [
+        "css-line-height",
+        "css-font-size"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "inline-highlight",
+      "file": "tests/fixtures/inline-highlight.html",
+      "features": [
+        "css-background-color",
+        "html-span"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "font-arial",
+      "file": "tests/fixtures/font-arial.html",
+      "features": [
+        "css-font"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "nested-email-table",
+      "file": "tests/fixtures/nested-email-table.html",
+      "features": [
+        "html-table",
+        "html-width",
+        "css-width"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "cellpadding",
+      "file": "tests/fixtures/cellpadding.html",
+      "features": [
+        "html-cellpadding",
+        "html-cellspacing",
+        "html-table"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "table-collapse",
+      "file": "tests/fixtures/table-collapse.html",
+      "features": [
+        "css-border-collapse",
+        "html-table"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "image-native",
+      "file": "tests/fixtures/image-native.html",
+      "features": [
+        "html-img",
+        "image-png"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "image-data",
+      "file": "tests/fixtures/image-data.html",
+      "features": [
+        "html-img",
+        "image-base64",
+        "image-png"
+      ],
+      "width": 800,
+      "height": 600,
+      "image_raster_tolerance": {
+        "regions": [
+          [
+            0,
+            0,
+            80,
+            40
+          ]
+        ],
+        "max_channel_delta": 32,
+        "max_mean_channel_delta": 3.0,
+        "reason": "Isolated enlargement of the same 8x4 PNG. Allow limited media filtering precision differences; this region contains raster only. Source/DOM/layout, alpha and all surrounding pixels remain exact."
+      }
+    },
+    {
+      "name": "image-positioned",
+      "file": "tests/fixtures/image-positioned.html",
+      "features": [
+        "html-img",
+        "css-padding"
+      ],
+      "width": 800,
+      "height": 600,
+      "image_raster_tolerance": {
+        "regions": [
+          [
+            20,
+            20,
+            80,
+            40
+          ]
+        ],
+        "max_channel_delta": 32,
+        "max_mean_channel_delta": 3.0,
+        "reason": "Isolated enlargement of the same 8x4 PNG. Allow limited media filtering precision differences; this region contains raster only. Source/DOM/layout, alpha and all surrounding pixels remain exact."
+      }
+    },
+    {
+      "name": "image-block",
+      "file": "tests/fixtures/image-block.html",
+      "features": [
+        "html-img",
+        "css-display"
+      ],
+      "width": 800,
+      "height": 600,
+      "image_raster_tolerance": {
+        "regions": [
+          [
+            0,
+            0,
+            80,
+            40
+          ]
+        ],
+        "max_channel_delta": 32,
+        "max_mean_channel_delta": 3.0,
+        "reason": "Isolated enlargement of the same 8x4 PNG. Allow limited media filtering precision differences; this region contains raster only. Source/DOM/layout, alpha and all surrounding pixels remain exact."
+      }
+    },
+    {
+      "name": "object-contain",
+      "file": "tests/fixtures/object-contain.html",
+      "features": [
+        "css-object-fit",
+        "html-img"
+      ],
+      "width": 800,
+      "height": 600,
+      "image_raster_tolerance": {
+        "regions": [
+          [
+            0,
+            20,
+            80,
+            40
+          ]
+        ],
+        "max_channel_delta": 32,
+        "max_mean_channel_delta": 3.0,
+        "reason": "Isolated enlargement of the same 8x4 PNG. Allow limited media filtering precision differences; this region contains raster only. Source/DOM/layout, alpha and all surrounding pixels remain exact."
+      }
+    },
+    {
+      "name": "object-cover",
+      "file": "tests/fixtures/object-cover.html",
+      "features": [
+        "css-object-fit",
+        "css-object-position"
+      ],
+      "width": 800,
+      "height": 600,
+      "image_raster_tolerance": {
+        "regions": [
+          [
+            0,
+            0,
+            80,
+            80
+          ]
+        ],
+        "max_channel_delta": 32,
+        "max_mean_channel_delta": 3.0,
+        "reason": "Isolated enlargement of the same 8x4 PNG. Allow limited media filtering precision differences; this region contains raster only. Source/DOM/layout, alpha and all surrounding pixels remain exact."
+      }
+    },
+    {
+      "name": "background-repeat",
+      "file": "tests/fixtures/background-repeat.html",
+      "features": [
+        "css-background-image",
+        "css-background-repeat"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "background-position",
+      "file": "tests/fixtures/background-position.html",
+      "features": [
+        "css-background-position",
+        "css-background-repeat"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "background-cover",
+      "file": "tests/fixtures/background-cover.html",
+      "features": [
+        "css-background-size",
+        "css-background-position"
+      ],
+      "width": 800,
+      "height": 600,
+      "image_raster_tolerance": {
+        "regions": [
+          [
+            0,
+            0,
+            80,
+            80
+          ]
+        ],
+        "max_channel_delta": 32,
+        "max_mean_channel_delta": 3.0,
+        "reason": "Isolated enlargement of the same 8x4 PNG. Allow limited media filtering precision differences; this region contains raster only. Source/DOM/layout, alpha and all surrounding pixels remain exact."
+      }
+    },
+    {
+      "name": "background-clip",
+      "file": "tests/fixtures/background-clip.html",
+      "features": [
+        "css-background-clip",
+        "css-background-color"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "legacy-font",
+      "file": "tests/fixtures/legacy-font.html",
+      "features": [
+        "css-font",
+        "html-width"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "css-comments",
+      "file": "tests/fixtures/css-comments.html",
+      "features": [
+        "css-comments"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "initial-value",
+      "file": "tests/fixtures/initial-value.html",
+      "features": [
+        "css-unit-initial"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "negative-calc",
+      "file": "tests/fixtures/negative-calc.html",
+      "features": [
+        "css-unit-calc"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "nested-opacity",
+      "file": "tests/fixtures/nested-opacity.html",
+      "features": [
+        "css-opacity"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "css-wide-inherit",
+      "file": "tests/fixtures/css-wide-inherit.html",
+      "features": [
+        "css-unit-initial",
+        "html-style"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "fixed-table-overflow",
+      "file": "tests/fixtures/fixed-table-overflow.html",
+      "features": [
+        "css-table-layout",
+        "html-table",
+        "css-overflow"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "linked-image-opacity",
+      "file": "tests/fixtures/linked-image-opacity.html",
+      "features": [
+        "css-opacity",
+        "html-img",
+        "html-anchor-links"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "wrapped-link",
+      "file": "tests/fixtures/wrapped-link.html",
+      "features": [
+        "html-anchor-links",
+        "css-white-space"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "empty-cells",
+      "file": "tests/fixtures/empty-cells.html",
+      "features": [
+        "css-empty-cells",
+        "html-table"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "author-outline",
+      "file": "tests/fixtures/author-outline.html",
+      "features": [
+        "css-outline"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "ellipsis",
+      "file": "tests/fixtures/ellipsis.html",
+      "features": [
+        "css-text-overflow",
+        "css-overflow"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "border-style-default-width",
+      "file": "tests/fixtures/border-style-default-width.html",
+      "features": [
+        "css-border"
+      ],
+      "width": 800,
+      "height": 600
+    }
+  ]
+}

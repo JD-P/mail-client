@@ -1,0 +1,17 @@
+{
+  "notes": "Reduced standalone workspace and non-Gecko Glean placeholder, distinct from the pinned rendering source tree.",
+  "files": [
+    {
+      "path": "vendor/wr/Cargo.toml",
+      "sha256": "d1523ebb0a31d09595967556ee54239bb0c42aa31a476eb8e7b9202ee26586a0"
+    },
+    {
+      "path": "vendor/wr/fog/Cargo.toml",
+      "sha256": "e87ee5bc34ae3e7518bb8322aa2b4e13562d690e3498e183466e2c46dcea696d"
+    },
+    {
+      "path": "vendor/wr/fog/src/main.rs",
+      "sha256": "45ecd4777546dbfb221a4beb3bf7895238b49b7be5e4be7d53844ff5487824a9"
+    }
+  ]
+}

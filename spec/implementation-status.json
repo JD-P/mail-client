@@ -1,0 +1,3235 @@
+{
+  "scope": "Requested policy is preserved separately; implemented means executable bounded behavior, not complete standards conformance or formal verification. Fixture coverage is narrow and synthetic.",
+  "requested_features": 155,
+  "counts": {
+    "partial": 80,
+    "implemented": 70,
+    "integration": 5
+  },
+  "rows": [
+    {
+      "slug": "css-accent-color",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-align-items",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-animation",
+      "requested_policy": "Reject",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Reject."
+    },
+    {
+      "slug": "css-aspect-ratio",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-at-font-face",
+      "requested_policy": "Reject",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Reject."
+    },
+    {
+      "slug": "css-at-import",
+      "requested_policy": "Reject",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Reject."
+    },
+    {
+      "slug": "css-at-keyframes",
+      "requested_policy": "Reject",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Reject."
+    },
+    {
+      "slug": "css-at-media-device-pixel-ratio",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-at-media-hover",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-at-media-orientation",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-at-media-prefers-color-scheme",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-at-media-prefers-reduced-motion",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-at-media",
+      "requested_policy": "Bounded",
+      "status": "partial",
+      "modules": [
+        "src/css.rs"
+      ],
+      "fixtures": [
+        "media",
+        "media-narrow"
+      ],
+      "notes": "Bounded screen/all and min/max viewport width conditions, comma alternatives and basic Boolean forms. Arbitrarily nested Boolean query grammar is incomplete."
+    },
+    {
+      "slug": "css-at-supports",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-backdrop-filter",
+      "requested_policy": "Reject",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Reject."
+    },
+    {
+      "slug": "css-background-blend-mode",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-background-clip",
+      "requested_policy": "Bounded",
+      "status": "partial",
+      "modules": [
+        "src/style.rs",
+        "src/layout.rs",
+        "src/resources.rs",
+        "src/paint.rs"
+      ],
+      "fixtures": [
+        "background-clip"
+      ],
+      "notes": "Common color/raster backgrounds, typed linear gradients, clipping, sizing and tiling exist. Layer-specific position/size lists, shorthand completeness, color/raster precision and gradient edge cases remain."
+    },
+    {
+      "slug": "css-background-color",
+      "requested_policy": "Support",
+      "status": "partial",
+      "modules": [
+        "src/style.rs",
+        "src/layout.rs",
+        "src/resources.rs",
+        "src/paint.rs"
+      ],
+      "fixtures": [
+        "block-box",
+        "inline-highlight",
+        "background-clip"
+      ],
+      "notes": "Common color/raster backgrounds, typed linear gradients, clipping, sizing and tiling exist. Layer-specific position/size lists, shorthand completeness, color/raster precision and gradient edge cases remain."
+    },
+    {
+      "slug": "css-background-image",
+      "requested_policy": "Bounded",
+      "status": "partial",
+      "modules": [
+        "src/style.rs",
+        "src/layout.rs",
+        "src/resources.rs",
+        "src/paint.rs"
+      ],
+      "fixtures": [
+        "background-repeat"
+      ],
+      "notes": "Common color/raster backgrounds, typed linear gradients, clipping, sizing and tiling exist. Layer-specific position/size lists, shorthand completeness, color/raster precision and gradient edge cases remain."
+    },
+    {
+      "slug": "css-background-origin",
+      "requested_policy": "Support",
+      "status": "partial",
+      "modules": [
+        "src/style.rs",
+        "src/layout.rs",
+        "src/resources.rs",
+        "src/paint.rs"
+      ],
+      "fixtures": [],
+      "notes": "Common color/raster backgrounds, typed linear gradients, clipping, sizing and tiling exist. Layer-specific position/size lists, shorthand completeness, color/raster precision and gradient edge cases remain."
+    },
+    {
+      "slug": "css-background-position",
+      "requested_policy": "Support",
+      "status": "partial",
+      "modules": [
+        "src/style.rs",
+        "src/layout.rs",
+        "src/resources.rs",
+        "src/paint.rs"
+      ],
+      "fixtures": [
+        "background-position",
+        "background-cover"
+      ],
+      "notes": "Common color/raster backgrounds, typed linear gradients, clipping, sizing and tiling exist. Layer-specific position/size lists, shorthand completeness, color/raster precision and gradient edge cases remain."
+    },
+    {
+      "slug": "css-background-repeat",
+      "requested_policy": "Support",
+      "status": "partial",
+      "modules": [
+        "src/style.rs",
+        "src/layout.rs",
+        "src/resources.rs",
+        "src/paint.rs"
+      ],
+      "fixtures": [
+        "background-repeat",
+        "background-position"
+      ],
+      "notes": "Common color/raster backgrounds, typed linear gradients, clipping, sizing and tiling exist. Layer-specific position/size lists, shorthand completeness, color/raster precision and gradient edge cases remain."
+    },
+    {
+      "slug": "css-background-size",
+      "requested_policy": "Support",
+      "status": "partial",
+      "modules": [
+        "src/style.rs",
+        "src/layout.rs",
+        "src/resources.rs",
+        "src/paint.rs"
+      ],
+      "fixtures": [
+        "background-cover"
+      ],
+      "notes": "Common color/raster backgrounds, typed linear gradients, clipping, sizing and tiling exist. Layer-specific position/size lists, shorthand completeness, color/raster precision and gradient edge cases remain."
+    },
+    {
+      "slug": "css-background",
+      "requested_policy": "Bounded",
+      "status": "partial",
+      "modules": [
+        "src/style.rs",
+        "src/layout.rs",
+        "src/resources.rs",
+        "src/paint.rs"
+      ],
+      "fixtures": [],
+      "notes": "Common color/raster backgrounds, typed linear gradients, clipping, sizing and tiling exist. Layer-specific position/size lists, shorthand completeness, color/raster precision and gradient edge cases remain."
+    },
+    {
+      "slug": "css-block-inline-size",
+      "requested_policy": "Support",
+      "status": "implemented",
+      "modules": [
+        "src/core.rs",
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [],
+      "notes": "Bounded fixed-point lengths, affine calc, min/max dimensions and horizontal logical aliases. This denotes executable coverage, not full CSS standards conformance; percentage-height and formatting-context interactions need broader coverage."
+    },
+    {
+      "slug": "css-border-collapse",
+      "requested_policy": "Support",
+      "status": "partial",
+      "modules": [
+        "src/layout.rs"
+      ],
+      "fixtures": [
+        "table-collapse"
+      ],
+      "notes": "Bounded automatic/fixed tables, spans, captions, spacing and cell alignment. Common solid collapsed borders work; row/column-group conflicts, odd-width joins, complete baseline alignment and anonymous table roles need work."
+    },
+    {
+      "slug": "css-border-image",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-border-inline-block-individual",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-border-inline-block-longhand",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-border-inline-block",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-border-radius-logical",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-border-radius",
+      "requested_policy": "Support",
+      "status": "partial",
+      "modules": [
+        "src/style.rs",
+        "src/layout.rs",
+        "src/paint.rs"
+      ],
+      "fixtures": [
+        "rounded"
+      ],
+      "notes": "Border styles use WebRender normal borders; uniform absolute/percentage rounding exists. Multiple/elliptical corner radii and some border rasterization remain incomplete."
+    },
+    {
+      "slug": "css-border-spacing",
+      "requested_policy": "Support",
+      "status": "partial",
+      "modules": [
+        "src/layout.rs"
+      ],
+      "fixtures": [
+        "table-fixed",
+        "table-span"
+      ],
+      "notes": "Bounded automatic/fixed tables, spans, captions, spacing and cell alignment. Common solid collapsed borders work; row/column-group conflicts, odd-width joins, complete baseline alignment and anonymous table roles need work."
+    },
+    {
+      "slug": "css-border",
+      "requested_policy": "Support",
+      "status": "partial",
+      "modules": [
+        "src/style.rs",
+        "src/layout.rs",
+        "src/paint.rs"
+      ],
+      "fixtures": [
+        "block-box",
+        "padding-four",
+        "border-sides",
+        "rounded",
+        "border-style-default-width"
+      ],
+      "notes": "Border styles use WebRender normal borders; uniform absolute/percentage rounding exists. Multiple/elliptical corner radii and some border rasterization remain incomplete."
+    },
+    {
+      "slug": "css-box-shadow",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-box-sizing",
+      "requested_policy": "Support",
+      "status": "implemented",
+      "modules": [
+        "src/core.rs",
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [
+        "box-sizing"
+      ],
+      "notes": "Bounded fixed-point lengths, affine calc, min/max dimensions and horizontal logical aliases. This denotes executable coverage, not full CSS standards conformance; percentage-height and formatting-context interactions need broader coverage."
+    },
+    {
+      "slug": "css-caption-side",
+      "requested_policy": "Support",
+      "status": "partial",
+      "modules": [
+        "src/layout.rs"
+      ],
+      "fixtures": [],
+      "notes": "Bounded automatic/fixed tables, spans, captions, spacing and cell alignment. Common solid collapsed borders work; row/column-group conflicts, odd-width joins, complete baseline alignment and anonymous table roles need work."
+    },
+    {
+      "slug": "css-clear",
+      "requested_policy": "Support",
+      "status": "partial",
+      "modules": [
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [
+        "clear"
+      ],
+      "notes": "Implemented static block/inline/inline-block/table roles, floats, clear and clipping, including block descendants inside inline wrappers. Full formatting contexts, inline box edges, nested overflow and some reflow interactions need work."
+    },
+    {
+      "slug": "css-clip-path",
+      "requested_policy": "Reject",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Reject."
+    },
+    {
+      "slug": "css-color-scheme",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-column-count",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-column-layout-properties",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-comments",
+      "requested_policy": "Support",
+      "status": "implemented",
+      "modules": [
+        "src/css.rs",
+        "src/style.rs"
+      ],
+      "fixtures": [
+        "css-comments"
+      ],
+      "notes": "Bounded static cascade and selector matching with declaration recovery. Unknown properties do not enable capabilities. This is not a formal parser-equivalence proof."
+    },
+    {
+      "slug": "css-conic-gradient",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-cursor",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-direction",
+      "requested_policy": "Bounded",
+      "status": "partial",
+      "modules": [
+        "src/style.rs",
+        "src/text.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [
+        "rtl"
+      ],
+      "notes": "Unicode bidi and explicit ltr/rtl supported; logical text preserved. dir=auto and bdi isolation/fallback need fuller implementation; trusted envelope UI is outside this component."
+    },
+    {
+      "slug": "css-display-flex",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-display-grid",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-display-none",
+      "requested_policy": "Support",
+      "status": "partial",
+      "modules": [
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [
+        "display-none"
+      ],
+      "notes": "Implemented static block/inline/inline-block/table roles, floats, clear and clipping, including block descendants inside inline wrappers. Full formatting contexts, inline box edges, nested overflow and some reflow interactions need work."
+    },
+    {
+      "slug": "css-display",
+      "requested_policy": "Bounded",
+      "status": "partial",
+      "modules": [
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [
+        "display-none",
+        "inline-block",
+        "font-zero",
+        "image-block"
+      ],
+      "notes": "Implemented static block/inline/inline-block/table roles, floats, clear and clipping, including block descendants inside inline wrappers. Full formatting contexts, inline box edges, nested overflow and some reflow interactions need work."
+    },
+    {
+      "slug": "css-empty-cells",
+      "requested_policy": "Support",
+      "status": "implemented",
+      "modules": [
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [
+        "empty-cells"
+      ],
+      "notes": "Empty cell background/border suppression preserves table geometry; nonempty text/replaced content remains painted. Complex row/group backgrounds still follow table limitations."
+    },
+    {
+      "slug": "css-filter",
+      "requested_policy": "Reject",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Reject."
+    },
+    {
+      "slug": "css-flex-direction",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-flex-wrap",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-float",
+      "requested_policy": "Bounded",
+      "status": "partial",
+      "modules": [
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [
+        "float",
+        "clear"
+      ],
+      "notes": "Implemented static block/inline/inline-block/table roles, floats, clear and clipping, including block descendants inside inline wrappers. Full formatting contexts, inline box edges, nested overflow and some reflow interactions need work."
+    },
+    {
+      "slug": "css-font-kerning",
+      "requested_policy": "Support",
+      "status": "partial",
+      "modules": [
+        "src/style.rs",
+        "src/text.rs"
+      ],
+      "fixtures": [],
+      "notes": "Approved OS DejaVu defaults and Liberation aliases for Arial/Helvetica, Times and Courier; bold/italic variants, kerning, size and font shorthand. No downloaded fonts; script/CJK/emoji fallback and platform resolvers are incomplete."
+    },
+    {
+      "slug": "css-font-size-adjust",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-font-size",
+      "requested_policy": "Support",
+      "status": "partial",
+      "modules": [
+        "src/style.rs",
+        "src/text.rs"
+      ],
+      "fixtures": [
+        "text-wrap",
+        "font-zero",
+        "lineheight-inherit"
+      ],
+      "notes": "Approved OS DejaVu defaults and Liberation aliases for Arial/Helvetica, Times and Courier; bold/italic variants, kerning, size and font shorthand. No downloaded fonts; script/CJK/emoji fallback and platform resolvers are incomplete."
+    },
+    {
+      "slug": "css-font-stretch",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-font-weight",
+      "requested_policy": "Support",
+      "status": "partial",
+      "modules": [
+        "src/style.rs",
+        "src/text.rs"
+      ],
+      "fixtures": [
+        "text-basic"
+      ],
+      "notes": "Approved OS DejaVu defaults and Liberation aliases for Arial/Helvetica, Times and Courier; bold/italic variants, kerning, size and font shorthand. No downloaded fonts; script/CJK/emoji fallback and platform resolvers are incomplete."
+    },
+    {
+      "slug": "css-font",
+      "requested_policy": "Support",
+      "status": "partial",
+      "modules": [
+        "src/style.rs",
+        "src/text.rs"
+      ],
+      "fixtures": [
+        "font-arial",
+        "legacy-font"
+      ],
+      "notes": "Approved OS DejaVu defaults and Liberation aliases for Arial/Helvetica, Times and Courier; bold/italic variants, kerning, size and font shorthand. No downloaded fonts; script/CJK/emoji fallback and platform resolvers are incomplete."
+    },
+    {
+      "slug": "css-function-clamp",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-function-light-dark",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-function-max",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-function-min",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-gap",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-grid-template",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-height",
+      "requested_policy": "Bounded",
+      "status": "implemented",
+      "modules": [
+        "src/core.rs",
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [
+        "block-box"
+      ],
+      "notes": "Bounded fixed-point lengths, affine calc, min/max dimensions and horizontal logical aliases. This denotes executable coverage, not full CSS standards conformance; percentage-height and formatting-context interactions need broader coverage."
+    },
+    {
+      "slug": "css-hyphenate-character",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-hyphenate-limit-chars",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-hyphens",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-important",
+      "requested_policy": "Support",
+      "status": "implemented",
+      "modules": [
+        "src/css.rs",
+        "src/style.rs"
+      ],
+      "fixtures": [
+        "important",
+        "shorthand-important"
+      ],
+      "notes": "Bounded static cascade and selector matching with declaration recovery. Unknown properties do not enable capabilities. This is not a formal parser-equivalence proof."
+    },
+    {
+      "slug": "css-inert-attribute",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-inline-size",
+      "requested_policy": "Support",
+      "status": "implemented",
+      "modules": [
+        "src/core.rs",
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [],
+      "notes": "Bounded fixed-point lengths, affine calc, min/max dimensions and horizontal logical aliases. This denotes executable coverage, not full CSS standards conformance; percentage-height and formatting-context interactions need broader coverage."
+    },
+    {
+      "slug": "css-inset",
+      "requested_policy": "Reject",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Reject."
+    },
+    {
+      "slug": "css-intrinsic-size",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-justify-content",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-left-right-top-bottom",
+      "requested_policy": "Reject",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Reject."
+    },
+    {
+      "slug": "css-letter-spacing",
+      "requested_policy": "Support",
+      "status": "partial",
+      "modules": [
+        "src/style.rs",
+        "src/text.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [],
+      "notes": "Rust shaping/bidi/line breaking, normal/unitless line height, whitespace and bounded spacing/indentation. Full justification, language-specific transforms, vertical writing and all break behavior remain unproven or incomplete."
+    },
+    {
+      "slug": "css-line-height",
+      "requested_policy": "Support",
+      "status": "partial",
+      "modules": [
+        "src/style.rs",
+        "src/text.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [
+        "font-zero",
+        "lineheight-inherit"
+      ],
+      "notes": "Rust shaping/bidi/line breaking, normal/unitless line height, whitespace and bounded spacing/indentation. Full justification, language-specific transforms, vertical writing and all break behavior remain unproven or incomplete."
+    },
+    {
+      "slug": "css-linear-gradient",
+      "requested_policy": "Support",
+      "status": "partial",
+      "modules": [
+        "src/style.rs",
+        "src/layout.rs",
+        "src/resources.rs",
+        "src/paint.rs"
+      ],
+      "fixtures": [
+        "gradient"
+      ],
+      "notes": "Common color/raster backgrounds, typed linear gradients, clipping, sizing and tiling exist. Layer-specific position/size lists, shorthand completeness, color/raster precision and gradient edge cases remain."
+    },
+    {
+      "slug": "css-list-style-image",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-list-style-position",
+      "requested_policy": "Support",
+      "status": "partial",
+      "modules": [
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [],
+      "notes": "Inside/outside markers and bounded counters; native bullet geometry, Roman/alphabetic counter ranges, reversed lists and exact marker line metrics remain incomplete."
+    },
+    {
+      "slug": "css-list-style-type",
+      "requested_policy": "Support",
+      "status": "partial",
+      "modules": [
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [
+        "lists"
+      ],
+      "notes": "Inside/outside markers and bounded counters; native bullet geometry, Roman/alphabetic counter ranges, reversed lists and exact marker line metrics remain incomplete."
+    },
+    {
+      "slug": "css-list-style",
+      "requested_policy": "Bounded",
+      "status": "partial",
+      "modules": [
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [],
+      "notes": "Inside/outside markers and bounded counters; native bullet geometry, Roman/alphabetic counter ranges, reversed lists and exact marker line metrics remain incomplete."
+    },
+    {
+      "slug": "css-margin-block-start-end",
+      "requested_policy": "Support",
+      "status": "implemented",
+      "modules": [
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [],
+      "notes": "Finite signed margins, nonnegative padding and horizontal logical aliases. Margin-collapse behavior is covered by targeted fixtures but not exhaustive browser tests."
+    },
+    {
+      "slug": "css-margin-inline-block",
+      "requested_policy": "Support",
+      "status": "implemented",
+      "modules": [
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [],
+      "notes": "Finite signed margins, nonnegative padding and horizontal logical aliases. Margin-collapse behavior is covered by targeted fixtures but not exhaustive browser tests."
+    },
+    {
+      "slug": "css-margin-inline-start-end",
+      "requested_policy": "Support",
+      "status": "implemented",
+      "modules": [
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [
+        "logical"
+      ],
+      "notes": "Finite signed margins, nonnegative padding and horizontal logical aliases. Margin-collapse behavior is covered by targeted fixtures but not exhaustive browser tests."
+    },
+    {
+      "slug": "css-margin",
+      "requested_policy": "Bounded",
+      "status": "implemented",
+      "modules": [
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [
+        "center-auto",
+        "margin-collapse",
+        "negative-margins"
+      ],
+      "notes": "Finite signed margins, nonnegative padding and horizontal logical aliases. Margin-collapse behavior is covered by targeted fixtures but not exhaustive browser tests."
+    },
+    {
+      "slug": "css-mask-image",
+      "requested_policy": "Reject",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Reject."
+    },
+    {
+      "slug": "css-max-block-size",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-max-height",
+      "requested_policy": "Bounded",
+      "status": "implemented",
+      "modules": [
+        "src/core.rs",
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [],
+      "notes": "Bounded fixed-point lengths, affine calc, min/max dimensions and horizontal logical aliases. This denotes executable coverage, not full CSS standards conformance; percentage-height and formatting-context interactions need broader coverage."
+    },
+    {
+      "slug": "css-max-inline-size",
+      "requested_policy": "Support",
+      "status": "implemented",
+      "modules": [
+        "src/core.rs",
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [],
+      "notes": "Bounded fixed-point lengths, affine calc, min/max dimensions and horizontal logical aliases. This denotes executable coverage, not full CSS standards conformance; percentage-height and formatting-context interactions need broader coverage."
+    },
+    {
+      "slug": "css-max-width",
+      "requested_policy": "Support",
+      "status": "implemented",
+      "modules": [
+        "src/core.rs",
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [
+        "max-min"
+      ],
+      "notes": "Bounded fixed-point lengths, affine calc, min/max dimensions and horizontal logical aliases. This denotes executable coverage, not full CSS standards conformance; percentage-height and formatting-context interactions need broader coverage."
+    },
+    {
+      "slug": "css-min-block-size",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-min-height",
+      "requested_policy": "Support",
+      "status": "implemented",
+      "modules": [
+        "src/core.rs",
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [
+        "max-min"
+      ],
+      "notes": "Bounded fixed-point lengths, affine calc, min/max dimensions and horizontal logical aliases. This denotes executable coverage, not full CSS standards conformance; percentage-height and formatting-context interactions need broader coverage."
+    },
+    {
+      "slug": "css-min-inline-size",
+      "requested_policy": "Support",
+      "status": "implemented",
+      "modules": [
+        "src/core.rs",
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [],
+      "notes": "Bounded fixed-point lengths, affine calc, min/max dimensions and horizontal logical aliases. This denotes executable coverage, not full CSS standards conformance; percentage-height and formatting-context interactions need broader coverage."
+    },
+    {
+      "slug": "css-min-width",
+      "requested_policy": "Bounded",
+      "status": "implemented",
+      "modules": [
+        "src/core.rs",
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [],
+      "notes": "Bounded fixed-point lengths, affine calc, min/max dimensions and horizontal logical aliases. This denotes executable coverage, not full CSS standards conformance; percentage-height and formatting-context interactions need broader coverage."
+    },
+    {
+      "slug": "css-mix-blend-mode",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-modern-color",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-nesting",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-object-fit",
+      "requested_policy": "Support",
+      "status": "partial",
+      "modules": [
+        "src/layout.rs",
+        "src/resources.rs"
+      ],
+      "fixtures": [
+        "object-contain",
+        "object-cover"
+      ],
+      "notes": "Explicit preauthorized raster resources, data images, intrinsic sizing, fit/position and blocked/alt placeholders. No network fetcher. Upsampling differs from Gecko; complete replaced-element sizing needs more tests."
+    },
+    {
+      "slug": "css-object-position",
+      "requested_policy": "Support",
+      "status": "partial",
+      "modules": [
+        "src/layout.rs",
+        "src/resources.rs"
+      ],
+      "fixtures": [
+        "object-cover"
+      ],
+      "notes": "Explicit preauthorized raster resources, data images, intrinsic sizing, fit/position and blocked/alt placeholders. No network fetcher. Upsampling differs from Gecko; complete replaced-element sizing needs more tests."
+    },
+    {
+      "slug": "css-opacity",
+      "requested_policy": "Bounded",
+      "status": "partial",
+      "modules": [
+        "src/style.rs",
+        "src/layout.rs",
+        "src/paint.rs"
+      ],
+      "fixtures": [
+        "opacity",
+        "nested-opacity",
+        "linked-image-opacity"
+      ],
+      "notes": "Ordinary block/replaced-element opacity and visibility/hidden handling exist. Inline/table group opacity and consistent semantic exposure need more coverage; strict opacity pixels currently differ by one level."
+    },
+    {
+      "slug": "css-orphans",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-outline-offset",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-outline",
+      "requested_policy": "Bounded",
+      "status": "partial",
+      "modules": [
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [
+        "author-outline"
+      ],
+      "notes": "Bounded author outlines and offsets on ordinary boxes/replaced elements. Inline outline unions, collapsed-table outlines and trusted application focus indication require further work."
+    },
+    {
+      "slug": "css-overflow-wrap",
+      "requested_policy": "Support",
+      "status": "partial",
+      "modules": [
+        "src/style.rs",
+        "src/text.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [],
+      "notes": "Rust shaping/bidi/line breaking, normal/unitless line height, whitespace and bounded spacing/indentation. Full justification, language-specific transforms, vertical writing and all break behavior remain unproven or incomplete."
+    },
+    {
+      "slug": "css-overflow",
+      "requested_policy": "Bounded",
+      "status": "partial",
+      "modules": [
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [
+        "fixed-table-overflow",
+        "ellipsis"
+      ],
+      "notes": "Implemented static block/inline/inline-block/table roles, floats, clear and clipping, including block descendants inside inline wrappers. Full formatting contexts, inline box edges, nested overflow and some reflow interactions need work."
+    },
+    {
+      "slug": "css-padding-block-start-end",
+      "requested_policy": "Support",
+      "status": "implemented",
+      "modules": [
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [],
+      "notes": "Finite signed margins, nonnegative padding and horizontal logical aliases. Margin-collapse behavior is covered by targeted fixtures but not exhaustive browser tests."
+    },
+    {
+      "slug": "css-padding-inline-block",
+      "requested_policy": "Support",
+      "status": "implemented",
+      "modules": [
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [],
+      "notes": "Finite signed margins, nonnegative padding and horizontal logical aliases. Margin-collapse behavior is covered by targeted fixtures but not exhaustive browser tests."
+    },
+    {
+      "slug": "css-padding-inline-start-end",
+      "requested_policy": "Support",
+      "status": "implemented",
+      "modules": [
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [
+        "logical"
+      ],
+      "notes": "Finite signed margins, nonnegative padding and horizontal logical aliases. Margin-collapse behavior is covered by targeted fixtures but not exhaustive browser tests."
+    },
+    {
+      "slug": "css-padding",
+      "requested_policy": "Support",
+      "status": "implemented",
+      "modules": [
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [
+        "block-box",
+        "padding-four",
+        "shorthand-important",
+        "image-positioned"
+      ],
+      "notes": "Finite signed margins, nonnegative padding and horizontal logical aliases. Margin-collapse behavior is covered by targeted fixtures but not exhaustive browser tests."
+    },
+    {
+      "slug": "css-position",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-pseudo-class-active",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-pseudo-class-checked",
+      "requested_policy": "Reject",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Reject."
+    },
+    {
+      "slug": "css-pseudo-class-default",
+      "requested_policy": "Reject",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Reject."
+    },
+    {
+      "slug": "css-pseudo-class-first-child",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-pseudo-class-first-of-type",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-pseudo-class-focus-visible",
+      "requested_policy": "Bounded",
+      "status": "integration",
+      "modules": [
+        "src/css.rs",
+        "src/style.rs"
+      ],
+      "fixtures": [],
+      "notes": "State matching exists through explicit API inputs. The CLI does not deliver interactive state changes or trusted focus UI; application integration is required."
+    },
+    {
+      "slug": "css-pseudo-class-focus-within",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-pseudo-class-focus",
+      "requested_policy": "Bounded",
+      "status": "integration",
+      "modules": [
+        "src/css.rs",
+        "src/style.rs"
+      ],
+      "fixtures": [],
+      "notes": "State matching exists through explicit API inputs. The CLI does not deliver interactive state changes or trusted focus UI; application integration is required."
+    },
+    {
+      "slug": "css-pseudo-class-has",
+      "requested_policy": "Reject",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Reject."
+    },
+    {
+      "slug": "css-pseudo-class-hover",
+      "requested_policy": "Bounded",
+      "status": "integration",
+      "modules": [
+        "src/css.rs",
+        "src/style.rs"
+      ],
+      "fixtures": [],
+      "notes": "State matching exists through explicit API inputs. The CLI does not deliver interactive state changes or trusted focus UI; application integration is required."
+    },
+    {
+      "slug": "css-pseudo-class-lang",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-pseudo-class-last-child",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-pseudo-class-last-of-type",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-pseudo-class-link",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-pseudo-class-not",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-pseudo-class-nth-child",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-pseudo-class-nth-last-child",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-pseudo-class-nth-last-of-type",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-pseudo-class-nth-of-type",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-pseudo-class-only-child",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-pseudo-class-only-of-type",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-pseudo-class-target",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-pseudo-class-visited",
+      "requested_policy": "Reject",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Reject."
+    },
+    {
+      "slug": "css-pseudo-element-after",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-pseudo-element-before",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-pseudo-element-first-letter",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-pseudo-element-first-line",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-pseudo-element-marker",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-pseudo-element-placeholder",
+      "requested_policy": "Reject",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Reject."
+    },
+    {
+      "slug": "css-radial-gradient",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-resize",
+      "requested_policy": "Reject",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Reject."
+    },
+    {
+      "slug": "css-rgb",
+      "requested_policy": "Support",
+      "status": "implemented",
+      "modules": [
+        "src/style.rs",
+        "src/paint.rs"
+      ],
+      "fixtures": [],
+      "notes": "CSS color parsing into bounded RGBA values; native blending can still differ from Gecko by one channel level."
+    },
+    {
+      "slug": "css-rgba",
+      "requested_policy": "Support",
+      "status": "implemented",
+      "modules": [
+        "src/style.rs",
+        "src/paint.rs"
+      ],
+      "fixtures": [],
+      "notes": "CSS color parsing into bounded RGBA values; native blending can still differ from Gecko by one channel level."
+    },
+    {
+      "slug": "css-scroll-snap",
+      "requested_policy": "Reject",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Reject."
+    },
+    {
+      "slug": "css-selector-adjacent-sibling",
+      "requested_policy": "Support",
+      "status": "implemented",
+      "modules": [
+        "src/css.rs",
+        "src/style.rs"
+      ],
+      "fixtures": [
+        "selectors"
+      ],
+      "notes": "Bounded static cascade and selector matching with declaration recovery. Unknown properties do not enable capabilities. This is not a formal parser-equivalence proof."
+    },
+    {
+      "slug": "css-selector-attribute",
+      "requested_policy": "Bounded",
+      "status": "implemented",
+      "modules": [
+        "src/css.rs",
+        "src/style.rs"
+      ],
+      "fixtures": [
+        "selectors"
+      ],
+      "notes": "Bounded static cascade and selector matching with declaration recovery. Unknown properties do not enable capabilities. This is not a formal parser-equivalence proof."
+    },
+    {
+      "slug": "css-selector-chaining",
+      "requested_policy": "Support",
+      "status": "implemented",
+      "modules": [
+        "src/css.rs",
+        "src/style.rs"
+      ],
+      "fixtures": [
+        "selectors"
+      ],
+      "notes": "Bounded static cascade and selector matching with declaration recovery. Unknown properties do not enable capabilities. This is not a formal parser-equivalence proof."
+    },
+    {
+      "slug": "css-selector-child",
+      "requested_policy": "Support",
+      "status": "implemented",
+      "modules": [
+        "src/css.rs",
+        "src/style.rs"
+      ],
+      "fixtures": [
+        "selectors"
+      ],
+      "notes": "Bounded static cascade and selector matching with declaration recovery. Unknown properties do not enable capabilities. This is not a formal parser-equivalence proof."
+    },
+    {
+      "slug": "css-selector-class",
+      "requested_policy": "Support",
+      "status": "implemented",
+      "modules": [
+        "src/css.rs",
+        "src/style.rs"
+      ],
+      "fixtures": [
+        "cascade"
+      ],
+      "notes": "Bounded static cascade and selector matching with declaration recovery. Unknown properties do not enable capabilities. This is not a formal parser-equivalence proof."
+    },
+    {
+      "slug": "css-selector-descendant",
+      "requested_policy": "Support",
+      "status": "implemented",
+      "modules": [
+        "src/css.rs",
+        "src/style.rs"
+      ],
+      "fixtures": [
+        "descendant-universal"
+      ],
+      "notes": "Bounded static cascade and selector matching with declaration recovery. Unknown properties do not enable capabilities. This is not a formal parser-equivalence proof."
+    },
+    {
+      "slug": "css-selector-general-sibling",
+      "requested_policy": "Support",
+      "status": "implemented",
+      "modules": [
+        "src/css.rs",
+        "src/style.rs"
+      ],
+      "fixtures": [
+        "general-sibling"
+      ],
+      "notes": "Bounded static cascade and selector matching with declaration recovery. Unknown properties do not enable capabilities. This is not a formal parser-equivalence proof."
+    },
+    {
+      "slug": "css-selector-grouping",
+      "requested_policy": "Support",
+      "status": "implemented",
+      "modules": [
+        "src/css.rs",
+        "src/style.rs"
+      ],
+      "fixtures": [],
+      "notes": "Bounded static cascade and selector matching with declaration recovery. Unknown properties do not enable capabilities. This is not a formal parser-equivalence proof."
+    },
+    {
+      "slug": "css-selector-id",
+      "requested_policy": "Support",
+      "status": "implemented",
+      "modules": [
+        "src/css.rs",
+        "src/style.rs"
+      ],
+      "fixtures": [
+        "cascade"
+      ],
+      "notes": "Bounded static cascade and selector matching with declaration recovery. Unknown properties do not enable capabilities. This is not a formal parser-equivalence proof."
+    },
+    {
+      "slug": "css-selector-type",
+      "requested_policy": "Support",
+      "status": "implemented",
+      "modules": [
+        "src/css.rs",
+        "src/style.rs"
+      ],
+      "fixtures": [
+        "cascade"
+      ],
+      "notes": "Bounded static cascade and selector matching with declaration recovery. Unknown properties do not enable capabilities. This is not a formal parser-equivalence proof."
+    },
+    {
+      "slug": "css-selector-universal",
+      "requested_policy": "Support",
+      "status": "implemented",
+      "modules": [
+        "src/css.rs",
+        "src/style.rs"
+      ],
+      "fixtures": [
+        "descendant-universal"
+      ],
+      "notes": "Bounded static cascade and selector matching with declaration recovery. Unknown properties do not enable capabilities. This is not a formal parser-equivalence proof."
+    },
+    {
+      "slug": "css-shape-margin",
+      "requested_policy": "Reject",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Reject."
+    },
+    {
+      "slug": "css-shape-outside",
+      "requested_policy": "Reject",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Reject."
+    },
+    {
+      "slug": "css-sytem-ui",
+      "requested_policy": "Support",
+      "status": "partial",
+      "modules": [
+        "src/style.rs",
+        "src/text.rs"
+      ],
+      "fixtures": [],
+      "notes": "Approved OS DejaVu defaults and Liberation aliases for Arial/Helvetica, Times and Courier; bold/italic variants, kerning, size and font shorthand. No downloaded fonts; script/CJK/emoji fallback and platform resolvers are incomplete."
+    },
+    {
+      "slug": "css-tab-size",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-table-layout",
+      "requested_policy": "Support",
+      "status": "partial",
+      "modules": [
+        "src/layout.rs"
+      ],
+      "fixtures": [
+        "table-fixed",
+        "fixed-table-overflow"
+      ],
+      "notes": "Bounded automatic/fixed tables, spans, captions, spacing and cell alignment. Common solid collapsed borders work; row/column-group conflicts, odd-width joins, complete baseline alignment and anonymous table roles need work."
+    },
+    {
+      "slug": "css-text-align-last",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-text-align",
+      "requested_policy": "Support",
+      "status": "partial",
+      "modules": [
+        "src/style.rs",
+        "src/text.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [
+        "text-align"
+      ],
+      "notes": "Rust shaping/bidi/line breaking, normal/unitless line height, whitespace and bounded spacing/indentation. Full justification, language-specific transforms, vertical writing and all break behavior remain unproven or incomplete."
+    },
+    {
+      "slug": "css-text-decoration-color",
+      "requested_policy": "Support",
+      "status": "partial",
+      "modules": [
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [],
+      "notes": "Basic underline/overline/strikeout and decoration colors. Alternate decoration styles, underline-position and skip-ink behavior are incomplete or not painted."
+    },
+    {
+      "slug": "css-text-decoration-line",
+      "requested_policy": "Support",
+      "status": "partial",
+      "modules": [
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [],
+      "notes": "Basic underline/overline/strikeout and decoration colors. Alternate decoration styles, underline-position and skip-ink behavior are incomplete or not painted."
+    },
+    {
+      "slug": "css-text-decoration-skip-ink",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-text-decoration-style",
+      "requested_policy": "Support",
+      "status": "partial",
+      "modules": [
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [],
+      "notes": "Basic underline/overline/strikeout and decoration colors. Alternate decoration styles, underline-position and skip-ink behavior are incomplete or not painted."
+    },
+    {
+      "slug": "css-text-decoration-thickness",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-text-decoration",
+      "requested_policy": "Bounded",
+      "status": "partial",
+      "modules": [
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [
+        "text-decoration"
+      ],
+      "notes": "Basic underline/overline/strikeout and decoration colors. Alternate decoration styles, underline-position and skip-ink behavior are incomplete or not painted."
+    },
+    {
+      "slug": "css-text-emphasis-position",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-text-emphasis",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-text-indent",
+      "requested_policy": "Bounded",
+      "status": "partial",
+      "modules": [
+        "src/style.rs",
+        "src/text.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [],
+      "notes": "Rust shaping/bidi/line breaking, normal/unitless line height, whitespace and bounded spacing/indentation. Full justification, language-specific transforms, vertical writing and all break behavior remain unproven or incomplete."
+    },
+    {
+      "slug": "css-text-justify",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-text-orientation",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-text-overflow",
+      "requested_policy": "Bounded",
+      "status": "partial",
+      "modules": [
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [
+        "ellipsis"
+      ],
+      "notes": "Clip and LTR start/left ellipsis with grapheme-boundary truncation exist; logical readable text is preserved. RTL, centered/right-aligned overflow, atomic-box hit regions and all shaping interactions require further work."
+    },
+    {
+      "slug": "css-text-shadow",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-text-transform",
+      "requested_policy": "Support",
+      "status": "partial",
+      "modules": [
+        "src/style.rs",
+        "src/text.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [],
+      "notes": "Rust shaping/bidi/line breaking, normal/unitless line height, whitespace and bounded spacing/indentation. Full justification, language-specific transforms, vertical writing and all break behavior remain unproven or incomplete."
+    },
+    {
+      "slug": "css-text-underline-offset",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-text-underline-position",
+      "requested_policy": "Support",
+      "status": "partial",
+      "modules": [
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [],
+      "notes": "Basic underline/overline/strikeout and decoration colors. Alternate decoration styles, underline-position and skip-ink behavior are incomplete or not painted."
+    },
+    {
+      "slug": "css-text-wrap",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-transform",
+      "requested_policy": "Reject",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Reject."
+    },
+    {
+      "slug": "css-transition",
+      "requested_policy": "Reject",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Reject."
+    },
+    {
+      "slug": "css-unit-calc",
+      "requested_policy": "Bounded",
+      "status": "implemented",
+      "modules": [
+        "src/core.rs",
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [
+        "calc-width",
+        "calc-scale",
+        "negative-calc"
+      ],
+      "notes": "Bounded fixed-point lengths, affine calc, min/max dimensions and horizontal logical aliases. This denotes executable coverage, not full CSS standards conformance; percentage-height and formatting-context interactions need broader coverage."
+    },
+    {
+      "slug": "css-unit-ch",
+      "requested_policy": "Support",
+      "status": "partial",
+      "modules": [
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [],
+      "notes": "Recognized but currently approximated using half the font size; actual font metrics are needed."
+    },
+    {
+      "slug": "css-unit-cm",
+      "requested_policy": "Support",
+      "status": "implemented",
+      "modules": [
+        "src/core.rs",
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [
+        "absolute-units"
+      ],
+      "notes": "Bounded fixed-point lengths, affine calc, min/max dimensions and horizontal logical aliases. This denotes executable coverage, not full CSS standards conformance; percentage-height and formatting-context interactions need broader coverage."
+    },
+    {
+      "slug": "css-unit-em",
+      "requested_policy": "Support",
+      "status": "implemented",
+      "modules": [
+        "src/core.rs",
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [
+        "calc-scale",
+        "unit-rem"
+      ],
+      "notes": "Bounded fixed-point lengths, affine calc, min/max dimensions and horizontal logical aliases. This denotes executable coverage, not full CSS standards conformance; percentage-height and formatting-context interactions need broader coverage."
+    },
+    {
+      "slug": "css-unit-ex",
+      "requested_policy": "Support",
+      "status": "partial",
+      "modules": [
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [],
+      "notes": "Recognized but currently approximated using half the font size; actual font metrics are needed."
+    },
+    {
+      "slug": "css-unit-in",
+      "requested_policy": "Support",
+      "status": "implemented",
+      "modules": [
+        "src/core.rs",
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [
+        "absolute-units"
+      ],
+      "notes": "Bounded fixed-point lengths, affine calc, min/max dimensions and horizontal logical aliases. This denotes executable coverage, not full CSS standards conformance; percentage-height and formatting-context interactions need broader coverage."
+    },
+    {
+      "slug": "css-unit-initial",
+      "requested_policy": "Support",
+      "status": "implemented",
+      "modules": [
+        "src/style.rs"
+      ],
+      "fixtures": [
+        "initial-value",
+        "css-wide-inherit"
+      ],
+      "notes": "CSS-wide initial/inherit/unset copies for supported longhands; supported shorthands expand those values. Values participating in relative font-size resolution are handled before geometry."
+    },
+    {
+      "slug": "css-unit-mm",
+      "requested_policy": "Support",
+      "status": "implemented",
+      "modules": [
+        "src/core.rs",
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [],
+      "notes": "Bounded fixed-point lengths, affine calc, min/max dimensions and horizontal logical aliases. This denotes executable coverage, not full CSS standards conformance; percentage-height and formatting-context interactions need broader coverage."
+    },
+    {
+      "slug": "css-unit-pc",
+      "requested_policy": "Support",
+      "status": "implemented",
+      "modules": [
+        "src/core.rs",
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [
+        "absolute-units"
+      ],
+      "notes": "Bounded fixed-point lengths, affine calc, min/max dimensions and horizontal logical aliases. This denotes executable coverage, not full CSS standards conformance; percentage-height and formatting-context interactions need broader coverage."
+    },
+    {
+      "slug": "css-unit-percent",
+      "requested_policy": "Support",
+      "status": "implemented",
+      "modules": [
+        "src/core.rs",
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [
+        "percent-units",
+        "calc-width"
+      ],
+      "notes": "Bounded fixed-point lengths, affine calc, min/max dimensions and horizontal logical aliases. This denotes executable coverage, not full CSS standards conformance; percentage-height and formatting-context interactions need broader coverage."
+    },
+    {
+      "slug": "css-unit-pt",
+      "requested_policy": "Support",
+      "status": "implemented",
+      "modules": [
+        "src/core.rs",
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [
+        "absolute-units"
+      ],
+      "notes": "Bounded fixed-point lengths, affine calc, min/max dimensions and horizontal logical aliases. This denotes executable coverage, not full CSS standards conformance; percentage-height and formatting-context interactions need broader coverage."
+    },
+    {
+      "slug": "css-unit-px",
+      "requested_policy": "Support",
+      "status": "implemented",
+      "modules": [
+        "src/core.rs",
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [],
+      "notes": "Bounded fixed-point lengths, affine calc, min/max dimensions and horizontal logical aliases. This denotes executable coverage, not full CSS standards conformance; percentage-height and formatting-context interactions need broader coverage."
+    },
+    {
+      "slug": "css-unit-rem",
+      "requested_policy": "Support",
+      "status": "implemented",
+      "modules": [
+        "src/core.rs",
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [
+        "unit-rem"
+      ],
+      "notes": "Bounded fixed-point lengths, affine calc, min/max dimensions and horizontal logical aliases. This denotes executable coverage, not full CSS standards conformance; percentage-height and formatting-context interactions need broader coverage."
+    },
+    {
+      "slug": "css-unit-vh",
+      "requested_policy": "Bounded",
+      "status": "implemented",
+      "modules": [
+        "src/core.rs",
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [],
+      "notes": "Bounded fixed-point lengths, affine calc, min/max dimensions and horizontal logical aliases. This denotes executable coverage, not full CSS standards conformance; percentage-height and formatting-context interactions need broader coverage."
+    },
+    {
+      "slug": "css-unit-vmax",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-unit-vmin",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-unit-vw",
+      "requested_policy": "Bounded",
+      "status": "implemented",
+      "modules": [
+        "src/core.rs",
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [],
+      "notes": "Bounded fixed-point lengths, affine calc, min/max dimensions and horizontal logical aliases. This denotes executable coverage, not full CSS standards conformance; percentage-height and formatting-context interactions need broader coverage."
+    },
+    {
+      "slug": "css-user-select",
+      "requested_policy": "Reject",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Reject."
+    },
+    {
+      "slug": "css-variables",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-vertical-align",
+      "requested_policy": "Support",
+      "status": "partial",
+      "modules": [
+        "src/layout.rs"
+      ],
+      "fixtures": [
+        "table-text"
+      ],
+      "notes": "Bounded automatic/fixed tables, spans, captions, spacing and cell alignment. Common solid collapsed borders work; row/column-group conflicts, odd-width joins, complete baseline alignment and anonymous table roles need work."
+    },
+    {
+      "slug": "css-visibility",
+      "requested_policy": "Bounded",
+      "status": "partial",
+      "modules": [
+        "src/style.rs",
+        "src/layout.rs",
+        "src/paint.rs"
+      ],
+      "fixtures": [
+        "visibility"
+      ],
+      "notes": "Ordinary block/replaced-element opacity and visibility/hidden handling exist. Inline/table group opacity and consistent semantic exposure need more coverage; strict opacity pixels currently differ by one level."
+    },
+    {
+      "slug": "css-white-space-collapse",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-white-space",
+      "requested_policy": "Support",
+      "status": "partial",
+      "modules": [
+        "src/style.rs",
+        "src/text.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [
+        "text-wrap",
+        "text-pre",
+        "wrapped-link"
+      ],
+      "notes": "Rust shaping/bidi/line breaking, normal/unitless line height, whitespace and bounded spacing/indentation. Full justification, language-specific transforms, vertical writing and all break behavior remain unproven or incomplete."
+    },
+    {
+      "slug": "css-widows",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-width",
+      "requested_policy": "Support",
+      "status": "implemented",
+      "modules": [
+        "src/core.rs",
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [
+        "block-box",
+        "center-auto",
+        "percent-units",
+        "nested-email-table"
+      ],
+      "notes": "Bounded fixed-point lengths, affine calc, min/max dimensions and horizontal logical aliases. This denotes executable coverage, not full CSS standards conformance; percentage-height and formatting-context interactions need broader coverage."
+    },
+    {
+      "slug": "css-word-break",
+      "requested_policy": "Support",
+      "status": "partial",
+      "modules": [
+        "src/style.rs",
+        "src/text.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [],
+      "notes": "Rust shaping/bidi/line breaking, normal/unitless line height, whitespace and bounded spacing/indentation. Full justification, language-specific transforms, vertical writing and all break behavior remain unproven or incomplete."
+    },
+    {
+      "slug": "css-word-spacing",
+      "requested_policy": "Support",
+      "status": "partial",
+      "modules": [
+        "src/style.rs",
+        "src/text.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [],
+      "notes": "Rust shaping/bidi/line breaking, normal/unitless line height, whitespace and bounded spacing/indentation. Full justification, language-specific transforms, vertical writing and all break behavior remain unproven or incomplete."
+    },
+    {
+      "slug": "css-word-wrap",
+      "requested_policy": "Support",
+      "status": "partial",
+      "modules": [
+        "src/style.rs",
+        "src/text.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [],
+      "notes": "Rust shaping/bidi/line breaking, normal/unitless line height, whitespace and bounded spacing/indentation. Full justification, language-specific transforms, vertical writing and all break behavior remain unproven or incomplete."
+    },
+    {
+      "slug": "css-writing-mode",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "css-z-index",
+      "requested_policy": "Reject",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Reject."
+    },
+    {
+      "slug": "html-abbr",
+      "requested_policy": "Support",
+      "status": "implemented",
+      "modules": [
+        "src/dom.rs",
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [],
+      "notes": "Static semantic tags and default styles with block/inline text layout; browser UA styles are not exhaustively reproduced."
+    },
+    {
+      "slug": "html-acronym",
+      "requested_policy": "Support",
+      "status": "implemented",
+      "modules": [
+        "src/dom.rs",
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [],
+      "notes": "Static semantic tags and default styles with block/inline text layout; browser UA styles are not exhaustively reproduced."
+    },
+    {
+      "slug": "html-address",
+      "requested_policy": "Support",
+      "status": "implemented",
+      "modules": [
+        "src/dom.rs",
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [],
+      "notes": "Static semantic tags and default styles with block/inline text layout; browser UA styles are not exhaustively reproduced."
+    },
+    {
+      "slug": "html-align",
+      "requested_policy": "Support",
+      "status": "partial",
+      "modules": [
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [],
+      "notes": "Common legacy hints work, including inherited table cellpadding. Not every legacy parsing/quirks interaction is reproduced."
+    },
+    {
+      "slug": "html-anchor-links",
+      "requested_policy": "Bounded",
+      "status": "integration",
+      "modules": [
+        "src/layout.rs"
+      ],
+      "fixtures": [
+        "linked-image-opacity",
+        "wrapped-link"
+      ],
+      "notes": "Untrusted target and per-run hit-region metadata is emitted. Message-local anchor navigation, canonical target display and validated user-gesture action/compose brokers belong to the application and are not implemented here."
+    },
+    {
+      "slug": "html-aria-describedby",
+      "requested_policy": "Bounded",
+      "status": "partial",
+      "modules": [
+        "src/layout.rs",
+        "src/dom.rs"
+      ],
+      "fixtures": [],
+      "notes": "Logical readable text, scoped labels/descriptions, inherited language and a safe role subset are emitted. Native accessibility-tree integration, selection/copy UI, language-sensitive shaping/fallback and every relationship are not implemented."
+    },
+    {
+      "slug": "html-aria-hidden",
+      "requested_policy": "Bounded",
+      "status": "partial",
+      "modules": [
+        "src/layout.rs",
+        "src/dom.rs"
+      ],
+      "fixtures": [],
+      "notes": "Logical readable text, scoped labels/descriptions, inherited language and a safe role subset are emitted. Native accessibility-tree integration, selection/copy UI, language-sensitive shaping/fallback and every relationship are not implemented."
+    },
+    {
+      "slug": "html-aria-label",
+      "requested_policy": "Bounded",
+      "status": "partial",
+      "modules": [
+        "src/layout.rs",
+        "src/dom.rs"
+      ],
+      "fixtures": [],
+      "notes": "Logical readable text, scoped labels/descriptions, inherited language and a safe role subset are emitted. Native accessibility-tree integration, selection/copy UI, language-sensitive shaping/fallback and every relationship are not implemented."
+    },
+    {
+      "slug": "html-aria-labelledby",
+      "requested_policy": "Bounded",
+      "status": "partial",
+      "modules": [
+        "src/layout.rs",
+        "src/dom.rs"
+      ],
+      "fixtures": [],
+      "notes": "Logical readable text, scoped labels/descriptions, inherited language and a safe role subset are emitted. Native accessibility-tree integration, selection/copy UI, language-sensitive shaping/fallback and every relationship are not implemented."
+    },
+    {
+      "slug": "html-aria-live",
+      "requested_policy": "Reject",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Reject."
+    },
+    {
+      "slug": "html-audio",
+      "requested_policy": "Reject",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Reject."
+    },
+    {
+      "slug": "html-background",
+      "requested_policy": "Bounded",
+      "status": "partial",
+      "modules": [
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [],
+      "notes": "Common legacy hints work, including inherited table cellpadding. Not every legacy parsing/quirks interaction is reproduced."
+    },
+    {
+      "slug": "html-base",
+      "requested_policy": "Reject",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Reject."
+    },
+    {
+      "slug": "html-bdi",
+      "requested_policy": "Bounded",
+      "status": "partial",
+      "modules": [
+        "src/style.rs",
+        "src/text.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [],
+      "notes": "Unicode bidi and explicit ltr/rtl supported; logical text preserved. dir=auto and bdi isolation/fallback need fuller implementation; trusted envelope UI is outside this component."
+    },
+    {
+      "slug": "html-blockquote",
+      "requested_policy": "Support",
+      "status": "implemented",
+      "modules": [
+        "src/dom.rs",
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [],
+      "notes": "Static semantic tags and default styles with block/inline text layout; browser UA styles are not exhaustively reproduced."
+    },
+    {
+      "slug": "html-body",
+      "requested_policy": "Support",
+      "status": "implemented",
+      "modules": [
+        "src/dom.rs",
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [],
+      "notes": "Static semantic tags and default styles with block/inline text layout; browser UA styles are not exhaustively reproduced."
+    },
+    {
+      "slug": "html-button-reset",
+      "requested_policy": "Reject",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Reject."
+    },
+    {
+      "slug": "html-button-submit",
+      "requested_policy": "Reject",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Reject."
+    },
+    {
+      "slug": "html-cellpadding",
+      "requested_policy": "Support",
+      "status": "partial",
+      "modules": [
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [
+        "cellpadding"
+      ],
+      "notes": "Common legacy hints work, including inherited table cellpadding. Not every legacy parsing/quirks interaction is reproduced."
+    },
+    {
+      "slug": "html-cellspacing",
+      "requested_policy": "Support",
+      "status": "partial",
+      "modules": [
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [
+        "cellpadding"
+      ],
+      "notes": "Common legacy hints work, including inherited table cellpadding. Not every legacy parsing/quirks interaction is reproduced."
+    },
+    {
+      "slug": "html-code",
+      "requested_policy": "Support",
+      "status": "implemented",
+      "modules": [
+        "src/dom.rs",
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [],
+      "notes": "Static semantic tags and default styles with block/inline text layout; browser UA styles are not exhaustively reproduced."
+    },
+    {
+      "slug": "html-command-attribute",
+      "requested_policy": "Reject",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Reject."
+    },
+    {
+      "slug": "html-comments",
+      "requested_policy": "Bounded",
+      "status": "implemented",
+      "modules": [
+        "src/dom.rs",
+        "src/css.rs"
+      ],
+      "fixtures": [
+        "parser-table-repair"
+      ],
+      "notes": "Independent original-byte HTML5ever parsing; scoped inline/embedded CSS, ordinary comments and a fixed standards-oriented layout model. Browser quirks-mode emulation and MSO/VML are intentionally absent."
+    },
+    {
+      "slug": "html-del",
+      "requested_policy": "Support",
+      "status": "implemented",
+      "modules": [
+        "src/dom.rs",
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [
+        "text-decoration"
+      ],
+      "notes": "Static semantic tags and default styles with block/inline text layout; browser UA styles are not exhaustively reproduced."
+    },
+    {
+      "slug": "html-dfn",
+      "requested_policy": "Support",
+      "status": "implemented",
+      "modules": [
+        "src/dom.rs",
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [],
+      "notes": "Static semantic tags and default styles with block/inline text layout; browser UA styles are not exhaustively reproduced."
+    },
+    {
+      "slug": "html-dialog",
+      "requested_policy": "Reject",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Reject."
+    },
+    {
+      "slug": "html-dir",
+      "requested_policy": "Bounded",
+      "status": "partial",
+      "modules": [
+        "src/style.rs",
+        "src/text.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [
+        "rtl"
+      ],
+      "notes": "Unicode bidi and explicit ltr/rtl supported; logical text preserved. dir=auto and bdi isolation/fallback need fuller implementation; trusted envelope UI is outside this component."
+    },
+    {
+      "slug": "html-div",
+      "requested_policy": "Support",
+      "status": "implemented",
+      "modules": [
+        "src/dom.rs",
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [],
+      "notes": "Static semantic tags and default styles with block/inline text layout; browser UA styles are not exhaustively reproduced."
+    },
+    {
+      "slug": "html-doctype",
+      "requested_policy": "Bounded",
+      "status": "implemented",
+      "modules": [
+        "src/dom.rs",
+        "src/css.rs"
+      ],
+      "fixtures": [],
+      "notes": "Independent original-byte HTML5ever parsing; scoped inline/embedded CSS, ordinary comments and a fixed standards-oriented layout model. Browser quirks-mode emulation and MSO/VML are intentionally absent."
+    },
+    {
+      "slug": "html-form",
+      "requested_policy": "Reject",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Reject."
+    },
+    {
+      "slug": "html-h1-h6",
+      "requested_policy": "Support",
+      "status": "implemented",
+      "modules": [
+        "src/dom.rs",
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [],
+      "notes": "Static semantic tags and default styles with block/inline text layout; browser UA styles are not exhaustively reproduced."
+    },
+    {
+      "slug": "html-height",
+      "requested_policy": "Support",
+      "status": "partial",
+      "modules": [
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [],
+      "notes": "Common legacy hints work, including inherited table cellpadding. Not every legacy parsing/quirks interaction is reproduced."
+    },
+    {
+      "slug": "html-hidden",
+      "requested_policy": "Bounded",
+      "status": "partial",
+      "modules": [
+        "src/style.rs",
+        "src/layout.rs",
+        "src/paint.rs"
+      ],
+      "fixtures": [],
+      "notes": "Ordinary block/replaced-element opacity and visibility/hidden handling exist. Inline/table group opacity and consistent semantic exposure need more coverage; strict opacity pixels currently differ by one level."
+    },
+    {
+      "slug": "html-hr",
+      "requested_policy": "Support",
+      "status": "implemented",
+      "modules": [
+        "src/dom.rs",
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [],
+      "notes": "Static semantic tags and default styles with block/inline text layout; browser UA styles are not exhaustively reproduced."
+    },
+    {
+      "slug": "html-image-maps",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "html-img",
+      "requested_policy": "Bounded",
+      "status": "partial",
+      "modules": [
+        "src/layout.rs",
+        "src/resources.rs"
+      ],
+      "fixtures": [
+        "image-native",
+        "image-data",
+        "image-positioned",
+        "image-block",
+        "object-contain",
+        "linked-image-opacity"
+      ],
+      "notes": "Explicit preauthorized raster resources, data images, intrinsic sizing, fit/position and blocked/alt placeholders. No network fetcher. Upsampling differs from Gecko; complete replaced-element sizing needs more tests."
+    },
+    {
+      "slug": "html-input-checkbox",
+      "requested_policy": "Reject",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Reject."
+    },
+    {
+      "slug": "html-input-hidden",
+      "requested_policy": "Reject",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Reject."
+    },
+    {
+      "slug": "html-input-radio",
+      "requested_policy": "Reject",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Reject."
+    },
+    {
+      "slug": "html-input-reset",
+      "requested_policy": "Reject",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Reject."
+    },
+    {
+      "slug": "html-input-submit",
+      "requested_policy": "Reject",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Reject."
+    },
+    {
+      "slug": "html-input-text",
+      "requested_policy": "Reject",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Reject."
+    },
+    {
+      "slug": "html-lang",
+      "requested_policy": "Support",
+      "status": "partial",
+      "modules": [
+        "src/layout.rs",
+        "src/dom.rs"
+      ],
+      "fixtures": [],
+      "notes": "Logical readable text, scoped labels/descriptions, inherited language and a safe role subset are emitted. Native accessibility-tree integration, selection/copy UI, language-sensitive shaping/fallback and every relationship are not implemented."
+    },
+    {
+      "slug": "html-link",
+      "requested_policy": "Reject",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Reject."
+    },
+    {
+      "slug": "html-lists",
+      "requested_policy": "Support",
+      "status": "partial",
+      "modules": [
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [
+        "lists"
+      ],
+      "notes": "Inside/outside markers and bounded counters; native bullet geometry, Roman/alphabetic counter ranges, reversed lists and exact marker line metrics remain incomplete."
+    },
+    {
+      "slug": "html-loading-attribute",
+      "requested_policy": "Bounded",
+      "status": "implemented",
+      "modules": [
+        "src/resources.rs"
+      ],
+      "fixtures": [],
+      "notes": "Loading attributes grant no authority; only supplied capabilities or allowed literal data are decoded. Lazy decode scheduling is currently eager for already approved images."
+    },
+    {
+      "slug": "html-mailto-links",
+      "requested_policy": "Bounded",
+      "status": "integration",
+      "modules": [
+        "src/layout.rs"
+      ],
+      "fixtures": [],
+      "notes": "Untrusted target and per-run hit-region metadata is emitted. Message-local anchor navigation, canonical target display and validated user-gesture action/compose brokers belong to the application and are not implemented here."
+    },
+    {
+      "slug": "html-marquee",
+      "requested_policy": "Reject",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Reject."
+    },
+    {
+      "slug": "html-meta-color-scheme",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "html-meter",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "html-object",
+      "requested_policy": "Reject",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Reject."
+    },
+    {
+      "slug": "html-p",
+      "requested_policy": "Support",
+      "status": "implemented",
+      "modules": [
+        "src/dom.rs",
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [
+        "text-basic",
+        "parser-adoption",
+        "entities"
+      ],
+      "notes": "Static semantic tags and default styles with block/inline text layout; browser UA styles are not exhaustively reproduced."
+    },
+    {
+      "slug": "html-picture",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "html-popover",
+      "requested_policy": "Reject",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Reject."
+    },
+    {
+      "slug": "html-pre",
+      "requested_policy": "Support",
+      "status": "implemented",
+      "modules": [
+        "src/dom.rs",
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [
+        "text-pre"
+      ],
+      "notes": "Static semantic tags and default styles with block/inline text layout; browser UA styles are not exhaustively reproduced."
+    },
+    {
+      "slug": "html-progress",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "html-required",
+      "requested_policy": "Reject",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Reject."
+    },
+    {
+      "slug": "html-role",
+      "requested_policy": "Bounded",
+      "status": "partial",
+      "modules": [
+        "src/layout.rs",
+        "src/dom.rs"
+      ],
+      "fixtures": [],
+      "notes": "Logical readable text, scoped labels/descriptions, inherited language and a safe role subset are emitted. Native accessibility-tree integration, selection/copy UI, language-sensitive shaping/fallback and every relationship are not implemented."
+    },
+    {
+      "slug": "html-rp",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "html-rt",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "html-ruby",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "html-select",
+      "requested_policy": "Reject",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Reject."
+    },
+    {
+      "slug": "html-semantics",
+      "requested_policy": "Support",
+      "status": "partial",
+      "modules": [
+        "src/layout.rs",
+        "src/dom.rs"
+      ],
+      "fixtures": [],
+      "notes": "Logical readable text, scoped labels/descriptions, inherited language and a safe role subset are emitted. Native accessibility-tree integration, selection/copy UI, language-sensitive shaping/fallback and every relationship are not implemented."
+    },
+    {
+      "slug": "html-small",
+      "requested_policy": "Support",
+      "status": "implemented",
+      "modules": [
+        "src/dom.rs",
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [],
+      "notes": "Static semantic tags and default styles with block/inline text layout; browser UA styles are not exhaustively reproduced."
+    },
+    {
+      "slug": "html-span",
+      "requested_policy": "Support",
+      "status": "implemented",
+      "modules": [
+        "src/dom.rs",
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [
+        "inline-highlight"
+      ],
+      "notes": "Static semantic tags and default styles with block/inline text layout; browser UA styles are not exhaustively reproduced."
+    },
+    {
+      "slug": "html-srcset",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "html-strike",
+      "requested_policy": "Support",
+      "status": "implemented",
+      "modules": [
+        "src/dom.rs",
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [],
+      "notes": "Static semantic tags and default styles with block/inline text layout; browser UA styles are not exhaustively reproduced."
+    },
+    {
+      "slug": "html-strong",
+      "requested_policy": "Support",
+      "status": "implemented",
+      "modules": [
+        "src/dom.rs",
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [
+        "text-basic",
+        "parser-adoption"
+      ],
+      "notes": "Static semantic tags and default styles with block/inline text layout; browser UA styles are not exhaustively reproduced."
+    },
+    {
+      "slug": "html-style",
+      "requested_policy": "Bounded",
+      "status": "implemented",
+      "modules": [
+        "src/dom.rs",
+        "src/css.rs"
+      ],
+      "fixtures": [
+        "cascade",
+        "important",
+        "invalid-declaration",
+        "css-wide-inherit"
+      ],
+      "notes": "Independent original-byte HTML5ever parsing; scoped inline/embedded CSS, ordinary comments and a fixed standards-oriented layout model. Browser quirks-mode emulation and MSO/VML are intentionally absent."
+    },
+    {
+      "slug": "html-svg",
+      "requested_policy": "Reject",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Reject."
+    },
+    {
+      "slug": "html-table",
+      "requested_policy": "Bounded",
+      "status": "partial",
+      "modules": [
+        "src/dom.rs",
+        "src/layout.rs",
+        "src/verified.rs"
+      ],
+      "fixtures": [
+        "table-fixed",
+        "table-span",
+        "table-rowspan",
+        "table-text",
+        "parser-table-repair",
+        "parser-foster",
+        "nested-email-table",
+        "cellpadding",
+        "table-collapse",
+        "fixed-table-overflow",
+        "empty-cells"
+      ],
+      "notes": "Independent HTML table repair, bounded grid, spans and nested tables. Occupancy interval updates are verified; the table algorithm as a whole is unverified and retains documented layout gaps."
+    },
+    {
+      "slug": "html-target",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "html-textarea",
+      "requested_policy": "Reject",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Reject."
+    },
+    {
+      "slug": "html-valign",
+      "requested_policy": "Support",
+      "status": "partial",
+      "modules": [
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [],
+      "notes": "Common legacy hints work, including inherited table cellpadding. Not every legacy parsing/quirks interaction is reproduced."
+    },
+    {
+      "slug": "html-video",
+      "requested_policy": "Reject",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Reject."
+    },
+    {
+      "slug": "html-wbr",
+      "requested_policy": "Support",
+      "status": "implemented",
+      "modules": [
+        "src/dom.rs",
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [],
+      "notes": "Static semantic tags and default styles with block/inline text layout; browser UA styles are not exhaustively reproduced."
+    },
+    {
+      "slug": "html-width",
+      "requested_policy": "Support",
+      "status": "partial",
+      "modules": [
+        "src/style.rs",
+        "src/layout.rs"
+      ],
+      "fixtures": [
+        "nested-email-table",
+        "legacy-font"
+      ],
+      "notes": "Common legacy hints work, including inherited table cellpadding. Not every legacy parsing/quirks interaction is reproduced."
+    },
+    {
+      "slug": "image-apng",
+      "requested_policy": "Bounded",
+      "status": "partial",
+      "modules": [
+        "src/resources.rs",
+        "src/verified.rs"
+      ],
+      "fixtures": [],
+      "notes": "Rust raster decode only, static first/default image, strict raster data URI types, size/allocation/work limits and verified descriptor checks. APNG/GIF/WebP composition, color profiles and exact Gecko decoder equivalence need broader fixtures; no animation scheduler."
+    },
+    {
+      "slug": "image-avif",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "image-base64",
+      "requested_policy": "Bounded",
+      "status": "partial",
+      "modules": [
+        "src/resources.rs",
+        "src/verified.rs"
+      ],
+      "fixtures": [
+        "image-data"
+      ],
+      "notes": "Rust raster decode only, static first/default image, strict raster data URI types, size/allocation/work limits and verified descriptor checks. APNG/GIF/WebP composition, color profiles and exact Gecko decoder equivalence need broader fixtures; no animation scheduler."
+    },
+    {
+      "slug": "image-bmp",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "image-gif",
+      "requested_policy": "Bounded",
+      "status": "partial",
+      "modules": [
+        "src/resources.rs",
+        "src/verified.rs"
+      ],
+      "fixtures": [],
+      "notes": "Rust raster decode only, static first/default image, strict raster data URI types, size/allocation/work limits and verified descriptor checks. APNG/GIF/WebP composition, color profiles and exact Gecko decoder equivalence need broader fixtures; no animation scheduler."
+    },
+    {
+      "slug": "image-hdr",
+      "requested_policy": "Reject",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Reject."
+    },
+    {
+      "slug": "image-heif",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "image-ico",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "image-jpg",
+      "requested_policy": "Bounded",
+      "status": "partial",
+      "modules": [
+        "src/resources.rs",
+        "src/verified.rs"
+      ],
+      "fixtures": [],
+      "notes": "Rust raster decode only, static first/default image, strict raster data URI types, size/allocation/work limits and verified descriptor checks. APNG/GIF/WebP composition, color profiles and exact Gecko decoder equivalence need broader fixtures; no animation scheduler."
+    },
+    {
+      "slug": "image-mp4",
+      "requested_policy": "Reject",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Reject."
+    },
+    {
+      "slug": "image-png",
+      "requested_policy": "Bounded",
+      "status": "partial",
+      "modules": [
+        "src/resources.rs",
+        "src/verified.rs"
+      ],
+      "fixtures": [
+        "image-native",
+        "image-data"
+      ],
+      "notes": "Rust raster decode only, static first/default image, strict raster data URI types, size/allocation/work limits and verified descriptor checks. APNG/GIF/WebP composition, color profiles and exact Gecko decoder equivalence need broader fixtures; no animation scheduler."
+    },
+    {
+      "slug": "image-svg",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "image-tiff",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    },
+    {
+      "slug": "image-webp",
+      "requested_policy": "Bounded",
+      "status": "partial",
+      "modules": [
+        "src/resources.rs",
+        "src/verified.rs"
+      ],
+      "fixtures": [],
+      "notes": "Rust raster decode only, static first/default image, strict raster data URI types, size/allocation/work limits and verified descriptor checks. APNG/GIF/WebP composition, color profiles and exact Gecko decoder equivalence need broader fixtures; no animation scheduler."
+    },
+    {
+      "slug": "amp",
+      "requested_policy": "Reject",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Reject."
+    },
+    {
+      "slug": "bimi",
+      "requested_policy": "Later",
+      "status": "excluded",
+      "modules": [],
+      "fixtures": [],
+      "notes": "Outside this implementation profile: Later."
+    }
+  ]
+}
