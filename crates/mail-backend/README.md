@@ -28,9 +28,14 @@ Current invariants:
   Spam wins over contact state;
 - remote mailbox instances and local folder memberships are durable state;
 - search and mailbox scrolling use stable keyset cursors rather than offsets;
+- Turso is authoritative while native Tantivy is a rebuildable search
+  projection maintained through a revisioned, crash-replayable database outbox;
+- missing, incompatible or count-inconsistent Tantivy indexes rebuild from
+  Turso, and replay uses delete-plus-add upserts so a crash cannot duplicate hits;
 - changes commit with the state they describe and can be replayed by sequence;
 - bulk ingestion publishes at most 1,000 messages or 64 MiB of staged data per
-  set-based FTS statement, with temporary staging and atomic chunk commits;
+  atomic Turso chunk, then commits the corresponding Tantivy batch before the
+  API call returns;
 - IMAP configuration permits TLS or STARTTLS, not plaintext, and stores only an
   opaque credential reference.
 
@@ -48,9 +53,10 @@ The initial search grammar supports bare terms, quoted phrases, parentheses,
 `filename:`, `list:`, `size:`, `larger:`, `smaller:` and exact `rfc822msgid:` or
 `message-id:`. Invalid operators and malformed values return source-spanned
 query errors. Query size, token count and parenthesis depth are bounded. Exact
-newest-first full-text pages use a Tantivy fast timestamp field and adaptive,
-non-overlapping time windows, avoiding a full posting-list sort while retaining
-stable keyset cursor semantics.
+newest-first pages are evaluated entirely by native Tantivy, including Boolean
+text, state, folder/account, address, date and size predicates. Fast timestamp
+and message-ID fields provide exact two-column ordering and stable keyset cursor
+semantics; Turso hydrates the bounded result-ID page into message summaries.
 
 Run its focused checks with:
 
@@ -63,6 +69,13 @@ A deterministic synthetic scaling probe is available as:
 
 ```sh
 cargo run --release -p lizard-mail-backend --example search_benchmark -- 8,16,32,64,128
+```
+
+The embedded-versus-native decision can be reproduced independently with:
+
+```sh
+cargo run --release -p lizard-mail-backend --example fts_comparison -- native-tantivy 128,256,512,1024
+cargo run --release -p lizard-mail-backend --example fts_comparison -- turso-fts 128,256,512,1024
 ```
 
 Its generated corpus is useful for regression and scaling measurements, not as

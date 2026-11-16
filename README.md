@@ -5,10 +5,12 @@ parses the original UTF-8 HTML, applies a restricted cascade, lays out static
 message content, and emits pixels plus semantic/link metadata.
 
 The workspace also contains an independent headless mail backend crate at
-`crates/mail-backend`. It uses local Turso for metadata and Tantivy-backed FTS,
-keeps exact RFC 5322 bytes in a hash-checked blob store, and exposes typed async
-services for accounts, folders, ingestion, messages, contacts, search and
-sequenced changes. It deliberately has no dependency on this renderer.
+`crates/mail-backend`. It uses local Turso for authoritative metadata and a
+separate native Tantivy search projection rather than Turso's experimental FTS
+index. It keeps exact RFC 5322 bytes in a hash-checked blob store and exposes
+typed async services for accounts, folders, ingestion, messages, contacts,
+search and sequenced changes. It deliberately has no dependency on this
+renderer.
 
 This is a working initial engine, **not a finished implementation of the entire
 requested profile**. All 155 requested Support/Bounded entries are mapped in

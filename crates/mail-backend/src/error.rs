@@ -13,6 +13,7 @@ pub enum ErrorCode {
     MessageTooLarge,
     Parse,
     Query,
+    SearchIndex,
     NotFound,
     Conflict,
     CorruptBlob,
@@ -36,6 +37,8 @@ pub enum BackendError {
     Parse,
     #[error(transparent)]
     Query(#[from] QueryParseError),
+    #[error("search index error: {0}")]
+    SearchIndex(String),
     #[error("{entity} not found: {id}")]
     NotFound { entity: &'static str, id: String },
     #[error("conflict: {0}")]
@@ -55,6 +58,7 @@ impl BackendError {
             Self::MessageTooLarge { .. } => ErrorCode::MessageTooLarge,
             Self::Parse => ErrorCode::Parse,
             Self::Query(_) => ErrorCode::Query,
+            Self::SearchIndex(_) => ErrorCode::SearchIndex,
             Self::NotFound { .. } => ErrorCode::NotFound,
             Self::Conflict(_) => ErrorCode::Conflict,
             Self::CorruptBlob { .. } => ErrorCode::CorruptBlob,

@@ -14,6 +14,7 @@ mod imap;
 mod mime;
 mod query;
 mod schema;
+mod search_index;
 mod types;
 
 pub use backend::{Accounts, Backend, Contacts, Events, Folders, Messages, Search, Sync};

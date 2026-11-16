@@ -10,6 +10,8 @@ fn message(subject: &str, body: &str) -> Vec<u8> {
         concat!(
             "From: Abigail Marie <example.friend@example.com>\r\n",
             "To: Reader <reader@example.net>\r\n",
+            "Cc: Collaborator <collaborator@example.org>\r\n",
+            "Bcc: Hidden <hidden@example.org>\r\n",
             "Delivered-To: archive@example.net\r\n",
             "List-ID: Project List <projects.example.org>\r\n",
             "Date: Sun, 15 Nov 2026 12:30:00 +0000\r\n",
@@ -187,10 +189,22 @@ async fn complete_local_backend_flow() {
         "cobalt",
         "subject:Quarterly",
         "from:example.friend@example.com",
+        "from:example.com",
+        "to:reader@example.net",
+        "to:example.net",
+        "cc:collaborator@example.org",
+        "bcc:hidden@example.org",
         "deliveredto:archive@example.net",
         "list:projects.example.org",
         "has:attachment",
         "filename:roadmap.pdf",
+        "message-id:quarterly-17@example.com",
+        "is:read",
+        "-is:starred",
+        "larger:1",
+        "smaller:1m",
+        "after:2026-01-01",
+        "before:2030-01-01",
         "in:Inbox",
         "in:Projects",
         "account:Personal",
@@ -228,6 +242,17 @@ async fn complete_local_backend_flow() {
             .inbox_class,
         InboxClass::Spam
     );
+    let spam = backend
+        .search()
+        .search(SearchRequest {
+            query: "is:spam".into(),
+            page_size: 20,
+            cursor: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(spam.items.len(), 1);
+    assert_eq!(spam.items[0].id, id);
 
     let changes = backend
         .events()
@@ -295,7 +320,7 @@ async fn keyset_pagination_is_stable() {
 }
 
 #[tokio::test]
-async fn full_text_search_is_exact_across_time_windows_and_pages() {
+async fn full_text_search_is_exact_across_sparse_history_and_pages() {
     let profile = tempfile::tempdir().unwrap();
     let backend = Backend::open(BackendConfig::new(profile.path()))
         .await
@@ -482,4 +507,135 @@ async fn profile_reopens_without_losing_raw_or_indexed_state() {
         .await
         .unwrap();
     assert_eq!(results.items[0].id, id);
+}
+
+#[tokio::test]
+async fn rebuilds_a_missing_native_search_index_from_turso() {
+    let profile = tempfile::tempdir().unwrap();
+    let id = {
+        let backend = Backend::open(BackendConfig::new(profile.path()))
+            .await
+            .unwrap();
+        backend
+            .ingest(IngestMessage::local(message(
+                "Rebuild me",
+                "rebuildable projection needle",
+            )))
+            .await
+            .unwrap()
+    };
+    std::fs::remove_dir_all(profile.path().join("search-index")).unwrap();
+    std::fs::remove_file(profile.path().join("search-index.json")).unwrap();
+
+    let reopened = Backend::open(BackendConfig::new(profile.path()))
+        .await
+        .unwrap();
+    let results = reopened
+        .search()
+        .search(SearchRequest {
+            query: "rebuildable".into(),
+            page_size: 20,
+            cursor: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(results.items.len(), 1);
+    assert_eq!(results.items[0].id, id);
+}
+
+#[tokio::test]
+async fn replays_the_search_outbox_idempotently_after_restart() {
+    let profile = tempfile::tempdir().unwrap();
+    let id = {
+        let backend = Backend::open(BackendConfig::new(profile.path()))
+            .await
+            .unwrap();
+        backend
+            .ingest(IngestMessage::local(message(
+                "Queued",
+                "outbox replay needle",
+            )))
+            .await
+            .unwrap()
+    };
+    {
+        let path = profile.path().join("mail.db");
+        let database = turso::Builder::new_local(path.to_str().unwrap())
+            .experimental_index_method(true)
+            .build()
+            .await
+            .unwrap();
+        let connection = database.connect().unwrap();
+        connection
+            .execute(
+                "UPDATE messages SET user_classification = 'spam' WHERE id = ?1",
+                (id.to_string(),),
+            )
+            .await
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO search_index_queue(message_id, revision) VALUES (?1, 1)",
+                (id.to_string(),),
+            )
+            .await
+            .unwrap();
+    }
+
+    let reopened = Backend::open(BackendConfig::new(profile.path()))
+        .await
+        .unwrap();
+    let results = reopened
+        .search()
+        .search(SearchRequest {
+            query: "is:spam AND outbox".into(),
+            page_size: 20,
+            cursor: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(results.items.len(), 1);
+    assert_eq!(results.items[0].id, id);
+}
+
+#[tokio::test]
+async fn search_cursor_breaks_equal_timestamps_by_message_id() {
+    let profile = tempfile::tempdir().unwrap();
+    let backend = Backend::open(BackendConfig::new(profile.path()))
+        .await
+        .unwrap();
+    for index in 0..3 {
+        let mut request =
+            IngestMessage::local(message(&format!("Equal timestamp {index}"), "equalstamp"));
+        request.received_at = Some(42);
+        backend.ingest(request).await.unwrap();
+    }
+    let first = backend
+        .search()
+        .search(SearchRequest {
+            query: "equalstamp".into(),
+            page_size: 2,
+            cursor: None,
+        })
+        .await
+        .unwrap();
+    let second = backend
+        .search()
+        .search(SearchRequest {
+            query: "equalstamp".into(),
+            page_size: 2,
+            cursor: first.next_cursor.clone(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(first.items.len(), 2);
+    assert_eq!(second.items.len(), 1);
+    assert!(second.next_cursor.is_none());
+    let ids = first
+        .items
+        .iter()
+        .chain(&second.items)
+        .map(|message| message.id)
+        .collect::<std::collections::HashSet<_>>();
+    assert_eq!(ids.len(), 3);
 }

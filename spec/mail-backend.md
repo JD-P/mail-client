@@ -50,17 +50,26 @@ are backend state.
 
 ## Local database
 
-Use local Turso as the provisional authoritative metadata store and search
-engine. Its native FTS uses Tantivy while keeping FTS changes in the database
-transaction. This avoids a separate SQLite/Tantivy journal and reconciliation
-protocol.
+Use local Turso as the authoritative metadata store and a separate native
+Tantivy index as a rebuildable search projection. The projection covers both
+text and structured search fields so Boolean queries and chronological
+pagination do not need to materialize large FTS result sets back into SQL.
 
-The choice remains conditional on crash, corruption, migration, compatibility
-and performance tests. As of 2026-11-16, Turso is pre-1.0 and its FTS index
-method is documented as experimental. FTS5 syntax is not supported, snippets
-and external-content indexes are absent, and FTS writes are not visible to
-queries until transaction commit. The application must treat search indexes as
-rebuildable and keep independent backups of authoritative state.
+Every search-relevant Turso transaction also enqueues the affected message ID
+in a revisioned outbox. After the database commit, the backend performs a
+Tantivy delete-plus-add upsert and commits it before returning from the API,
+then removes only the exact outbox revision it indexed. A crash before the
+index commit leaves the row queued; a crash after the index commit merely
+replays an idempotent upsert. A concurrent update increments the revision so an
+older flush cannot erase newer work.
+
+Turso stores a per-database search generation. Tantivy stores a matching
+versioned manifest. On open, a missing, unreadable, incompatible,
+generation-mismatched or document-count-inconsistent index is discarded and
+rebuilt from Turso. The search index is never authoritative and is excluded
+from backup correctness requirements. Turso's experimental embedded FTS
+feature remains compiled temporarily only so version-2 profiles can drop and
+migrate their old embedded index.
 
 Raw RFC 5322 bytes should be immutable and stored separately from normalized
 search text, either as bounded blobs or in a content-addressed blob store.
@@ -135,24 +144,21 @@ downloaded can be searchable by headers while the API reports that body search
 is incomplete. A parser, attachment inspector or heuristic failure must not
 silently turn into a clean verdict.
 
-Bulk synchronization must not publish one FTS statement per message. The
-backend prepares bounded chunks of at most 1,000 messages or 64 MiB of
+The backend prepares bounded chunks of at most 1,000 messages or 64 MiB of
 normalized staged data, writes rows to connection-local temporary staging, and
-uses one `INSERT ... SELECT` to publish each chunk to the FTS-indexed table.
-Message rows, attachment metadata, remote identities and change events commit
-in one transaction per chunk. Earlier chunks remain committed if preparing a
-later chunk fails, matching resumable IMAP synchronization semantics.
+uses one `INSERT ... SELECT` to publish each chunk to authoritative Turso
+tables. Message rows, attachment metadata, remote identities, the search
+outbox and change events commit in one transaction per chunk. The matching
+Tantivy batch commits before that chunk's API call completes. Earlier chunks
+remain committed if preparing a later chunk fails, matching resumable IMAP
+synchronization semantics.
 
-This distinction is material for local Turso 0.9.0-pre.5: FTS flushes a
-Tantivy segment at each SQL statement boundary, not each transaction boundary.
-Merely wrapping single-row inserts in a transaction still creates one segment
-per message. In the synthetic 64 KiB-text corpus, set-based publication raised
-1 GiB ingestion from 2.64 MiB/s to 18.35 MiB/s (387.5 seconds to 55.8 seconds).
-The same run also crossed Turso FTS's hard-coded 192 MiB retained-segment cache
-and exposed a separate search-latency cliff: the common-term p50 rose to 47.6
-ms and the oldest rare-term p50 to 392.5 ms. Batching fixes write amplification;
-it does not resolve the need to evaluate standalone Tantivy for multi-gigabyte
-indexes.
+Batching was originally introduced for embedded Turso FTS, where one FTS SQL
+statement per message created one Tantivy segment per message. It raised the
+old 1 GiB path from 2.64 MiB/s to 18.35 MiB/s, but did not cure the embedded
+reader's hard-coded 192 MiB retained-segment cache cliff. The separate native
+index retains batching without placing search publication inside Turso's FTS
+adapter.
 
 ## Search language
 
@@ -177,18 +183,17 @@ Dates require an explicit account/user timezone and documented inclusive or
 exclusive boundaries. The API returns a parsed-query error with source spans;
 it must not silently reinterpret malformed security-sensitive searches.
 
-Compile one query AST into:
+Compile the complete query AST to native Tantivy. The projection includes body
+and subject text, exact address fields, attachment names, list and RFC
+Message-ID values, flags, Warm/Cold/Spam class, folder/account lookup values,
+dates, sizes and attachment state. Search results sort by fast `received_at`
+and message-ID fields, then Turso hydrates only the bounded result-ID page.
 
-- ordinary indexed Turso predicates for account, folder, contact, flags, dates,
-  sizes and exact addresses;
-- Tantivy-backed Turso FTS predicates for subject/body text; and
-- a bounded residual predicate only for features that cannot be expressed by
-  the database.
-
-Avoid residual filtering where possible because it breaks efficient pagination
-and exact counts. Search results use keyset cursors, stable tie-break IDs and a
-requested ordering such as relevance or received time. Do not use growing SQL
-`OFFSET` values for mailbox scrolling.
+Search results use keyset cursors and stable tie-break IDs. Do not use growing
+SQL `OFFSET` values for mailbox scrolling. Search-relevant mutations—contact
+addition, classification, remote flag refresh and local-folder membership—must
+enqueue and synchronously publish replacement documents before their API calls
+return.
 
 Exact result counts may be calculated lazily. The first page and stable
 navigation matter more than blocking the UI for a count on every keystroke.
@@ -196,36 +201,46 @@ Search requests must support cancellation.
 
 ## Search benchmark
 
-The first synthetic 8--128 MiB scaling probe is recorded in
+The historical embedded-FTS 8--128 MiB scaling probe is recorded in
 [`../results/mail-backend-turso-benchmark.json`](../results/mail-backend-turso-benchmark.json).
-It is a deterministic, text-heavy regression corpus, not the representative
-mixed corpus required below. An initial implementation took 75.6 ms p50 for a
-term present in every message because SQL sorted the complete posting list.
-The current implementation indexes `received_at` as a Tantivy JSON numeric
-fast field and searches exact, non-overlapping newest-first time windows. The
-windows grow exponentially until a page is full, so the result order and
-keyset cursor remain exact rather than approximate.
-
-With that planner, the 128 MiB common-term query took 1.30 ms p50 and 2.61 ms
-p99; the same term with a date predicate took 1.28 ms p50 and 1.84 ms p99.
-Every measured p50 at that checkpoint was at most 3.72 ms. The rare term near
-the oldest end of the corpus requires several expanding windows and had a
-4.35 ms p95 plus one 17.31 ms maximum sample reported as p99 by the 31-run
-probe. These results fix the small synthetic regression but are not evidence
-for a 20 GiB target; the larger representative run remains required.
-
-A second, single-process 128/256/512 MiB run is recorded in
+The later 128/256/512 MiB embedded run is recorded in
 [`../results/mail-backend-turso-scaling-128-512.json`](../results/mail-backend-turso-scaling-128-512.json).
-Dense first-page queries remained effectively flat: the common-term p50 values
-were 1.51, 2.71 and 2.20 ms, and its p99 values were 3.61, 3.42 and 4.47 ms.
-Sparse queries that must expand across much of the time range were noisier but
-remained below 16 ms p50 and 20 ms p99. Profile storage was nearly linear at
-2.25x, 2.23x and 2.22x the raw corpus. Cumulative ingestion declined from
-4.65 to 3.28 MiB/s. RSS rose from 82.7 to 120.9 to 394.2 MiB; the 512 MiB jump
-needs cache/segment instrumentation and repeated cold-process measurements
-before extrapolating memory use.
+Those files remain useful regression history but no longer describe the
+production search architecture.
 
-Benchmark Turso's Tantivy-backed FTS at normalized corpus targets of:
+On 2026-11-16, `fts_comparison` measured embedded Turso FTS against a separate
+native Tantivy `IndexWriter`. Both variants stored identical normalized rows in
+Turso, indexed identical 64 KiB bodies in 1,000-message batches, returned and
+materialized the same message-ID pages, and ran in separate processes. At the
+1 GiB checkpoint:
+
+| Metric | Native Tantivy | Embedded Turso FTS |
+|---|---:|---:|
+| Cumulative ingestion | 34.13 MiB/s | 24.24 MiB/s |
+| Combined profile size | 1,443 MiB | 1,270 MiB |
+| RSS after query suite | 555 MiB | 582 MiB |
+
+The native median was 0.019 ms for the oldest rare term, 0.260 ms for the
+all-message common term, 0.141 ms for an intersection, 0.042 ms for a subject
+term, 0.038 ms for a sparse sender, 0.599 ms for common-term-plus-date and
+0.500 ms for an all-but-missing-subject query. Embedded medians for the same
+queries were respectively 530, 56, 114, 250, 528, 58 and 61 ms. The embedded
+path crossed its cache cliff between 512 MiB and 1 GiB; native search stayed
+below 1 ms median, at the cost of about 14% more disk in this text-heavy
+corpus. This result selected the separate native projection.
+
+After integrating the outbox, full structured projection, task handoff and
+Turso summary hydration, `search_benchmark` validated the production path at
+128/256/512/1,024 MiB. At 1 GiB it ingested 1,024 MiB of raw messages in 41.0
+seconds (25.0 MiB/s), versus 55.8 seconds (18.35 MiB/s) for the prior batched
+embedded implementation. The seven end-to-end p50 values ranged from 0.276 to
+6.56 ms, including 0.276 ms for the oldest rare term and 4.95 ms for the common
+term. The profile occupied 2,337 MiB. One RSS sample was 737 MiB and several
+p99 samples contained host-scheduling outliers, so memory and tail latency need
+repeated cold-process measurements rather than extrapolation from this run.
+
+Continue benchmarking the complete production path at normalized corpus
+targets of:
 
 ```text
 128 MiB, 256 MiB, 512 MiB, 1 GiB, 2 GiB, 4 GiB
@@ -618,7 +633,7 @@ would vary by client.
 1. Stable IDs, Turso schema, immutable raw storage, MIME parsing and account
    model.
 2. Read-only IMAP synchronization with explicit completeness and failure state.
-3. Search grammar, FTS indexing and the scaling benchmark.
+3. Search grammar, native Tantivy projection and the scaling benchmark.
 4. Local folders/labels, stateful rules, explanations and replay.
 5. Backend address book plus Warm/Cold query predicates.
 6. DKIM/OpenPGP evidence and the bounded heuristic feature pipeline.
@@ -631,6 +646,7 @@ would vary by client.
 - [Turso manual and experimental FTS](https://github.com/tursodatabase/turso/blob/main/docs/manual.md)
 - [Turso FTS design and current limitations](https://github.com/tursodatabase/turso/blob/main/docs/fts.md)
 - [Turso SQLite compatibility matrix](https://github.com/tursodatabase/turso/blob/main/COMPAT.md)
+- [Tantivy documentation](https://docs.rs/tantivy/)
 - [Gmail search operators](https://support.google.com/mail/answer/7190)
 - [Gmail API search/filter semantics](https://developers.google.com/workspace/gmail/api/guides/filtering)
 - [RFC 5228: Sieve](https://www.rfc-editor.org/rfc/rfc5228.html)

@@ -10,7 +10,7 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 version INTEGER NOT NULL
             );
             INSERT INTO schema_meta(version)
-                SELECT 2 WHERE NOT EXISTS (SELECT 1 FROM schema_meta);
+                SELECT 3 WHERE NOT EXISTS (SELECT 1 FROM schema_meta);
 
             CREATE TABLE IF NOT EXISTS accounts (
                 id TEXT PRIMARY KEY,
@@ -110,6 +110,18 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 payload_json TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS search_index_meta (
+                singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+                generation TEXT NOT NULL
+            );
+            INSERT OR IGNORE INTO search_index_meta(singleton, generation)
+                VALUES (1, lower(hex(randomblob(16))));
+
+            CREATE TABLE IF NOT EXISTS search_index_queue (
+                message_id TEXT PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+                revision INTEGER NOT NULL CHECK(revision > 0)
+            );
+
             CREATE INDEX IF NOT EXISTS messages_received
                 ON messages(received_at DESC, id DESC);
             CREATE INDEX IF NOT EXISTS messages_sender
@@ -166,24 +178,27 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
             .await?;
         version = 2;
     }
-    if version != 2 {
+    if version == 2 {
+        connection
+            .execute_batch(
+                r#"
+                DROP INDEX IF EXISTS messages_fts;
+                INSERT OR IGNORE INTO search_index_queue(message_id, revision)
+                    SELECT id, 1 FROM messages;
+                UPDATE schema_meta SET version = 3;
+                "#,
+            )
+            .await?;
+        version = 3;
+    }
+    if version != 3 {
         return Err(crate::BackendError::InvalidInput(format!(
             "unsupported database schema version {version}"
         )));
     }
-
-    // Turso's local FTS method is Tantivy-backed. JSON numeric fields are
-    // fast fields, allowing the search service to restrict each query to a
-    // small exact time window before SQL applies newest-first ordering.
-    connection
-        .execute(
-            "CREATE INDEX IF NOT EXISTS messages_fts ON messages USING fts (subject, body_text, from_address, from_name, to_addresses, cc_addresses, bcc_addresses, delivered_to_addresses, list_id, attachment_names, search_metadata) WITH (json_fields = 'search_metadata')",
-            (),
-        )
-        .await?;
     // Scratch rows never need durability. Keeping them in the connection's
     // temporary database avoids doubling main-database WAL traffic while a
-    // batch is copied into the FTS-indexed messages table.
+    // normalized batch is copied into the authoritative messages table.
     connection
         .execute_batch(
             r#"
@@ -228,7 +243,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn upgrades_version_one_fts_index_with_timestamp_metadata() {
+    async fn replaces_version_one_fts_with_native_index_queue() {
         let profile = tempfile::tempdir().unwrap();
         let path = profile.path().join("mail.db");
         let database = turso::Builder::new_local(path.to_str().unwrap())
@@ -293,25 +308,32 @@ mod tests {
             .await
             .unwrap();
         let row = rows.next().await.unwrap().unwrap();
-        assert_eq!(row.get::<i64>(0).unwrap(), 2);
+        assert_eq!(row.get::<i64>(0).unwrap(), 3);
         assert_eq!(row.get::<String>(1).unwrap(), r#"{"received_at":123}"#);
         drop(rows);
 
         let mut rows = connection
             .query(
-                "SELECT id FROM messages WHERE (subject, body_text, from_address, from_name, to_addresses, cc_addresses, bcc_addresses, delivered_to_addresses, list_id, attachment_names, search_metadata) MATCH ?1",
-                (r#""migration" AND search_metadata.received_at:[123 TO 123]"#,),
+                "SELECT q.message_id, q.revision, length(meta.generation) FROM search_index_queue q, search_index_meta meta WHERE meta.singleton = 1",
+                (),
+            )
+            .await
+            .unwrap();
+        let row = rows.next().await.unwrap().unwrap();
+        assert_eq!(row.get::<String>(0).unwrap(), "message-1");
+        assert_eq!(row.get::<i64>(1).unwrap(), 1);
+        assert_eq!(row.get::<i64>(2).unwrap(), 32);
+        drop(rows);
+        let mut rows = connection
+            .query(
+                "SELECT count(*) FROM sqlite_schema WHERE name = 'messages_fts'",
+                (),
             )
             .await
             .unwrap();
         assert_eq!(
-            rows.next()
-                .await
-                .unwrap()
-                .unwrap()
-                .get::<String>(0)
-                .unwrap(),
-            "message-1"
+            rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap(),
+            0
         );
         drop(rows);
 
@@ -319,7 +341,7 @@ mod tests {
         // schema version advanced. Reopening must resume rather than attempt
         // to add the column twice.
         connection
-            .execute_batch("DROP INDEX messages_fts; UPDATE schema_meta SET version = 1;")
+            .execute_batch("UPDATE schema_meta SET version = 1;")
             .await
             .unwrap();
         migrate(&connection).await.unwrap();
@@ -329,7 +351,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap(),
-            2
+            3
         );
     }
 }

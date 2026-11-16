@@ -1,8 +1,9 @@
 use crate::blob::BlobStore;
 use crate::event::{ChangeCursor, EventSubscription};
 use crate::mime;
-use crate::query::{parse_query, QueryExpr, QueryParseError, QueryTerm};
+use crate::query::parse_query;
 use crate::schema;
+use crate::search_index::{QueuedSearchDocument, SearchDocument, SearchIndex};
 use crate::{
     Account, AccountId, AccountKind, Attachment, BackendConfig, BackendError, BackendEvent,
     Contact, ContactAddress, ContactId, ContentState, Folder, FolderId, FolderKind,
@@ -11,11 +12,16 @@ use crate::{
     RemoteMessageIdentity, Result, SearchRequest, SyncBatchResult, UserClassification,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-use chrono::{DateTime, Duration, NaiveDate, Utc};
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::{collections::HashSet, mem, str::FromStr, sync::Arc};
-use tokio::sync::{broadcast, Mutex};
+use std::{
+    collections::{HashMap, HashSet},
+    mem,
+    str::FromStr,
+    sync::Arc,
+};
+use tokio::sync::{broadcast, Mutex, RwLock};
 use turso::{params_from_iter, Connection, Value};
 use uuid::Uuid;
 
@@ -83,6 +89,8 @@ struct Inner {
     config: BackendConfig,
     _database: turso::Database,
     connection: Mutex<Connection>,
+    search_index: Arc<SearchIndex>,
+    search_sync: RwLock<()>,
     blobs: BlobStore,
     events: broadcast::Sender<BackendEvent>,
 }
@@ -113,8 +121,9 @@ impl Backend {
             .experimental_index_method(true)
             .build()
             .await?;
-        let connection = database.connect()?;
+        let mut connection = database.connect()?;
         schema::migrate(&connection).await?;
+        let search_index = prepare_search_index(&config.profile_dir, &mut connection).await?;
         let blobs = BlobStore::open(config.profile_dir.join("blobs")).await?;
         let (events, _) = broadcast::channel(config.event_buffer.max(1));
         Ok(Self {
@@ -122,6 +131,8 @@ impl Backend {
                 config,
                 _database: database,
                 connection: Mutex::new(connection),
+                search_index,
+                search_sync: RwLock::new(()),
                 blobs,
                 events,
             }),
@@ -165,9 +176,10 @@ impl Backend {
             .ok_or_else(|| BackendError::InvalidInput("ingest batch was empty".into()))
     }
 
-    /// Store messages in bounded transactions while publishing each chunk to
-    /// the FTS-indexed table with one SQL statement. Results preserve input
-    /// order. Chunks committed before a later parse failure remain committed.
+    /// Store messages in bounded transactions, then synchronously publish each
+    /// committed chunk through the crash-replayable Tantivy outbox. Results
+    /// preserve input order. Chunks committed before a later parse failure
+    /// remain committed.
     pub async fn ingest_batch(&self, requests: Vec<IngestMessage>) -> Result<Vec<MessageId>> {
         let mut remote_keys = HashSet::new();
         for request in &requests {
@@ -295,6 +307,7 @@ impl Backend {
         &self,
         mut prepared: Vec<PreparedIngest>,
     ) -> Result<Vec<MessageId>> {
+        let _search_guard = self.inner.search_sync.write().await;
         let batch_id = Uuid::new_v4().to_string();
         let mut connection = self.inner.connection.lock().await;
         let transaction = connection.transaction().await?;
@@ -391,6 +404,12 @@ impl Backend {
                 .await?;
             transaction
                 .execute(
+                    "INSERT OR IGNORE INTO search_index_queue(message_id, revision) SELECT id, 1 FROM ingest_message_stage WHERE batch_id = ?1",
+                    (batch_id.clone(),),
+                )
+                .await?;
+            transaction
+                .execute(
                     "DELETE FROM ingest_message_stage WHERE batch_id = ?1",
                     (batch_id,),
                 )
@@ -471,10 +490,49 @@ impl Backend {
         }
         transaction.commit().await?;
         drop(connection);
+        self.flush_search_projection().await?;
         for event in events {
             let _ = self.inner.events.send(event);
         }
         Ok(message_ids)
+    }
+
+    async fn flush_search_projection(&self) -> Result<()> {
+        loop {
+            let queued = {
+                let connection = self.inner.connection.lock().await;
+                load_queued_search_documents(&connection, MAX_INGEST_BATCH_MESSAGES).await?
+            };
+            if queued.is_empty() {
+                return Ok(());
+            }
+            let revisions = queued
+                .iter()
+                .map(|queued| (queued.document.id.clone(), queued.revision))
+                .collect::<Vec<_>>();
+            let documents = queued
+                .into_iter()
+                .map(|queued| queued.document)
+                .collect::<Vec<_>>();
+            let search_index = Arc::clone(&self.inner.search_index);
+            tokio::task::spawn_blocking(move || search_index.replace_documents(documents))
+                .await
+                .map_err(|error| {
+                    BackendError::SearchIndex(format!("search indexing task failed: {error}"))
+                })??;
+
+            let mut connection = self.inner.connection.lock().await;
+            let transaction = connection.transaction().await?;
+            for (id, revision) in revisions {
+                transaction
+                    .execute(
+                        "DELETE FROM search_index_queue WHERE message_id = ?1 AND revision = ?2",
+                        (id, revision),
+                    )
+                    .await?;
+            }
+            transaction.commit().await?;
+        }
     }
 }
 
@@ -799,6 +857,7 @@ impl Messages {
         id: MessageId,
         classification: Option<UserClassification>,
     ) -> Result<()> {
+        let _search_guard = self.0.inner.search_sync.write().await;
         let now = Utc::now().timestamp();
         let mut connection = self.0.inner.connection.lock().await;
         let transaction = connection.transaction().await?;
@@ -820,7 +879,10 @@ impl Messages {
             json!({"message_id": id, "classification": classification}),
         )
         .await?;
+        enqueue_search_on(&transaction, id).await?;
         transaction.commit().await?;
+        drop(connection);
+        self.0.flush_search_projection().await?;
         let _ = self.0.inner.events.send(event);
         Ok(())
     }
@@ -839,6 +901,7 @@ impl Messages {
         folder_id: FolderId,
         present: bool,
     ) -> Result<()> {
+        let _search_guard = self.0.inner.search_sync.write().await;
         let now = Utc::now().timestamp();
         let mut connection = self.0.inner.connection.lock().await;
         let mut rows = connection
@@ -898,7 +961,10 @@ impl Messages {
             json!({"message_id": id, "folder_id": folder_id}),
         )
         .await?;
+        enqueue_search_on(&transaction, id).await?;
         transaction.commit().await?;
+        drop(connection);
+        self.0.flush_search_projection().await?;
         let _ = self.0.inner.events.send(event);
         Ok(())
     }
@@ -920,39 +986,7 @@ pub struct Search(Backend);
 impl Search {
     pub async fn search(&self, request: SearchRequest) -> Result<Page<MessageSummary>> {
         let expression = parse_query(&request.query)?;
-        let now = Utc::now();
-        if uses_full_text(&expression) {
-            return self
-                .search_newest_windowed(&expression, &request, now)
-                .await;
-        }
-        let mut parameters = Vec::new();
-        let predicate = compile_query(&expression, &mut parameters, now, None)?;
-        let mut clauses = vec![predicate];
-        apply_cursor(
-            &mut clauses,
-            &mut parameters,
-            request.cursor.as_deref(),
-            MessageSort::ReceivedNewest,
-        )?;
-        query_page_on(
-            &self.0,
-            clauses,
-            parameters,
-            request.page_size,
-            MessageSort::ReceivedNewest,
-        )
-        .await
-    }
-
-    async fn search_newest_windowed(
-        &self,
-        expression: &QueryExpr,
-        request: &SearchRequest,
-        now: DateTime<Utc>,
-    ) -> Result<Page<MessageSummary>> {
-        const INITIAL_WINDOW_SECONDS: i64 = 60;
-
+        let _search_guard = self.0.inner.search_sync.read().await;
         let page_size = bounded_page_size(request.page_size);
         let cursor = request.cursor.as_deref().map(decode_cursor).transpose()?;
         if let Some(cursor) = &cursor {
@@ -964,63 +998,24 @@ impl Search {
                 ));
             }
         }
-
+        let cursor = cursor.map(|cursor| (cursor.received_at, cursor.id));
+        let search_index = Arc::clone(&self.0.inner.search_index);
+        let ids = tokio::task::spawn_blocking(move || {
+            search_index.search(
+                &expression,
+                cursor
+                    .as_ref()
+                    .map(|(received_at, id)| (*received_at, id.as_str())),
+                page_size + 1,
+                Utc::now().timestamp(),
+            )
+        })
+        .await
+        .map_err(|error| {
+            BackendError::SearchIndex(format!("search query task failed: {error}"))
+        })??;
         let connection = self.0.inner.connection.lock().await;
-        let Some((oldest, newest)) = message_time_bounds_on(&connection).await? else {
-            return Ok(Page {
-                items: Vec::new(),
-                next_cursor: None,
-            });
-        };
-        let mut upper = cursor
-            .as_ref()
-            .map_or(newest, |cursor| newest.min(cursor.received_at));
-        if upper < oldest {
-            return Ok(Page {
-                items: Vec::new(),
-                next_cursor: None,
-            });
-        }
-
-        let mut window_seconds = INITIAL_WINDOW_SECONDS;
-        let mut items = Vec::with_capacity(page_size + 1);
-        loop {
-            let lower = upper
-                .saturating_sub(window_seconds.saturating_sub(1))
-                .max(oldest);
-            let window = SearchWindow { lower, upper };
-            let mut parameters = Vec::new();
-            let predicate = compile_query(expression, &mut parameters, now, Some(window))?;
-            let mut clauses = vec![
-                predicate,
-                "m.received_at >= ? AND m.received_at <= ?".into(),
-            ];
-            parameters.push(Value::Integer(lower));
-            parameters.push(Value::Integer(upper));
-            apply_cursor(
-                &mut clauses,
-                &mut parameters,
-                request.cursor.as_deref(),
-                MessageSort::ReceivedNewest,
-            )?;
-            let needed = page_size + 1 - items.len();
-            items.extend(
-                query_summaries_on(
-                    &connection,
-                    clauses,
-                    parameters,
-                    needed,
-                    MessageSort::ReceivedNewest,
-                )
-                .await?,
-            );
-            if items.len() > page_size || lower == oldest {
-                break;
-            }
-            upper = lower.saturating_sub(1);
-            window_seconds = window_seconds.saturating_mul(2);
-        }
-
+        let mut items = summaries_by_ids_on(&connection, &ids).await?;
         let next_cursor = if items.len() > page_size {
             items.truncate(page_size);
             items
@@ -1061,6 +1056,7 @@ impl Contacts {
             addresses,
             created_at: Utc::now().timestamp(),
         };
+        let _search_guard = self.0.inner.search_sync.write().await;
         let mut connection = self.0.inner.connection.lock().await;
         let transaction = connection.transaction().await?;
         transaction
@@ -1085,6 +1081,21 @@ impl Contacts {
                 )
                 .await?;
         }
+        let mut affected = HashSet::new();
+        for address in &value.addresses {
+            let mut rows = transaction
+                .query(
+                    "SELECT id FROM messages WHERE from_address = ?1 COLLATE NOCASE",
+                    (address.address.clone(),),
+                )
+                .await?;
+            while let Some(row) = rows.next().await? {
+                affected.insert(parse_id(row.get::<String>(0)?, "message")?);
+            }
+        }
+        for id in affected {
+            enqueue_search_on(&transaction, id).await?;
+        }
         let event = insert_event(
             &transaction,
             value.created_at,
@@ -1094,6 +1105,8 @@ impl Contacts {
         )
         .await?;
         transaction.commit().await?;
+        drop(connection);
+        self.0.flush_search_projection().await?;
         let _ = self.0.inner.events.send(event);
         Ok(value)
     }
@@ -1287,30 +1300,270 @@ async fn query_summaries_on(
     Ok(items)
 }
 
-async fn message_time_bounds_on(connection: &Connection) -> Result<Option<(i64, i64)>> {
-    let mut rows = connection
-        .query(
-            "SELECT received_at FROM messages ORDER BY received_at ASC, id ASC LIMIT 1",
+async fn summaries_by_ids_on(
+    connection: &Connection,
+    ids: &[String],
+) -> Result<Vec<MessageSummary>> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = std::iter::repeat_n("?", ids.len())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!("SELECT {SUMMARY_COLUMNS} FROM messages m WHERE m.id IN ({placeholders})");
+    let parameters = ids.iter().cloned().map(Value::Text).collect::<Vec<_>>();
+    let mut rows = connection.query(sql, params_from_iter(parameters)).await?;
+    let mut by_id = HashMap::with_capacity(ids.len());
+    while let Some(row) = rows.next().await? {
+        let summary = summary_from_row(&row)?;
+        by_id.insert(summary.id.to_string(), summary);
+    }
+    let mut summaries = Vec::with_capacity(ids.len());
+    for id in ids {
+        summaries.push(by_id.remove(id).ok_or_else(|| {
+            BackendError::SearchIndex(format!("search index references missing message {id}"))
+        })?);
+    }
+    Ok(summaries)
+}
+
+async fn prepare_search_index(
+    profile_dir: &std::path::Path,
+    connection: &mut Connection,
+) -> Result<Arc<SearchIndex>> {
+    let generation = search_generation_on(connection).await?;
+    if let Ok(index) = SearchIndex::open(profile_dir, &generation) {
+        let index = Arc::new(index);
+        flush_search_projection_on(connection, Arc::clone(&index)).await?;
+        if index.num_docs() == message_count_on(connection).await? {
+            return Ok(index);
+        }
+        drop(index);
+    }
+
+    let transaction = connection.transaction().await?;
+    transaction
+        .execute("DELETE FROM search_index_queue", ())
+        .await?;
+    transaction
+        .execute(
+            "INSERT INTO search_index_queue(message_id, revision) SELECT id, 1 FROM messages",
             (),
         )
         .await?;
-    let Some(row) = rows.next().await? else {
-        return Ok(None);
-    };
-    let oldest = row.get(0)?;
+    transaction.commit().await?;
+
+    let index = Arc::new(SearchIndex::create(profile_dir)?);
+    flush_search_projection_on(connection, Arc::clone(&index)).await?;
+    let expected = message_count_on(connection).await?;
+    if index.num_docs() != expected {
+        return Err(BackendError::SearchIndex(format!(
+            "rebuilt search index contains {} documents but database contains {expected}",
+            index.num_docs()
+        )));
+    }
+    index.write_manifest(&generation)?;
+    Ok(index)
+}
+
+async fn flush_search_projection_on(
+    connection: &mut Connection,
+    search_index: Arc<SearchIndex>,
+) -> Result<()> {
+    loop {
+        let queued = load_queued_search_documents(connection, MAX_INGEST_BATCH_MESSAGES).await?;
+        if queued.is_empty() {
+            return Ok(());
+        }
+        let revisions = queued
+            .iter()
+            .map(|queued| (queued.document.id.clone(), queued.revision))
+            .collect::<Vec<_>>();
+        let documents = queued
+            .into_iter()
+            .map(|queued| queued.document)
+            .collect::<Vec<_>>();
+        let index = Arc::clone(&search_index);
+        tokio::task::spawn_blocking(move || index.replace_documents(documents))
+            .await
+            .map_err(|error| {
+                BackendError::SearchIndex(format!("search indexing task failed: {error}"))
+            })??;
+        let transaction = connection.transaction().await?;
+        for (id, revision) in revisions {
+            transaction
+                .execute(
+                    "DELETE FROM search_index_queue WHERE message_id = ?1 AND revision = ?2",
+                    (id, revision),
+                )
+                .await?;
+        }
+        transaction.commit().await?;
+    }
+}
+
+async fn load_queued_search_documents(
+    connection: &Connection,
+    limit: usize,
+) -> Result<Vec<QueuedSearchDocument>> {
+    let mut rows = connection
+        .query(
+            r#"SELECT q.revision, m.id, m.subject, m.body_text, m.from_address,
+                m.to_addresses, m.cc_addresses, m.bcc_addresses,
+                m.delivered_to_addresses, m.list_id, m.attachment_names,
+                m.rfc_message_id, m.received_at, m.size_bytes, m.has_attachment,
+                m.is_read, m.is_starred,
+                CASE
+                    WHEN m.user_classification = 'spam' THEN 'spam'
+                    WHEN m.from_address IS NOT NULL AND EXISTS (
+                        SELECT 1 FROM contact_addresses ca
+                        WHERE ca.address = m.from_address COLLATE NOCASE
+                    ) THEN 'warm'
+                    ELSE 'cold'
+                END
+            FROM search_index_queue q
+            JOIN messages m ON m.id = q.message_id
+            ORDER BY q.message_id
+            LIMIT ?1"#,
+            (limit as i64,),
+        )
+        .await?;
+    let mut queued = Vec::new();
+    while let Some(row) = rows.next().await? {
+        queued.push(QueuedSearchDocument {
+            revision: row.get(0)?,
+            document: SearchDocument {
+                id: row.get(1)?,
+                subject: row.get(2)?,
+                body_text: row.get(3)?,
+                from_address: row.get(4)?,
+                to_addresses: json_addresses(row.get(5)?)?,
+                cc_addresses: json_addresses(row.get(6)?)?,
+                bcc_addresses: json_addresses(row.get(7)?)?,
+                delivered_to_addresses: json_addresses(row.get(8)?)?,
+                list_id: row.get(9)?,
+                attachment_names: row.get(10)?,
+                rfc_message_id: row.get(11)?,
+                received_at: row.get(12)?,
+                size_bytes: row.get(13)?,
+                has_attachment: row.get(14)?,
+                is_read: row.get(15)?,
+                is_starred: row.get(16)?,
+                inbox_class: row.get(17)?,
+                folder_lookups: Vec::new(),
+                account_lookups: Vec::new(),
+            },
+        });
+    }
+    drop(rows);
+    if queued.is_empty() {
+        return Ok(queued);
+    }
+
+    let mut positions = HashMap::with_capacity(queued.len());
+    for (position, item) in queued.iter().enumerate() {
+        positions.insert(item.document.id.clone(), position);
+    }
+    let placeholders = std::iter::repeat_n("?", queued.len())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let parameters = queued
+        .iter()
+        .map(|item| Value::Text(item.document.id.clone()))
+        .collect::<Vec<_>>();
+    let mut rows = connection
+        .query(
+            format!(
+                r#"SELECT mi.message_id, a.id, a.name, f.id, f.name, f.remote_name
+                FROM message_instances mi
+                JOIN accounts a ON a.id = mi.account_id
+                JOIN folders f ON f.id = mi.folder_id
+                WHERE mi.message_id IN ({placeholders})"#
+            ),
+            params_from_iter(parameters.clone()),
+        )
+        .await?;
+    while let Some(row) = rows.next().await? {
+        let id: String = row.get(0)?;
+        if let Some(position) = positions.get(&id).copied() {
+            let document = &mut queued[position].document;
+            document.account_lookups.push(row.get(1)?);
+            document.account_lookups.push(row.get(2)?);
+            document.folder_lookups.push(row.get(3)?);
+            document.folder_lookups.push(row.get(4)?);
+            if let Some(remote_name) = row.get::<Option<String>>(5)? {
+                document.folder_lookups.push(remote_name);
+            }
+        }
+    }
     drop(rows);
     let mut rows = connection
         .query(
-            "SELECT received_at FROM messages ORDER BY received_at DESC, id DESC LIMIT 1",
+            format!(
+                r#"SELECT lm.message_id, f.id, f.name, f.remote_name
+                FROM local_folder_memberships lm
+                JOIN folders f ON f.id = lm.folder_id
+                WHERE lm.message_id IN ({placeholders})"#
+            ),
+            params_from_iter(parameters),
+        )
+        .await?;
+    while let Some(row) = rows.next().await? {
+        let id: String = row.get(0)?;
+        if let Some(position) = positions.get(&id).copied() {
+            let document = &mut queued[position].document;
+            document.folder_lookups.push(row.get(1)?);
+            document.folder_lookups.push(row.get(2)?);
+            if let Some(remote_name) = row.get::<Option<String>>(3)? {
+                document.folder_lookups.push(remote_name);
+            }
+        }
+    }
+    for item in &mut queued {
+        item.document.folder_lookups.sort_unstable();
+        item.document.folder_lookups.dedup();
+        item.document.account_lookups.sort_unstable();
+        item.document.account_lookups.dedup();
+    }
+    Ok(queued)
+}
+
+async fn enqueue_search_on(connection: &Connection, id: MessageId) -> Result<()> {
+    connection
+        .execute(
+            r#"INSERT INTO search_index_queue(message_id, revision) VALUES (?1, 1)
+            ON CONFLICT(message_id) DO UPDATE
+            SET revision = search_index_queue.revision + 1"#,
+            (id.to_string(),),
+        )
+        .await?;
+    Ok(())
+}
+
+async fn search_generation_on(connection: &Connection) -> Result<String> {
+    let mut rows = connection
+        .query(
+            "SELECT generation FROM search_index_meta WHERE singleton = 1",
             (),
         )
         .await?;
-    let newest = rows
+    rows.next()
+        .await?
+        .ok_or_else(|| BackendError::SearchIndex("database has no search generation".into()))?
+        .get(0)
+        .map_err(Into::into)
+}
+
+async fn message_count_on(connection: &Connection) -> Result<u64> {
+    let mut rows = connection
+        .query("SELECT count(*) FROM messages", ())
+        .await?;
+    let count = rows
         .next()
         .await?
-        .ok_or_else(|| BackendError::InvalidInput("message time index is inconsistent".into()))?
-        .get(0)?;
-    Ok(Some((oldest, newest)))
+        .ok_or_else(|| BackendError::SearchIndex("message count query returned no row".into()))?
+        .get::<i64>(0)?;
+    Ok(count as u64)
 }
 
 fn summary_from_row(row: &turso::Row) -> Result<MessageSummary> {
@@ -1400,6 +1653,7 @@ async fn refresh_remote_in_transaction(
             (is_read, is_starred, id.to_string()),
         )
         .await?;
+    enqueue_search_on(connection, id).await?;
     let event = insert_event(
         connection,
         now,
@@ -1439,266 +1693,6 @@ async fn insert_event(
         entity_id,
         payload,
     })
-}
-
-#[derive(Clone, Copy)]
-struct SearchWindow {
-    lower: i64,
-    upper: i64,
-}
-
-fn compile_query(
-    expression: &QueryExpr,
-    parameters: &mut Vec<Value>,
-    now: DateTime<Utc>,
-    window: Option<SearchWindow>,
-) -> Result<String> {
-    compile_query_with_mode(expression, parameters, now, false, window)
-}
-
-fn compile_query_with_mode(
-    expression: &QueryExpr,
-    parameters: &mut Vec<Value>,
-    now: DateTime<Utc>,
-    isolate_fts: bool,
-    window: Option<SearchWindow>,
-) -> Result<String> {
-    if let Some(mut query) = compile_full_text_query(expression) {
-        if let Some(window) = window {
-            query = format!(
-                "({query}) AND search_metadata.received_at:[{} TO {}]",
-                window.lower, window.upper
-            );
-        }
-        parameters.push(Value::Text(query));
-        return Ok(if isolate_fts {
-            "m.id IN (SELECT ft.id FROM messages ft WHERE (ft.subject, ft.body_text, ft.from_address, ft.from_name, ft.to_addresses, ft.cc_addresses, ft.bcc_addresses, ft.delivered_to_addresses, ft.list_id, ft.attachment_names) MATCH ?)".into()
-        } else {
-            "(m.subject, m.body_text, m.from_address, m.from_name, m.to_addresses, m.cc_addresses, m.bcc_addresses, m.delivered_to_addresses, m.list_id, m.attachment_names) MATCH ?".into()
-        });
-    }
-    match expression {
-        QueryExpr::Term(term) => compile_term(term, parameters, now),
-        QueryExpr::And(items) => {
-            compile_group(items, " AND ", parameters, now, isolate_fts, window)
-        }
-        // MATCH is only legal as an index-driving constraint in Turso. Under
-        // a mixed SQL OR/NOT, isolate text matches in an ID subquery.
-        QueryExpr::Or(items) => compile_group(items, " OR ", parameters, now, true, window),
-        QueryExpr::Not(item) => Ok(format!(
-            "NOT ({})",
-            compile_query_with_mode(item, parameters, now, true, window)?
-        )),
-    }
-}
-
-fn compile_group(
-    items: &[QueryExpr],
-    separator: &str,
-    parameters: &mut Vec<Value>,
-    now: DateTime<Utc>,
-    isolate_fts: bool,
-    window: Option<SearchWindow>,
-) -> Result<String> {
-    let parts = items
-        .iter()
-        .map(|item| compile_query_with_mode(item, parameters, now, isolate_fts, window))
-        .collect::<Result<Vec<_>>>()?;
-    Ok(format!("({})", parts.join(separator)))
-}
-
-fn compile_term(
-    term: &QueryTerm,
-    parameters: &mut Vec<Value>,
-    now: DateTime<Utc>,
-) -> Result<String> {
-    let field = term.field.as_deref();
-    let fts = |column: &'static str, parameters: &mut Vec<Value>| {
-        parameters.push(Value::Text(fts_literal(&term.value)));
-        format!("m.{column} MATCH ?")
-    };
-    match field {
-        None => Ok(fts("body_text", parameters)),
-        Some("subject") => Ok(fts("subject", parameters)),
-        Some("from") => Ok(fts("from_address", parameters)),
-        Some("to") => Ok(fts("to_addresses", parameters)),
-        Some("deliveredto") => Ok(fts("delivered_to_addresses", parameters)),
-        Some("cc") => {
-            parameters.push(Value::Text(format!("%{}%", escape_like(&term.value))));
-            Ok("m.cc_addresses LIKE ? ESCAPE '\\'".into())
-        }
-        Some("bcc") => {
-            parameters.push(Value::Text(format!("%{}%", escape_like(&term.value))));
-            Ok("m.bcc_addresses LIKE ? ESCAPE '\\'".into())
-        }
-        Some("filename") => Ok(fts("attachment_names", parameters)),
-        Some("list") => Ok(fts("list_id", parameters)),
-        Some("has") if term.value.eq_ignore_ascii_case("attachment") => {
-            Ok("m.has_attachment = 1".into())
-        }
-        Some("has") => Err(query_error(term, "unknown has: predicate")),
-        Some("is") => match term.value.to_ascii_lowercase().as_str() {
-            "read" => Ok("m.is_read = 1".into()),
-            "unread" => Ok("m.is_read = 0".into()),
-            "starred" => Ok("m.is_starred = 1".into()),
-            "warm" => Ok(WARM_PREDICATE.into()),
-            "cold" => Ok(COLD_PREDICATE.into()),
-            "spam" => Ok(SPAM_PREDICATE.into()),
-            _ => Err(query_error(term, "unknown is: predicate")),
-        },
-        Some("after" | "newer" | "before" | "older") => {
-            let timestamp = parse_date(&term.value)
-                .ok_or_else(|| query_error(term, "date must use YYYY-MM-DD"))?;
-            parameters.push(Value::Integer(timestamp));
-            if matches!(field, Some("after" | "newer")) {
-                Ok("m.received_at >= ?".into())
-            } else {
-                Ok("m.received_at < ?".into())
-            }
-        }
-        Some("older_than" | "newer_than") => {
-            let duration = parse_age(&term.value)
-                .ok_or_else(|| query_error(term, "age must look like 7d, 2w, 3m, or 1y"))?;
-            parameters.push(Value::Integer((now - duration).timestamp()));
-            if field == Some("older_than") {
-                Ok("m.received_at < ?".into())
-            } else {
-                Ok("m.received_at >= ?".into())
-            }
-        }
-        Some("larger" | "smaller" | "size") => {
-            let size =
-                parse_size(&term.value).ok_or_else(|| query_error(term, "invalid byte size"))?;
-            parameters.push(Value::Integer(size));
-            match field {
-                Some("larger") => Ok("m.size_bytes > ?".into()),
-                Some("smaller") => Ok("m.size_bytes < ?".into()),
-                _ => Ok("m.size_bytes = ?".into()),
-            }
-        }
-        Some("in" | "label") => {
-            parameters.push(Value::Text(term.value.clone()));
-            parameters.push(Value::Text(term.value.clone()));
-            parameters.push(Value::Text(term.value.clone()));
-            Ok("EXISTS (SELECT 1 FROM folders f WHERE (f.id = ? OR f.name = ? COLLATE NOCASE OR f.remote_name = ? COLLATE NOCASE) AND (EXISTS (SELECT 1 FROM message_instances mi WHERE mi.message_id = m.id AND mi.folder_id = f.id) OR EXISTS (SELECT 1 FROM local_folder_memberships lm WHERE lm.message_id = m.id AND lm.folder_id = f.id)))".into())
-        }
-        Some("account") => {
-            parameters.push(Value::Text(term.value.clone()));
-            parameters.push(Value::Text(term.value.clone()));
-            Ok("EXISTS (SELECT 1 FROM message_instances mi JOIN accounts a ON a.id = mi.account_id WHERE mi.message_id = m.id AND (a.id = ? OR a.name = ? COLLATE NOCASE))".into())
-        }
-        Some("rfc822msgid" | "message-id") => {
-            parameters.push(Value::Text(term.value.trim_matches(['<', '>']).to_owned()));
-            Ok("m.rfc_message_id = ?".into())
-        }
-        Some(other) => Err(query_error(
-            term,
-            format!("unknown search operator {other}:"),
-        )),
-    }
-}
-
-/// Lower a wholly full-text subtree into one Tantivy query. Turso currently
-/// requires MATCH to be an index-driving constraint, and rejects multiple
-/// independent MATCH expressions under SQL Boolean operators.
-fn compile_full_text_query(expression: &QueryExpr) -> Option<String> {
-    match expression {
-        QueryExpr::Term(term) => {
-            let field = match term.field.as_deref() {
-                None => None,
-                Some("subject") => Some("subject"),
-                Some("from") => Some("from_address"),
-                Some("to") => Some("to_addresses"),
-                Some("deliveredto") => Some("delivered_to_addresses"),
-                Some("cc") => Some("cc_addresses"),
-                Some("bcc") => Some("bcc_addresses"),
-                Some("filename") => Some("attachment_names"),
-                Some("list") => Some("list_id"),
-                _ => return None,
-            };
-            let literal = fts_literal(&term.value);
-            Some(match field {
-                Some(field) => format!("{field}:{literal}"),
-                None => literal,
-            })
-        }
-        QueryExpr::And(items) => compile_full_text_group(items, " AND "),
-        QueryExpr::Or(items) => compile_full_text_group(items, " OR "),
-        // Tantivy rejects an all-negative query. Lower negation through SQL
-        // around a positive FTS ID subquery instead.
-        QueryExpr::Not(_) => None,
-    }
-}
-
-fn compile_full_text_group(items: &[QueryExpr], separator: &str) -> Option<String> {
-    let items = items
-        .iter()
-        .map(compile_full_text_query)
-        .collect::<Option<Vec<_>>>()?;
-    Some(format!("({})", items.join(separator)))
-}
-
-fn uses_full_text(expression: &QueryExpr) -> bool {
-    match expression {
-        QueryExpr::Term(term) => matches!(
-            term.field.as_deref(),
-            None | Some(
-                "subject" | "from" | "to" | "deliveredto" | "cc" | "bcc" | "filename" | "list"
-            )
-        ),
-        QueryExpr::And(items) | QueryExpr::Or(items) => items.iter().any(uses_full_text),
-        QueryExpr::Not(item) => uses_full_text(item),
-    }
-}
-
-fn fts_literal(value: &str) -> String {
-    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
-}
-
-fn escape_like(value: &str) -> String {
-    value
-        .replace('\\', "\\\\")
-        .replace('%', "\\%")
-        .replace('_', "\\_")
-}
-
-fn parse_date(value: &str) -> Option<i64> {
-    NaiveDate::parse_from_str(value, "%Y-%m-%d")
-        .ok()?
-        .and_hms_opt(0, 0, 0)
-        .map(|date| date.and_utc().timestamp())
-}
-
-fn parse_age(value: &str) -> Option<Duration> {
-    let (amount, unit) = value.split_at(value.len().checked_sub(1)?);
-    let amount = amount.parse::<i64>().ok()?;
-    let days = match unit.to_ascii_lowercase().as_str() {
-        "d" => amount,
-        "w" => amount.checked_mul(7)?,
-        "m" => amount.checked_mul(30)?,
-        "y" => amount.checked_mul(365)?,
-        _ => return None,
-    };
-    Duration::try_days(days)
-}
-
-fn parse_size(value: &str) -> Option<i64> {
-    let split = value
-        .find(|character: char| !character.is_ascii_digit())
-        .unwrap_or(value.len());
-    let amount = value[..split].parse::<i64>().ok()?;
-    let multiplier = match value[split..].to_ascii_lowercase().as_str() {
-        "" | "b" => 1,
-        "k" | "kb" => 1024,
-        "m" | "mb" => 1024 * 1024,
-        "g" | "gb" => 1024 * 1024 * 1024,
-        _ => return None,
-    };
-    amount.checked_mul(multiplier)
-}
-
-fn query_error(term: &QueryTerm, message: impl Into<String>) -> BackendError {
-    QueryParseError::new(message, term.start, term.end).into()
 }
 
 #[derive(Serialize, Deserialize)]
