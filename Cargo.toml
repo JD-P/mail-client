@@ -6,7 +6,8 @@ license = "MIT"
 description = "Bounded HTML email frontend for WebRender/SWGL"
 
 [workspace]
-members = ["."]
+members = [".", "vendor/async-imap"]
+default-members = ["."]
 
 [workspace.dependencies]
 gleam = "0.16"
