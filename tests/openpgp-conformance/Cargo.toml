@@ -1,0 +1,13 @@
+[package]
+name = "openpgp-conformance"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+anyhow = "1"
+pgp = { version = "=0.21.1", default-features = false }
+rand = "0.8.5"
+tempfile = "3"
+
+[workspace]
