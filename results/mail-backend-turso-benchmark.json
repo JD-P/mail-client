@@ -1,0 +1,127 @@
+{
+  "measured_at": "2026-11-16",
+  "backend_revision": "uncommitted working tree after removing duplicate body indexing",
+  "database": "turso 0.9.0-pre.5 local FTS",
+  "build": "release with debug=1",
+  "machine": {
+    "cpu": "Intel Xeon Platinum 8573C",
+    "logical_cpus": 5,
+    "filesystem": "container overlay"
+  },
+  "corpus": {
+    "kind": "deterministic synthetic scaling probe",
+    "message_body_bytes": 65536,
+    "warning": "Text-heavy generated data for regression and scaling only; not representative inbox evidence."
+  },
+  "measurement": {
+    "page_size": 20,
+    "warm_runs_per_query": 31,
+    "first_query_is_process_warm": true,
+    "query_values_are_milliseconds": true
+  },
+  "checkpoints": [
+    {
+      "raw_mib": 8.027,
+      "messages": 128,
+      "profile_mib": 19.745,
+      "rss_mib": 31.367,
+      "ingest_messages_per_second": 84.292,
+      "ingest_mib_per_second": 5.286,
+      "query_p50": {
+        "rare": 0.739,
+        "common": 6.810,
+        "intersection": 0.820,
+        "subject": 0.574,
+        "sender": 0.553,
+        "common_and_date": 4.443,
+        "negative_subject": 0.884
+      }
+    },
+    {
+      "raw_mib": 16.054,
+      "messages": 256,
+      "profile_mib": 38.497,
+      "rss_mib": 50.676,
+      "ingest_messages_per_second": 73.020,
+      "ingest_mib_per_second": 4.579,
+      "query_p50": {
+        "rare": 0.522,
+        "common": 8.781,
+        "intersection": 1.235,
+        "subject": 0.305,
+        "sender": 0.250,
+        "common_and_date": 8.760,
+        "negative_subject": 0.487
+      }
+    },
+    {
+      "raw_mib": 32.047,
+      "messages": 511,
+      "profile_mib": 75.261,
+      "rss_mib": 45.922,
+      "ingest_messages_per_second": 69.350,
+      "ingest_mib_per_second": 4.349,
+      "query_p50": {
+        "rare": 0.342,
+        "common": 16.912,
+        "intersection": 1.483,
+        "subject": 0.476,
+        "sender": 0.480,
+        "common_and_date": 17.241,
+        "negative_subject": 0.584
+      }
+    },
+    {
+      "raw_mib": 64.031,
+      "messages": 1021,
+      "profile_mib": 145.795,
+      "rss_mib": 70.461,
+      "ingest_messages_per_second": 66.666,
+      "ingest_mib_per_second": 4.181,
+      "query_p50": {
+        "rare": 0.699,
+        "common": 34.755,
+        "intersection": 7.863,
+        "subject": 1.398,
+        "sender": 1.017,
+        "common_and_date": 38.903,
+        "negative_subject": 1.874
+      }
+    },
+    {
+      "raw_mib": 128.001,
+      "messages": 2041,
+      "profile_mib": 287.308,
+      "rss_mib": 96.324,
+      "ingest_messages_per_second": 58.182,
+      "ingest_mib_per_second": 3.649,
+      "query_p50": {
+        "rare": 1.011,
+        "common": 75.616,
+        "intersection": 16.384,
+        "subject": 2.429,
+        "sender": 1.957,
+        "common_and_date": 78.306,
+        "negative_subject": 2.473
+      },
+      "query_p95": {
+        "rare": 1.253,
+        "common": 82.439,
+        "intersection": 19.115,
+        "subject": 3.789,
+        "sender": 2.406,
+        "common_and_date": 87.177,
+        "negative_subject": 3.559
+      },
+      "query_p99": {
+        "rare": 1.375,
+        "common": 89.137,
+        "intersection": 20.209,
+        "subject": 3.809,
+        "sender": 2.460,
+        "common_and_date": 89.884,
+        "negative_subject": 3.630
+      }
+    }
+  ]
+}

@@ -1,8 +1,20 @@
 # Local mail backend and API
 
-Status: architectural design and research notes for future implementation. The
-current repository implements the Lizard HTML/CSS renderer and a hardened
-vendored IMAP client; it does not yet implement this backend.
+Status: design plus an implemented first vertical slice in
+`crates/mail-backend`. The crate provides a typed asynchronous API, local Turso
+schema, immutable content-addressed raw blobs, bounded RFC 5322/MIME ingestion,
+accounts and folders, remote IMAP identities, local-folder membership,
+contacts, dynamic Warm/Cold/Spam classification, Gmail-shaped search, stable
+keyset pagination and a durable/live change stream. Its IMAP boundary accepts
+complete fetch results from the hardened vendored client and routes them
+through the same idempotent ingestion path as local imports.
+
+The current slice does **not** yet open IMAP network sessions or retrieve
+credentials, run DKIM/OpenPGP verification, execute user-authored rules,
+extract every security heuristic, synchronize mutations back to a server,
+send mail, or expose inter-process transport. Those are tracked here as the
+next layers; the presence of their data-model requirements below is not a
+claim that they are implemented.
 
 Related frontend requirements: [security-ui.md](security-ui.md).
 
@@ -164,6 +176,16 @@ navigation matter more than blocking the UI for a count on every keystroke.
 Search requests must support cancellation.
 
 ## Search benchmark
+
+The first synthetic 8--128 MiB scaling probe is recorded in
+[`../results/mail-backend-turso-benchmark.json`](../results/mail-backend-turso-benchmark.json).
+It is a deterministic, text-heavy regression corpus, not the representative
+mixed corpus required below. At 128 MiB, rare and fielded queries remained in
+the low single-digit milliseconds, while a term present in every message took
+75.6 ms p50 and 89.1 ms p99 because chronological ordering must consume a large
+posting list before returning a 20-row page. This is not acceptable evidence
+for a 20 GiB target; relevance ordering, time partitioning/fast fields, and the
+larger representative run remain required.
 
 Benchmark Turso's Tantivy-backed FTS at normalized corpus targets of:
 

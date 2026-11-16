@@ -4,6 +4,12 @@ A Rust HTML/CSS email frontend feeding Mozilla WebRender + SWGL. It independentl
 parses the original UTF-8 HTML, applies a restricted cascade, lays out static
 message content, and emits pixels plus semantic/link metadata.
 
+The workspace also contains an independent headless mail backend crate at
+`crates/mail-backend`. It uses local Turso for metadata and Tantivy-backed FTS,
+keeps exact RFC 5322 bytes in a hash-checked blob store, and exposes typed async
+services for accounts, folders, ingestion, messages, contacts, search and
+sequenced changes. It deliberately has no dependency on this renderer.
+
 This is a working initial engine, **not a finished implementation of the entire
 requested profile**. All 155 requested Support/Bounded entries are mapped in
 [implementation status](docs/implementation-status.md), with a machine-readable
@@ -63,9 +69,12 @@ is deliberately a one-shot conformance tool. A client embedding this API should
 keep it inside a message worker and discard that worker between messages; a
 persistent interactive IPC session is not implemented by the CLI yet.
 
-The project has no account/credential store, MIME reader, network fetcher,
-mailbox/application UI, OS link launcher or send-mail API. Resources must be
-explicitly supplied for the current job, or be allowed literal raster data.
+The Lizard renderer has no account/credential store, MIME reader, network
+fetcher, mailbox/application UI, OS link launcher or send-mail API. The
+separate backend crate now owns local account metadata, bounded MIME ingestion
+and mailbox state, but does not yet open IMAP network sessions, retrieve
+credential secrets or send mail. Resources must be explicitly supplied for the
+current render job, or be allowed literal raster data.
 External/CID resource keys confer no fetching authority. Link fragments,
 logical readable text and scoped accessibility labels/roles are emitted for
 integration. Trusted focus indication, canonical destination display, validated

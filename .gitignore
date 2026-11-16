@@ -1,5 +1,6 @@
 /target/
-/results/
+/results/*
+!/results/mail-backend-turso-benchmark.json
 /tools/__pycache__/
 *.rlib
 /.tools/
