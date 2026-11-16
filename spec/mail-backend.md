@@ -195,6 +195,17 @@ the oldest end of the corpus requires several expanding windows and had a
 probe. These results fix the small synthetic regression but are not evidence
 for a 20 GiB target; the larger representative run remains required.
 
+A second, single-process 128/256/512 MiB run is recorded in
+[`../results/mail-backend-turso-scaling-128-512.json`](../results/mail-backend-turso-scaling-128-512.json).
+Dense first-page queries remained effectively flat: the common-term p50 values
+were 1.51, 2.71 and 2.20 ms, and its p99 values were 3.61, 3.42 and 4.47 ms.
+Sparse queries that must expand across much of the time range were noisier but
+remained below 16 ms p50 and 20 ms p99. Profile storage was nearly linear at
+2.25x, 2.23x and 2.22x the raw corpus. Cumulative ingestion declined from
+4.65 to 3.28 MiB/s. RSS rose from 82.7 to 120.9 to 394.2 MiB; the 512 MiB jump
+needs cache/segment instrumentation and repeated cold-process measurements
+before extrapolating memory use.
+
 Benchmark Turso's Tantivy-backed FTS at normalized corpus targets of:
 
 ```text

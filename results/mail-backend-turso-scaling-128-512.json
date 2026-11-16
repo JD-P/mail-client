@@ -1,0 +1,85 @@
+{
+  "measured_at": "2026-11-16",
+  "backend_revision": "ebdc4271d98e240575bea79dd0869d24b0546559",
+  "database": "turso 0.9.0-pre.5 local FTS",
+  "build": "release with debug=1",
+  "machine": {
+    "cpu": "Intel Xeon Platinum 8573C",
+    "logical_cpus": 5,
+    "filesystem": "container overlay"
+  },
+  "corpus": {
+    "kind": "deterministic synthetic scaling probe",
+    "message_body_bytes": 65536,
+    "warning": "Text-heavy generated data for regression and scaling only; not representative inbox evidence."
+  },
+  "measurement": {
+    "checkpoints_share_one_expanding_profile": true,
+    "page_size": 20,
+    "warm_runs_per_query": 31,
+    "first_query_is_process_warm": true,
+    "query_values_are_milliseconds": true,
+    "query_labels": {
+      "rare": "unique00000013",
+      "common": "project",
+      "intersection": "alpha AND beta",
+      "subject": "subject:topic7",
+      "sender": "from:user13@example.com",
+      "common_and_date": "project AND after:2026-01-01",
+      "negative_subject": "-subject:missing"
+    }
+  },
+  "checkpoints": [
+    {
+      "raw_mib": 128.001,
+      "messages": 2041,
+      "profile_mib": 288.197,
+      "rss_mib": 82.742,
+      "ingest_messages_per_second": 74.130,
+      "ingest_mib_per_second": 4.649,
+      "queries": {
+        "rare": {"returned": 1, "p50": 5.214, "p95": 5.630, "p99": 6.324},
+        "common": {"returned": 20, "p50": 1.507, "p95": 2.035, "p99": 3.608},
+        "intersection": {"returned": 20, "p50": 2.485, "p95": 2.773, "p99": 3.243},
+        "subject": {"returned": 20, "p50": 3.494, "p95": 5.384, "p99": 5.774},
+        "sender": {"returned": 3, "p50": 4.927, "p95": 5.755, "p99": 8.343},
+        "common_and_date": {"returned": 20, "p50": 1.495, "p95": 1.719, "p99": 1.747},
+        "negative_subject": {"returned": 20, "p50": 1.082, "p95": 1.281, "p99": 1.303}
+      }
+    },
+    {
+      "raw_mib": 256.004,
+      "messages": 4082,
+      "profile_mib": 571.208,
+      "rss_mib": 120.895,
+      "ingest_messages_per_second": 62.026,
+      "ingest_mib_per_second": 3.890,
+      "queries": {
+        "rare": {"returned": 1, "p50": 15.646, "p95": 17.583, "p99": 19.937},
+        "common": {"returned": 20, "p50": 2.706, "p95": 3.191, "p99": 3.419},
+        "intersection": {"returned": 20, "p50": 5.095, "p95": 6.609, "p99": 6.777},
+        "subject": {"returned": 20, "p50": 8.283, "p95": 9.723, "p99": 9.784},
+        "sender": {"returned": 5, "p50": 13.755, "p95": 16.951, "p99": 19.945},
+        "common_and_date": {"returned": 20, "p50": 2.712, "p95": 3.305, "p99": 3.399},
+        "negative_subject": {"returned": 20, "p50": 2.326, "p95": 5.123, "p99": 5.429}
+      }
+    },
+    {
+      "raw_mib": 512.011,
+      "messages": 8164,
+      "profile_mib": 1138.894,
+      "rss_mib": 394.188,
+      "ingest_messages_per_second": 52.376,
+      "ingest_mib_per_second": 3.285,
+      "queries": {
+        "rare": {"returned": 1, "p50": 11.759, "p95": 13.298, "p99": 13.402},
+        "common": {"returned": 20, "p50": 2.203, "p95": 2.724, "p99": 4.467},
+        "intersection": {"returned": 20, "p50": 3.730, "p95": 4.318, "p99": 5.306},
+        "subject": {"returned": 20, "p50": 6.003, "p95": 8.938, "p99": 9.196},
+        "sender": {"returned": 9, "p50": 11.185, "p95": 13.056, "p99": 14.265},
+        "common_and_date": {"returned": 20, "p50": 2.236, "p95": 5.557, "p99": 7.042},
+        "negative_subject": {"returned": 20, "p50": 1.708, "p95": 2.253, "p99": 2.292}
+      }
+    }
+  ]
+}
