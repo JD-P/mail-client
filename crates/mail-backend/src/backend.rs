@@ -1,5 +1,6 @@
 use crate::blob::BlobStore;
 use crate::event::{ChangeCursor, EventSubscription};
+use crate::imap::imap_fetch_metadata;
 use crate::mime;
 use crate::query::parse_query;
 use crate::schema;
@@ -13,6 +14,7 @@ use crate::{
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use chrono::Utc;
+use futures_util::TryStreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::{
@@ -21,12 +23,15 @@ use std::{
     str::FromStr,
     sync::Arc,
 };
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{broadcast, Mutex, RwLock};
 use turso::{params_from_iter, Connection, Value};
 use uuid::Uuid;
 
 const MAX_INGEST_BATCH_MESSAGES: usize = 1_000;
 const MAX_INGEST_BATCH_BYTES: usize = 64 * 1024 * 1024;
+const MAX_IMAP_METADATA_UIDS: usize = 500;
+const IMAP_BODY_CHUNK_BYTES: usize = 1024 * 1024;
 
 struct PreparedIngest {
     id: MessageId,
@@ -1234,6 +1239,145 @@ impl Events {
 pub struct Sync(Backend);
 
 impl Sync {
+    /// Pull messages not seen by an earlier successful sync from a selected
+    /// remote folder.
+    ///
+    /// `session` must already be authenticated over a transport which matches
+    /// the account's TLS policy. Keeping connection establishment and secret
+    /// lookup outside this method prevents the backend from accepting plaintext
+    /// passwords or silently weakening TLS. Message bodies are requested with
+    /// `BODY.PEEK[]` in bounded chunks, so a sync never marks mail as read.
+    ///
+    /// The folder cursor is advanced only after every fetched message has been
+    /// durably ingested. If the operation fails partway through, retrying is
+    /// safe because remote identity is keyed by folder, UIDVALIDITY, and UID.
+    pub async fn pull_imap_folder<T>(
+        &self,
+        session: &mut async_imap::Session<T>,
+        account_id: AccountId,
+        folder_id: FolderId,
+    ) -> Result<SyncBatchResult>
+    where
+        T: AsyncRead + AsyncWrite + Unpin + std::fmt::Debug + Send,
+    {
+        let target = self.imap_sync_target(account_id, folder_id).await?;
+        let mailbox = session
+            .examine(&target.remote_name)
+            .await
+            .map_err(imap_error)?;
+        let uid_validity = mailbox.uid_validity.ok_or_else(|| {
+            BackendError::Imap("selected mailbox did not report UIDVALIDITY".into())
+        })?;
+
+        let same_epoch = target.uid_validity == Some(uid_validity);
+        let first_uid = if same_epoch {
+            target.uid_next.unwrap_or(1)
+        } else {
+            1
+        };
+        let mut uids: Vec<u32> = session
+            .uid_search(format!("UID {first_uid}:{}", u32::MAX))
+            .await
+            .map_err(imap_error)?
+            .into_iter()
+            .filter(|uid| *uid >= first_uid)
+            .collect();
+        uids.sort_unstable();
+
+        let mut message_ids = Vec::with_capacity(uids.len());
+        let mut pending = Vec::new();
+        let mut pending_bytes = 0usize;
+
+        for uid_chunk in uids.chunks(MAX_IMAP_METADATA_UIDS) {
+            let uid_set = uid_chunk
+                .iter()
+                .map(u32::to_string)
+                .collect::<Vec<_>>()
+                .join(",");
+            let fetches = session
+                .uid_fetch(uid_set, "(UID FLAGS INTERNALDATE RFC822.SIZE)")
+                .await
+                .map_err(imap_error)?
+                .try_collect::<Vec<_>>()
+                .await
+                .map_err(imap_error)?;
+            let requested: HashSet<u32> = uid_chunk.iter().copied().collect();
+            let mut metadata = fetches
+                .iter()
+                .map(imap_fetch_metadata)
+                .collect::<Result<Vec<_>>>()?;
+            metadata.retain(|item| requested.contains(&item.uid));
+            metadata.sort_unstable_by_key(|item| item.uid);
+            metadata.dedup_by_key(|item| item.uid);
+
+            for item in metadata {
+                let size = usize::try_from(item.size).map_err(|_| {
+                    BackendError::InvalidInput("IMAP message size does not fit in memory".into())
+                })?;
+                let limit = self.0.inner.config.limits.max_message_bytes;
+                if size > limit {
+                    return Err(BackendError::MessageTooLarge {
+                        actual: size,
+                        limit,
+                    });
+                }
+
+                if !pending.is_empty()
+                    && (pending.len() >= MAX_INGEST_BATCH_MESSAGES
+                        || pending_bytes.saturating_add(size) > MAX_INGEST_BATCH_BYTES)
+                {
+                    let ingested = self
+                        .ingest_imap_batch(
+                            account_id,
+                            folder_id,
+                            uid_validity,
+                            mem::take(&mut pending),
+                        )
+                        .await?;
+                    message_ids.extend(ingested.message_ids);
+                    pending_bytes = 0;
+                }
+
+                let mut raw = Vec::with_capacity(size);
+                let downloaded = session
+                    .uid_fetch_body_to(item.uid, &mut raw, IMAP_BODY_CHUNK_BYTES)
+                    .await
+                    .map_err(imap_error)?;
+                if downloaded != item.size || raw.len() != size {
+                    return Err(BackendError::Imap(format!(
+                        "UID {} changed size while it was being fetched",
+                        item.uid
+                    )));
+                }
+                pending_bytes = pending_bytes.saturating_add(raw.len());
+                pending.push(ImapFetchedMessage {
+                    uid: item.uid,
+                    mod_sequence: item.mod_sequence,
+                    flags: item.flags,
+                    internal_date: item.internal_date,
+                    raw,
+                });
+            }
+        }
+
+        if !pending.is_empty() {
+            let ingested = self
+                .ingest_imap_batch(account_id, folder_id, uid_validity, pending)
+                .await?;
+            message_ids.extend(ingested.message_ids);
+        }
+
+        let observed_uid_next = uids.last().and_then(|uid| uid.checked_add(1));
+        let mut uid_next = mailbox.uid_next.into_iter().chain(observed_uid_next).max();
+        if same_epoch {
+            uid_next = uid_next.into_iter().chain(target.uid_next).max();
+        }
+        self.store_imap_cursor(account_id, folder_id, uid_validity, uid_next)
+            .await?;
+
+        Ok(SyncBatchResult { message_ids })
+    }
+
     pub async fn ingest_imap_batch(
         &self,
         account_id: AccountId,
@@ -1265,6 +1409,99 @@ impl Sync {
         let message_ids = self.0.ingest_batch(requests).await?;
         Ok(SyncBatchResult { message_ids })
     }
+
+    async fn imap_sync_target(
+        &self,
+        account_id: AccountId,
+        folder_id: FolderId,
+    ) -> Result<ImapSyncTarget> {
+        let connection = self.0.inner.connection.lock().await;
+        let mut rows = connection
+            .query(
+                "SELECT f.account_id, f.kind, f.remote_name, f.uid_validity, f.uid_next, a.kind FROM folders f LEFT JOIN accounts a ON a.id = f.account_id WHERE f.id = ?1",
+                (folder_id.to_string(),),
+            )
+            .await?;
+        let Some(row) = rows.next().await? else {
+            return Err(not_found("folder", folder_id));
+        };
+        let stored_account = row
+            .get::<Option<String>>(0)?
+            .map(|id| parse_id(id, "account"))
+            .transpose()?;
+        let folder_kind = parse_folder_kind(&row.get::<String>(1)?)?;
+        let remote_name = row.get::<Option<String>>(2)?;
+        let uid_validity = optional_database_u32(row.get(3)?, "folders.uid_validity")?;
+        let uid_next = optional_database_u32(row.get(4)?, "folders.uid_next")?;
+        let account_kind = row
+            .get::<Option<String>>(5)?
+            .map(|kind| parse_account_kind(&kind))
+            .transpose()?;
+
+        if stored_account != Some(account_id)
+            || folder_kind != FolderKind::Remote
+            || account_kind != Some(AccountKind::Imap)
+        {
+            return Err(BackendError::InvalidInput(
+                "folder is not a remote IMAP folder belonging to the account".into(),
+            ));
+        }
+        let remote_name = remote_name.filter(|name| !name.is_empty()).ok_or_else(|| {
+            BackendError::InvalidInput("remote IMAP folder has no remote name".into())
+        })?;
+        Ok(ImapSyncTarget {
+            remote_name,
+            uid_validity,
+            uid_next,
+        })
+    }
+
+    async fn store_imap_cursor(
+        &self,
+        account_id: AccountId,
+        folder_id: FolderId,
+        uid_validity: u32,
+        uid_next: Option<u32>,
+    ) -> Result<()> {
+        let connection = self.0.inner.connection.lock().await;
+        let changed = connection
+            .execute(
+                "UPDATE folders SET uid_validity = ?1, uid_next = ?2 WHERE id = ?3 AND account_id = ?4",
+                turso::params![
+                    i64::from(uid_validity),
+                    uid_next.map(i64::from),
+                    folder_id.to_string(),
+                    account_id.to_string(),
+                ],
+            )
+            .await?;
+        if changed != 1 {
+            return Err(BackendError::Conflict(
+                "remote folder changed while IMAP sync was running".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+struct ImapSyncTarget {
+    remote_name: String,
+    uid_validity: Option<u32>,
+    uid_next: Option<u32>,
+}
+
+fn imap_error(error: async_imap::error::Error) -> BackendError {
+    BackendError::Imap(error.to_string())
+}
+
+fn optional_database_u32(value: Option<i64>, field: &str) -> Result<Option<u32>> {
+    value
+        .map(|value| {
+            u32::try_from(value).map_err(|_| {
+                BackendError::InvalidInput(format!("database contains invalid {field}"))
+            })
+        })
+        .transpose()
 }
 
 const WARM_PREDICATE: &str = "m.user_classification IS NOT 'spam' AND m.from_address IS NOT NULL AND EXISTS (SELECT 1 FROM contact_addresses ca WHERE ca.address = m.from_address COLLATE NOCASE)";

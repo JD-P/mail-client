@@ -13,6 +13,7 @@ pub enum ErrorCode {
     MessageTooLarge,
     Parse,
     Query,
+    Imap,
     SearchIndex,
     NotFound,
     Conflict,
@@ -37,6 +38,8 @@ pub enum BackendError {
     Parse,
     #[error(transparent)]
     Query(#[from] QueryParseError),
+    #[error("IMAP protocol error: {0}")]
+    Imap(String),
     #[error("search index error: {0}")]
     SearchIndex(String),
     #[error("{entity} not found: {id}")]
@@ -58,6 +61,7 @@ impl BackendError {
             Self::MessageTooLarge { .. } => ErrorCode::MessageTooLarge,
             Self::Parse => ErrorCode::Parse,
             Self::Query(_) => ErrorCode::Query,
+            Self::Imap(_) => ErrorCode::Imap,
             Self::SearchIndex(_) => ErrorCode::SearchIndex,
             Self::NotFound { .. } => ErrorCode::NotFound,
             Self::Conflict(_) => ErrorCode::Conflict,

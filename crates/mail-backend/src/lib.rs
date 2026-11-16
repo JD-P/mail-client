@@ -1,9 +1,10 @@
 //! Headless, local-first mail storage and search.
 //!
-//! This crate deliberately owns no renderer and performs no network I/O. Protocol
-//! adapters feed exact RFC 5322 bytes through [`Backend::ingest`] or the bounded
+//! This crate deliberately owns no renderer. Protocol adapters feed exact RFC
+//! 5322 bytes through [`Backend::ingest`] or the bounded
 //! [`Backend::ingest_batch`] path, which are also used by fixture importers and
-//! future POP3 support.
+//! future POP3 support. The IMAP adapter accepts an authenticated session whose
+//! TLS transport and credentials remain the embedding application's concern.
 
 mod backend;
 mod blob;
