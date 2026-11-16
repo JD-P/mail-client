@@ -42,7 +42,10 @@ The initial search grammar supports bare terms, quoted phrases, parentheses,
 `newer_than:`, `in:`, `label:`, `account:`, `is:`, `has:attachment`,
 `filename:`, `list:`, `size:`, `larger:`, `smaller:` and exact `rfc822msgid:` or
 `message-id:`. Invalid operators and malformed values return source-spanned
-query errors. Query size, token count and parenthesis depth are bounded.
+query errors. Query size, token count and parenthesis depth are bounded. Exact
+newest-first full-text pages use a Tantivy fast timestamp field and adaptive,
+non-overlapping time windows, avoiding a full posting-list sort while retaining
+stable keyset cursor semantics.
 
 Run its focused checks with:
 

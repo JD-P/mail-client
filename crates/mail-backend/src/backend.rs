@@ -131,6 +131,7 @@ impl Backend {
             .collect::<Vec<_>>()
             .join(" ");
         let classification = request.user_classification.map(classification_text);
+        let search_metadata = json!({"received_at": received_at}).to_string();
         let remote_flags = request
             .remote
             .as_ref()
@@ -175,11 +176,11 @@ impl Backend {
                     to_addresses, cc_addresses, bcc_addresses, delivered_to_addresses,
                     list_id, body_text, body_html, preview, sent_at, received_at, size_bytes, has_attachment,
                     attachment_names, is_read, is_starred, user_classification,
-                    content_state, created_at
+                    content_state, search_metadata, created_at
                 ) VALUES (
                     ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
                     ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23,
-                    ?24
+                    ?24, ?25
                 )"#,
                 turso::params![
                     id.to_string(),
@@ -205,6 +206,7 @@ impl Backend {
                     is_starred,
                     classification,
                     content_state_text(parsed.content_state),
+                    search_metadata,
                     now,
                 ],
             )
@@ -708,11 +710,11 @@ impl Messages {
     async fn query_page(
         &self,
         clauses: Vec<String>,
-        mut parameters: Vec<Value>,
+        parameters: Vec<Value>,
         requested_size: usize,
         sort: MessageSort,
     ) -> Result<Page<MessageSummary>> {
-        query_page_on(&self.0, clauses, &mut parameters, requested_size, sort).await
+        query_page_on(&self.0, clauses, parameters, requested_size, sort).await
     }
 }
 
@@ -723,8 +725,13 @@ impl Search {
     pub async fn search(&self, request: SearchRequest) -> Result<Page<MessageSummary>> {
         let expression = parse_query(&request.query)?;
         let now = Utc::now();
+        if uses_full_text(&expression) {
+            return self
+                .search_newest_windowed(&expression, &request, now)
+                .await;
+        }
         let mut parameters = Vec::new();
-        let predicate = compile_query(&expression, &mut parameters, now)?;
+        let predicate = compile_query(&expression, &mut parameters, now, None)?;
         let mut clauses = vec![predicate];
         apply_cursor(
             &mut clauses,
@@ -735,11 +742,99 @@ impl Search {
         query_page_on(
             &self.0,
             clauses,
-            &mut parameters,
+            parameters,
             request.page_size,
             MessageSort::ReceivedNewest,
         )
         .await
+    }
+
+    async fn search_newest_windowed(
+        &self,
+        expression: &QueryExpr,
+        request: &SearchRequest,
+        now: DateTime<Utc>,
+    ) -> Result<Page<MessageSummary>> {
+        const INITIAL_WINDOW_SECONDS: i64 = 60;
+
+        let page_size = bounded_page_size(request.page_size);
+        let cursor = request.cursor.as_deref().map(decode_cursor).transpose()?;
+        if let Some(cursor) = &cursor {
+            if cursor.sort != MessageSort::ReceivedNewest
+                || MessageId::from_str(&cursor.id).is_err()
+            {
+                return Err(BackendError::InvalidInput(
+                    "invalid newest-first page cursor".into(),
+                ));
+            }
+        }
+
+        let connection = self.0.inner.connection.lock().await;
+        let Some((oldest, newest)) = message_time_bounds_on(&connection).await? else {
+            return Ok(Page {
+                items: Vec::new(),
+                next_cursor: None,
+            });
+        };
+        let mut upper = cursor
+            .as_ref()
+            .map_or(newest, |cursor| newest.min(cursor.received_at));
+        if upper < oldest {
+            return Ok(Page {
+                items: Vec::new(),
+                next_cursor: None,
+            });
+        }
+
+        let mut window_seconds = INITIAL_WINDOW_SECONDS;
+        let mut items = Vec::with_capacity(page_size + 1);
+        loop {
+            let lower = upper
+                .saturating_sub(window_seconds.saturating_sub(1))
+                .max(oldest);
+            let window = SearchWindow { lower, upper };
+            let mut parameters = Vec::new();
+            let predicate = compile_query(expression, &mut parameters, now, Some(window))?;
+            let mut clauses = vec![
+                predicate,
+                "m.received_at >= ? AND m.received_at <= ?".into(),
+            ];
+            parameters.push(Value::Integer(lower));
+            parameters.push(Value::Integer(upper));
+            apply_cursor(
+                &mut clauses,
+                &mut parameters,
+                request.cursor.as_deref(),
+                MessageSort::ReceivedNewest,
+            )?;
+            let needed = page_size + 1 - items.len();
+            items.extend(
+                query_summaries_on(
+                    &connection,
+                    clauses,
+                    parameters,
+                    needed,
+                    MessageSort::ReceivedNewest,
+                )
+                .await?,
+            );
+            if items.len() > page_size || lower == oldest {
+                break;
+            }
+            upper = lower.saturating_sub(1);
+            window_seconds = window_seconds.saturating_mul(2);
+        }
+
+        let next_cursor = if items.len() > page_size {
+            items.truncate(page_size);
+            items
+                .last()
+                .map(|message| encode_cursor(message, MessageSort::ReceivedNewest))
+                .transpose()?
+        } else {
+            None
+        };
+        Ok(Page { items, next_cursor })
     }
 }
 
@@ -954,29 +1049,14 @@ const SUMMARY_COLUMN_COUNT: usize = 13;
 async fn query_page_on(
     backend: &Backend,
     clauses: Vec<String>,
-    parameters: &mut Vec<Value>,
+    parameters: Vec<Value>,
     requested_size: usize,
     sort: MessageSort,
 ) -> Result<Page<MessageSummary>> {
     let page_size = bounded_page_size(requested_size);
-    let mut sql = format!("SELECT {SUMMARY_COLUMNS} FROM messages m");
-    if !clauses.is_empty() {
-        sql.push_str(" WHERE ");
-        sql.push_str(&clauses.join(" AND "));
-    }
-    sql.push_str(match sort {
-        MessageSort::ReceivedNewest => " ORDER BY m.received_at DESC, m.id DESC LIMIT ?",
-        MessageSort::ReceivedOldest => " ORDER BY m.received_at ASC, m.id ASC LIMIT ?",
-    });
-    parameters.push(Value::Integer(page_size as i64 + 1));
     let connection = backend.inner.connection.lock().await;
-    let mut rows = connection
-        .query(sql, params_from_iter(parameters.clone()))
-        .await?;
-    let mut items = Vec::new();
-    while let Some(row) = rows.next().await? {
-        items.push(summary_from_row(&row)?);
-    }
+    let mut items =
+        query_summaries_on(&connection, clauses, parameters, page_size + 1, sort).await?;
     let next_cursor = if items.len() > page_size {
         items.truncate(page_size);
         items
@@ -987,6 +1067,57 @@ async fn query_page_on(
         None
     };
     Ok(Page { items, next_cursor })
+}
+
+async fn query_summaries_on(
+    connection: &Connection,
+    clauses: Vec<String>,
+    mut parameters: Vec<Value>,
+    limit: usize,
+    sort: MessageSort,
+) -> Result<Vec<MessageSummary>> {
+    let mut sql = format!("SELECT {SUMMARY_COLUMNS} FROM messages m");
+    if !clauses.is_empty() {
+        sql.push_str(" WHERE ");
+        sql.push_str(&clauses.join(" AND "));
+    }
+    sql.push_str(match sort {
+        MessageSort::ReceivedNewest => " ORDER BY m.received_at DESC, m.id DESC LIMIT ?",
+        MessageSort::ReceivedOldest => " ORDER BY m.received_at ASC, m.id ASC LIMIT ?",
+    });
+    parameters.push(Value::Integer(limit as i64));
+    let mut rows = connection.query(sql, params_from_iter(parameters)).await?;
+    let mut items = Vec::new();
+    while let Some(row) = rows.next().await? {
+        items.push(summary_from_row(&row)?);
+    }
+    Ok(items)
+}
+
+async fn message_time_bounds_on(connection: &Connection) -> Result<Option<(i64, i64)>> {
+    let mut rows = connection
+        .query(
+            "SELECT received_at FROM messages ORDER BY received_at ASC, id ASC LIMIT 1",
+            (),
+        )
+        .await?;
+    let Some(row) = rows.next().await? else {
+        return Ok(None);
+    };
+    let oldest = row.get(0)?;
+    drop(rows);
+    let mut rows = connection
+        .query(
+            "SELECT received_at FROM messages ORDER BY received_at DESC, id DESC LIMIT 1",
+            (),
+        )
+        .await?;
+    let newest = rows
+        .next()
+        .await?
+        .ok_or_else(|| BackendError::InvalidInput("message time index is inconsistent".into()))?
+        .get(0)?;
+    Ok(Some((oldest, newest)))
 }
 
 fn summary_from_row(row: &turso::Row) -> Result<MessageSummary> {
@@ -1119,12 +1250,19 @@ async fn insert_event(
     })
 }
 
+#[derive(Clone, Copy)]
+struct SearchWindow {
+    lower: i64,
+    upper: i64,
+}
+
 fn compile_query(
     expression: &QueryExpr,
     parameters: &mut Vec<Value>,
     now: DateTime<Utc>,
+    window: Option<SearchWindow>,
 ) -> Result<String> {
-    compile_query_with_mode(expression, parameters, now, false)
+    compile_query_with_mode(expression, parameters, now, false, window)
 }
 
 fn compile_query_with_mode(
@@ -1132,8 +1270,15 @@ fn compile_query_with_mode(
     parameters: &mut Vec<Value>,
     now: DateTime<Utc>,
     isolate_fts: bool,
+    window: Option<SearchWindow>,
 ) -> Result<String> {
-    if let Some(query) = compile_full_text_query(expression) {
+    if let Some(mut query) = compile_full_text_query(expression) {
+        if let Some(window) = window {
+            query = format!(
+                "({query}) AND search_metadata.received_at:[{} TO {}]",
+                window.lower, window.upper
+            );
+        }
         parameters.push(Value::Text(query));
         return Ok(if isolate_fts {
             "m.id IN (SELECT ft.id FROM messages ft WHERE (ft.subject, ft.body_text, ft.from_address, ft.from_name, ft.to_addresses, ft.cc_addresses, ft.bcc_addresses, ft.delivered_to_addresses, ft.list_id, ft.attachment_names) MATCH ?)".into()
@@ -1143,13 +1288,15 @@ fn compile_query_with_mode(
     }
     match expression {
         QueryExpr::Term(term) => compile_term(term, parameters, now),
-        QueryExpr::And(items) => compile_group(items, " AND ", parameters, now, isolate_fts),
+        QueryExpr::And(items) => {
+            compile_group(items, " AND ", parameters, now, isolate_fts, window)
+        }
         // MATCH is only legal as an index-driving constraint in Turso. Under
         // a mixed SQL OR/NOT, isolate text matches in an ID subquery.
-        QueryExpr::Or(items) => compile_group(items, " OR ", parameters, now, true),
+        QueryExpr::Or(items) => compile_group(items, " OR ", parameters, now, true, window),
         QueryExpr::Not(item) => Ok(format!(
             "NOT ({})",
-            compile_query_with_mode(item, parameters, now, true)?
+            compile_query_with_mode(item, parameters, now, true, window)?
         )),
     }
 }
@@ -1160,10 +1307,11 @@ fn compile_group(
     parameters: &mut Vec<Value>,
     now: DateTime<Utc>,
     isolate_fts: bool,
+    window: Option<SearchWindow>,
 ) -> Result<String> {
     let parts = items
         .iter()
-        .map(|item| compile_query_with_mode(item, parameters, now, isolate_fts))
+        .map(|item| compile_query_with_mode(item, parameters, now, isolate_fts, window))
         .collect::<Result<Vec<_>>>()?;
     Ok(format!("({})", parts.join(separator)))
 }
@@ -1297,6 +1445,19 @@ fn compile_full_text_group(items: &[QueryExpr], separator: &str) -> Option<Strin
         .map(compile_full_text_query)
         .collect::<Option<Vec<_>>>()?;
     Some(format!("({})", items.join(separator)))
+}
+
+fn uses_full_text(expression: &QueryExpr) -> bool {
+    match expression {
+        QueryExpr::Term(term) => matches!(
+            term.field.as_deref(),
+            None | Some(
+                "subject" | "from" | "to" | "deliveredto" | "cc" | "bcc" | "filename" | "list"
+            )
+        ),
+        QueryExpr::And(items) | QueryExpr::Or(items) => items.iter().any(uses_full_text),
+        QueryExpr::Not(item) => uses_full_text(item),
+    }
 }
 
 fn fts_literal(value: &str) -> String {

@@ -180,12 +180,20 @@ Search requests must support cancellation.
 The first synthetic 8--128 MiB scaling probe is recorded in
 [`../results/mail-backend-turso-benchmark.json`](../results/mail-backend-turso-benchmark.json).
 It is a deterministic, text-heavy regression corpus, not the representative
-mixed corpus required below. At 128 MiB, rare and fielded queries remained in
-the low single-digit milliseconds, while a term present in every message took
-75.6 ms p50 and 89.1 ms p99 because chronological ordering must consume a large
-posting list before returning a 20-row page. This is not acceptable evidence
-for a 20 GiB target; relevance ordering, time partitioning/fast fields, and the
-larger representative run remain required.
+mixed corpus required below. An initial implementation took 75.6 ms p50 for a
+term present in every message because SQL sorted the complete posting list.
+The current implementation indexes `received_at` as a Tantivy JSON numeric
+fast field and searches exact, non-overlapping newest-first time windows. The
+windows grow exponentially until a page is full, so the result order and
+keyset cursor remain exact rather than approximate.
+
+With that planner, the 128 MiB common-term query took 1.30 ms p50 and 2.61 ms
+p99; the same term with a date predicate took 1.28 ms p50 and 1.84 ms p99.
+Every measured p50 at that checkpoint was at most 3.72 ms. The rare term near
+the oldest end of the corpus requires several expanding windows and had a
+4.35 ms p95 plus one 17.31 ms maximum sample reported as p99 by the 31-run
+probe. These results fix the small synthetic regression but are not evidence
+for a 20 GiB target; the larger representative run remains required.
 
 Benchmark Turso's Tantivy-backed FTS at normalized corpus targets of:
 

@@ -295,6 +295,85 @@ async fn keyset_pagination_is_stable() {
 }
 
 #[tokio::test]
+async fn full_text_search_is_exact_across_time_windows_and_pages() {
+    let profile = tempfile::tempdir().unwrap();
+    let backend = Backend::open(BackendConfig::new(profile.path()))
+        .await
+        .unwrap();
+    for (index, received_at) in [600, 800, 950, 1_000].into_iter().enumerate() {
+        let body = if received_at == 600 {
+            "common-term old-needle"
+        } else {
+            "common-term"
+        };
+        let mut request = IngestMessage::local(message(&format!("Window {index}"), body));
+        request.received_at = Some(received_at);
+        backend.ingest(request).await.unwrap();
+    }
+
+    let first = backend
+        .search()
+        .search(SearchRequest {
+            query: "common-term".into(),
+            page_size: 2,
+            cursor: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        first
+            .items
+            .iter()
+            .map(|message| message.received_at)
+            .collect::<Vec<_>>(),
+        vec![1_000, 950]
+    );
+    assert!(first.next_cursor.is_some());
+
+    let second = backend
+        .search()
+        .search(SearchRequest {
+            query: "common-term".into(),
+            page_size: 2,
+            cursor: first.next_cursor,
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        second
+            .items
+            .iter()
+            .map(|message| message.received_at)
+            .collect::<Vec<_>>(),
+        vec![800, 600]
+    );
+    assert!(second.next_cursor.is_none());
+
+    let old = backend
+        .search()
+        .search(SearchRequest {
+            query: "old-needle".into(),
+            page_size: 20,
+            cursor: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(old.items.len(), 1);
+    assert_eq!(old.items[0].received_at, 600);
+
+    let timestamp_is_not_user_text = backend
+        .search()
+        .search(SearchRequest {
+            query: "1000".into(),
+            page_size: 20,
+            cursor: None,
+        })
+        .await
+        .unwrap();
+    assert!(timestamp_is_not_user_text.items.is_empty());
+}
+
+#[tokio::test]
 async fn profile_reopens_without_losing_raw_or_indexed_state() {
     let profile = tempfile::tempdir().unwrap();
     let raw = message("Persistent message", "durable searchable phrase");
