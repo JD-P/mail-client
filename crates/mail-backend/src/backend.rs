@@ -191,6 +191,14 @@ impl Backend {
         Sync(self.clone())
     }
 
+    pub fn imap_account_engine(
+        &self,
+        credentials: Arc<dyn crate::CredentialProvider>,
+        config: crate::ImapAccountEngineConfig,
+    ) -> Result<crate::ImapAccountEngine> {
+        crate::ImapAccountEngine::new(self.clone(), credentials, config)
+    }
+
     /// Store an exact RFC 5322 message. Protocol adapters should call this
     /// method rather than introducing a second parsing/indexing path.
     pub async fn ingest(&self, request: IngestMessage) -> Result<MessageId> {
@@ -567,6 +575,41 @@ impl Backend {
 
     pub(crate) async fn flush_search_projection(&self) -> Result<()> {
         loop {
+            let deleted = {
+                let connection = self.inner.connection.lock().await;
+                let mut rows = connection
+                    .query(
+                        "SELECT message_id FROM search_index_delete_queue ORDER BY message_id LIMIT ?1",
+                        (MAX_INGEST_BATCH_MESSAGES as i64,),
+                    )
+                    .await?;
+                let mut deleted = Vec::new();
+                while let Some(row) = rows.next().await? {
+                    deleted.push(row.get::<String>(0)?);
+                }
+                deleted
+            };
+            if !deleted.is_empty() {
+                let search_index = Arc::clone(&self.inner.search_index);
+                let index_ids = deleted.clone();
+                tokio::task::spawn_blocking(move || search_index.delete_documents(index_ids))
+                    .await
+                    .map_err(|error| {
+                        BackendError::SearchIndex(format!("search deletion task failed: {error}"))
+                    })??;
+                let mut connection = self.inner.connection.lock().await;
+                let transaction = connection.transaction().await?;
+                for id in deleted {
+                    transaction
+                        .execute(
+                            "DELETE FROM search_index_delete_queue WHERE message_id = ?1",
+                            (id,),
+                        )
+                        .await?;
+                }
+                transaction.commit().await?;
+                continue;
+            }
             let queued = {
                 let connection = self.inner.connection.lock().await;
                 load_queued_search_documents(&connection, MAX_INGEST_BATCH_MESSAGES).await?
@@ -692,6 +735,30 @@ impl Accounts {
             });
         }
         Ok(values)
+    }
+
+    pub async fn get(&self, id: AccountId) -> Result<Account> {
+        let connection = self.0.inner.connection.lock().await;
+        let mut rows = connection
+            .query(
+                "SELECT id, name, kind, credential_ref, settings_json, created_at FROM accounts WHERE id = ?1",
+                (id.to_string(),),
+            )
+            .await?;
+        let Some(row) = rows.next().await? else {
+            return Err(not_found("account", id));
+        };
+        Ok(Account {
+            id: parse_id(row.get::<String>(0)?, "account")?,
+            name: row.get(1)?,
+            kind: parse_account_kind(&row.get::<String>(2)?)?,
+            credential_ref: row.get(3)?,
+            imap: row
+                .get::<Option<String>>(4)?
+                .map(|value| serde_json::from_str(&value))
+                .transpose()?,
+            created_at: row.get(5)?,
+        })
     }
 }
 
@@ -1987,7 +2054,7 @@ async fn lookup_remote_on(
         .transpose()
 }
 
-async fn refresh_remote_in_transaction(
+pub(crate) async fn refresh_remote_in_transaction(
     connection: &Connection,
     id: MessageId,
     remote: &RemoteMessageIdentity,
@@ -2166,7 +2233,9 @@ fn normalize_address(value: &str) -> Result<String> {
 fn validate_imap_settings(settings: &ImapSettings) -> Result<()> {
     if settings.host.trim().is_empty()
         || settings.host.chars().any(char::is_whitespace)
+        || settings.host.chars().any(char::is_control)
         || settings.username.trim().is_empty()
+        || settings.username.chars().any(char::is_control)
         || settings.port == 0
     {
         Err(BackendError::InvalidInput(

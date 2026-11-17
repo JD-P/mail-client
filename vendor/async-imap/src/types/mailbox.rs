@@ -1,4 +1,4 @@
-use super::{Flag, Uid};
+use super::{Fetch, Flag, Uid};
 use std::fmt;
 
 /// Meta-information about an IMAP mailbox, as returned by
@@ -38,6 +38,24 @@ pub struct Mailbox {
 
     /// Highest mailbox mod-sequence as defined in [RFC-7162](https://tools.ietf.org/html/rfc7162).
     pub highest_modseq: Option<u64>,
+}
+
+/// State returned by a QRESYNC mailbox selection.
+///
+/// In addition to the ordinary mailbox metadata, the server can report UIDs
+/// which vanished since the supplied modification sequence and current flag
+/// state for messages which changed.  Keeping these responses attached to the
+/// command result prevents callers from having to infer UID deletions from
+/// sequence-number `EXPUNGE` notifications.
+#[derive(Debug)]
+pub struct QresyncSelect {
+    /// Ordinary selected-mailbox metadata.
+    pub mailbox: Mailbox,
+    /// UID ranges which no longer exist in this UIDVALIDITY epoch.
+    pub vanished: Vec<std::ops::RangeInclusive<Uid>>,
+    /// Message metadata returned for messages changed since the supplied
+    /// modification sequence.
+    pub changed: Vec<Fetch>,
 }
 
 impl fmt::Display for Mailbox {

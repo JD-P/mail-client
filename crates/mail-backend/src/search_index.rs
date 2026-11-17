@@ -199,6 +199,27 @@ impl SearchIndex {
         result
     }
 
+    pub(crate) fn delete_documents(&self, message_ids: Vec<String>) -> Result<()> {
+        if message_ids.is_empty() {
+            return Ok(());
+        }
+        let mut writer = self.writer.lock().map_err(|_| {
+            BackendError::SearchIndex("search index writer lock was poisoned".into())
+        })?;
+        let result = (|| {
+            for message_id in message_ids {
+                writer.delete_term(Term::from_field_text(self.fields.id, &message_id));
+            }
+            writer.commit().map_err(search_error)?;
+            self.reader.reload().map_err(search_error)?;
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = writer.rollback();
+        }
+        result
+    }
+
     pub(crate) fn num_docs(&self) -> u64 {
         self.reader.searcher().num_docs()
     }

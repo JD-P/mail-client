@@ -21,5 +21,16 @@ identity, link, attachment and heuristic evidence implemented so far:
 cargo test -p lizard-mail-backend --test dovecot_security -- --ignored --nocapture
 ```
 
-The container publishes Dovecot's IMAP port on a random loopback port and is
-force-removed by the test guard, including when an assertion unwinds.
+`imap_account_engine.rs` exercises the backend-owned connection path against
+the same server: verified STARTTLS and implicit TLS with a private test root,
+credential-provider authentication, capability and mailbox discovery, body
+ingestion, flag refresh, QRESYNC/CONDSTORE state, expunge reconciliation, and
+an IDLE-driven continuous worker with prompt cancellation:
+
+```sh
+cargo test -p lizard-mail-backend --test imap_account_engine -- --ignored --nocapture
+```
+
+The container publishes Dovecot's IMAP and IMAPS ports on random loopback ports,
+creates an ephemeral test-only TLS certificate, and is force-removed by the test
+guard, including when an assertion unwinds.

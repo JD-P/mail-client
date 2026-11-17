@@ -33,6 +33,12 @@ code; Lizard's changes are also distributed under Apache-2.0.
   configurable with `Connection::set_max_response_nesting`.
 - The bounded unsolicited-response channel emits `UnsolicitedResponse::Overflow`
   when loss occurs instead of silently presenting an incomplete event stream.
+- Pre-authentication capability discovery is exposed so STARTTLS and SASL
+  choices are made from the current connection state, then repeated after TLS.
+- Read-only CONDSTORE and QRESYNC selection return UID-based `VANISHED` and
+  changed-message evidence without relying on unstable sequence numbers;
+  caller-supplied QRESYNC UID sets are restricted to sequence-set characters
+  before they are interpolated into a command.
 - Deprecated unsafe pin-projection macros were replaced with safe projection of
   the library's explicitly `Unpin` connection types.
 

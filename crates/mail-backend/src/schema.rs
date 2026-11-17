@@ -10,7 +10,7 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 version INTEGER NOT NULL
             );
             INSERT INTO schema_meta(version)
-                SELECT 5 WHERE NOT EXISTS (SELECT 1 FROM schema_meta);
+                SELECT 6 WHERE NOT EXISTS (SELECT 1 FROM schema_meta);
 
             CREATE TABLE IF NOT EXISTS accounts (
                 id TEXT PRIMARY KEY,
@@ -132,6 +132,36 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
             CREATE TABLE IF NOT EXISTS search_index_queue (
                 message_id TEXT PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
                 revision INTEGER NOT NULL CHECK(revision > 0)
+            );
+
+            CREATE TABLE IF NOT EXISTS search_index_delete_queue (
+                message_id TEXT PRIMARY KEY
+            );
+
+            CREATE TABLE IF NOT EXISTS imap_account_state (
+                account_id TEXT PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+                capabilities_json TEXT NOT NULL DEFAULT '[]',
+                status TEXT NOT NULL DEFAULT 'idle',
+                last_attempt_at INTEGER,
+                last_success_at INTEGER,
+                next_retry_at INTEGER,
+                failure_count INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS imap_mailbox_state (
+                folder_id TEXT PRIMARY KEY REFERENCES folders(id) ON DELETE CASCADE,
+                delimiter TEXT,
+                attributes_json TEXT NOT NULL DEFAULT '[]',
+                selectable INTEGER NOT NULL DEFAULT 1,
+                remote_present INTEGER NOT NULL DEFAULT 1,
+                highest_modseq INTEGER,
+                exists_count INTEGER,
+                sync_status TEXT NOT NULL DEFAULT 'not_started',
+                completeness TEXT NOT NULL DEFAULT 'not_started',
+                last_attempt_at INTEGER,
+                last_success_at INTEGER,
+                last_error TEXT
             );
 
             CREATE TABLE IF NOT EXISTS filter_rules (
@@ -327,7 +357,16 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
             .await?;
         version = 5;
     }
-    if version != 5 {
+    if version == 5 {
+        // Version-six tables are created idempotently by the common schema
+        // batch above. Update the version last so an interrupted open simply
+        // retries their creation.
+        connection
+            .execute("UPDATE schema_meta SET version = 6", ())
+            .await?;
+        version = 6;
+    }
+    if version != 6 {
         return Err(crate::BackendError::InvalidInput(format!(
             "unsupported database schema version {version}"
         )));
@@ -445,7 +484,7 @@ mod tests {
             .await
             .unwrap();
         let row = rows.next().await.unwrap().unwrap();
-        assert_eq!(row.get::<i64>(0).unwrap(), 5);
+        assert_eq!(row.get::<i64>(0).unwrap(), 6);
         assert_eq!(row.get::<String>(1).unwrap(), r#"{"received_at":123}"#);
         drop(rows);
 
@@ -488,7 +527,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap(),
-            5
+            6
         );
     }
 }

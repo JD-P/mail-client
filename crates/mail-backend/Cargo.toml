@@ -22,11 +22,16 @@ serde_json = "1"
 sha2 = "0.10"
 tantivy = "=0.26.2"
 thiserror = "2"
-tokio = { version = "1", features = ["fs", "macros", "rt", "sync", "time"] }
+tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "rt", "sync", "time"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+tokio-util = { version = "0.7", features = ["rt"] }
 turso = { version = "=0.9.0-pre.5", default-features = false, features = ["fts", "simd"] }
 url = "2"
 uuid = { version = "1", features = ["serde", "v4", "v5"] }
+webpki-roots = "1"
+zeroize = "1"
 
 [dev-dependencies]
+rcgen = "0.14"
 tempfile = "3"
 tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }

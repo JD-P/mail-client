@@ -158,6 +158,23 @@ impl<T: Read + Write + Unpin + fmt::Debug + Send> Client<T> {
         conn.into_inner()
     }
 
+    /// Request capabilities before authentication.
+    ///
+    /// STARTTLS and authentication mechanism selection must be based on the
+    /// capabilities advertised in the current connection state.  Callers must
+    /// request them again after STARTTLS because the advertised set is allowed
+    /// to change after the security layer is installed.
+    pub async fn capabilities(&mut self) -> Result<Capabilities> {
+        let id = self.run_command("CAPABILITY").await?;
+        parse_capabilities(
+            &mut self.conn.stream,
+            &mut self.conn.pending_command,
+            UnsolicitedSender::bounded(1).0,
+            id,
+        )
+        .await
+    }
+
     /// Log in to the IMAP server. Upon success a [`Session`](struct.Session.html) instance is
     /// returned; on error the original `Client` instance is returned in addition to the error.
     /// This is because `login` takes ownership of `self`, so in order to try again (e.g. after
@@ -420,6 +437,60 @@ impl<T: Read + Write + Unpin + fmt::Debug + Send> Session<T> {
         .await?;
 
         Ok(mbox)
+    }
+
+    /// Examines a mailbox read-only with the RFC 7162 CONDSTORE parameter.
+    pub async fn examine_condstore<S: AsRef<str>>(&mut self, mailbox_name: S) -> Result<Mailbox> {
+        let id = self
+            .run_command(&format!(
+                "EXAMINE {} (CONDSTORE)",
+                validate_str(mailbox_name.as_ref())?
+            ))
+            .await?;
+        parse_mailbox(
+            &mut self.conn.stream,
+            &mut self.conn.pending_command,
+            self.unsolicited_responses_tx.clone(),
+            id,
+        )
+        .await
+    }
+
+    /// Enable QRESYNC for this authenticated connection.
+    pub async fn enable_qresync(&mut self) -> Result<()> {
+        let unsolicited = self.unsolicited_responses_tx.clone();
+        self.run_session_command_and_check_ok("ENABLE QRESYNC", Some(unsolicited))
+            .await
+    }
+
+    /// Examine a mailbox and request changes since a known modification
+    /// sequence as defined by RFC 7162. The mailbox remains read-only.
+    pub async fn examine_qresync<S: AsRef<str>>(
+        &mut self,
+        mailbox_name: S,
+        uid_validity: u32,
+        mod_sequence: u64,
+        known_uids: Option<&str>,
+    ) -> Result<QresyncSelect> {
+        let known_uids = known_uids
+            .filter(|uids| !uids.is_empty())
+            .map(validate_uid_set)
+            .transpose()?
+            .map(|uids| format!(" {uids}"))
+            .unwrap_or_default();
+        let id = self
+            .run_command(&format!(
+                "EXAMINE {} (QRESYNC ({uid_validity} {mod_sequence}{known_uids}))",
+                validate_str(mailbox_name.as_ref())?
+            ))
+            .await?;
+        parse_qresync_select(
+            &mut self.conn.stream,
+            &mut self.conn.pending_command,
+            self.unsolicited_responses_tx.clone(),
+            id,
+        )
+        .await
     }
 
     /// The `EXAMINE` command is identical to [`Session::select`] and returns the same output;
@@ -1769,6 +1840,16 @@ fn validate_command(value: &str) -> Result<()> {
     Ok(())
 }
 
+fn validate_uid_set(value: &str) -> Result<&str> {
+    if let Some(invalid) = value
+        .chars()
+        .find(|character| !character.is_ascii_digit() && !matches!(character, ':' | ',' | '*'))
+    {
+        return Err(Error::Validate(ValidateError(invalid)));
+    }
+    Ok(value)
+}
+
 #[cfg(test)]
 mod tests {
     use pretty_assertions::assert_eq;
@@ -2619,6 +2700,16 @@ mod tests {
             panic!("Wrong error: {e:?}");
         }
         panic!("No error");
+    }
+
+    #[test]
+    fn validate_qresync_uid_set_rejects_command_injection() {
+        assert_eq!(
+            validate_uid_set("1:4,7,9:* ").unwrap_err().to_string(),
+            "validate: invalid character in input: ' '"
+        );
+        assert!(validate_uid_set("1:4,7,9:*").is_ok());
+        assert!(validate_uid_set("1)\r\nA999 LOGOUT").is_err());
     }
 
     /// Emulates a server responding to `FETCH` requests

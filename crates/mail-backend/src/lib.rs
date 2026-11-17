@@ -15,6 +15,7 @@ mod event;
 mod heuristic;
 mod id;
 mod imap;
+mod imap_engine;
 mod mime;
 mod query;
 mod schema;
@@ -28,5 +29,10 @@ pub use event::{ChangeCursor, EventRecvError, EventSubscription};
 pub use heuristic::compile_heuristic;
 pub use id::{AccountId, ContactId, FilterRuleId, FindingId, FolderId, HeuristicId, MessageId};
 pub use imap::imap_fetch_message;
+pub use imap_engine::{
+    CredentialProvider, ImapAccountEngine, ImapAccountEngineConfig, ImapAccountSyncReport,
+    ImapAccountSyncState, ImapAccountSyncStatus, ImapCredential, ImapFolderSyncReport,
+    ImapMailboxCompleteness, ImapMailboxSyncState, SecretValue,
+};
 pub use query::{parse_query, QueryExpr, QueryParseError, QueryTerm};
 pub use types::*;

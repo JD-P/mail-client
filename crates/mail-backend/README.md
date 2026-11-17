@@ -48,6 +48,21 @@ Current invariants:
   API call returns;
 - IMAP configuration permits TLS or STARTTLS, not plaintext, and stores only an
   opaque credential reference.
+- `ImapAccountEngine` owns TLS connection establishment, credential resolution,
+  SASL/OAuth authentication, mailbox discovery, capability negotiation,
+  UIDVALIDITY/CONDSTORE/QRESYNC reconciliation, IDLE/poll wakeups, cancellation
+  and bounded reconnect backoff;
+- account and mailbox progress, failures, retry time and body completeness are
+  durable API state rather than transient log messages;
+- server-side removals update Turso and Tantivy together, so expunged mail does
+  not survive as a stale search result.
+
+`Backend::imap_account_engine` accepts a `CredentialProvider` implemented by an
+OS keychain or OAuth broker. The provider receives only the account's opaque
+credential reference and returns a zeroizing, debug-redacted secret. The
+engine accepts implicit TLS or verified STARTTLS and never represents plaintext
+production transport. `sync_once` is useful for explicit refresh; `run` uses
+IDLE when available, polling otherwise, and stops through a cancellation token.
 
 `imap_fetch_message` converts complete `async-imap` `FETCH` results into the
 transport-neutral batch type. The caller must request `UID FLAGS INTERNALDATE
@@ -95,9 +110,9 @@ Its generated corpus is useful for regression and scaling measurements, not as
 a substitute for the representative mixed corpus specified in
 `../../spec/mail-backend.md`.
 
-The crate now includes incremental IMAP pulling, structured filter execution,
-bounded Python-shaped heuristic programs, and persisted DKIM evidence. Findings
-and authentication results are returned with message reads. OpenPGP,
-trusted-provider `Authentication-Results`, server-side IMAP mutations and the
-broader built-in extractor library remain future work. See
+The crate now includes an account-owned IMAP receive engine, structured filter
+execution, bounded Python-shaped heuristic programs, and persisted DKIM
+evidence. Findings and authentication results are returned with message reads.
+OpenPGP, trusted-provider `Authentication-Results`, outbound/local IMAP
+mutations and the broader built-in extractor library remain future work. See
 `../../spec/mail-backend.md` for the authority and presentation model.

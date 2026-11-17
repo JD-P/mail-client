@@ -5,15 +5,17 @@ Status: design plus an implemented first vertical slice in
 schema, immutable content-addressed raw blobs, bounded RFC 5322/MIME ingestion,
 accounts and folders, remote IMAP identities, local-folder membership,
 contacts, dynamic Warm/Cold/Spam classification, Gmail-shaped search, stable
-keyset pagination and a durable/live change stream. Its IMAP boundary accepts
-complete fetch results from the hardened vendored client and routes them
-through the same idempotent ingestion path as local imports.
+keyset pagination and a durable/live change stream. Its account-owned IMAP
+engine establishes verified TLS, obtains credentials through an opaque provider
+boundary, discovers mailboxes, negotiates capabilities, reconciles UID state
+and routes bounded body streams through the same idempotent ingestion path as
+local imports.
 
-The current slice does **not** yet open IMAP network sessions or retrieve
-credentials, run OpenPGP verification, extract every security heuristic,
-synchronize mutations back to a server, send mail, or expose inter-process
-transport. Those are tracked here as the next layers; the presence of their
-data-model requirements below is not a claim that they are implemented.
+The current slice does **not** yet run OpenPGP verification, extract every
+security heuristic, synchronize locally requested mutations back to a server,
+send mail, or expose inter-process transport. Those are tracked here as the
+next layers; the presence of their data-model requirements below is not a claim
+that they are implemented.
 
 Related frontend requirements: [security-ui.md](security-ui.md).
 
@@ -423,7 +425,7 @@ one copy of the same inbox merely to support each sort choice.
 
 ## IMAP retrieval and synchronization
 
-The initial IMAP engine must support:
+The implemented account engine supports:
 
 - implicit TLS and STARTTLS with hostname and certificate verification;
 - SASL/OAuth mechanisms and credentials referenced from an OS-protected store;
@@ -431,14 +433,21 @@ The initial IMAP engine must support:
 - UIDVALIDITY, UIDNEXT and per-mailbox UID state;
 - CONDSTORE/QRESYNC/MODSEQ when available;
 - IDLE with reconnect, polling fallback and cancellation;
-- bounded streaming fetches and partial-body policy;
-- deterministic flag, move, copy and deletion synchronization;
-- server/local conflict recording rather than silent last-writer wins;
+- bounded streaming full-body fetches with explicit incomplete/failure state;
+- remote flag and deletion reconciliation;
 - backoff, offline operation and resumable synchronization; and
-- explicit search-completeness state while bodies remain remote.
+- explicit mailbox/body completeness state.
 
-The vendored async-imap hardening supplies a starting transport/client library,
-not this synchronization model.
+The engine exposes `sync_once` and a cancellable continuous `run` loop. The
+continuous path uses IDLE on a discovered selectable INBOX, periodically renews
+IDLE, polls when IDLE is absent, reconnects after failures, and persists retry
+state. A `CredentialProvider` is the platform boundary for an OS keychain or
+OAuth broker; secrets are debug-redacted, zeroized on drop and never written to
+the account database. TLS certificate exceptions are not an account setting.
+
+Locally requested flag/move/copy/trash mutations, their durable outbox and
+server/local conflict records remain the separate mutation workstream described
+below.
 
 POP3 later requires UIDL-based identity, duplicate handling, retention/deletion
 policy and clear acknowledgement that POP3 has no server folder model.

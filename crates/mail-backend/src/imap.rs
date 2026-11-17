@@ -46,7 +46,17 @@ pub(crate) fn imap_fetch_metadata(fetch: &Fetch) -> Result<ImapFetchMetadata> {
     })
 }
 
-fn flag_text(flag: Flag<'_>) -> String {
+pub(crate) fn imap_fetch_state(fetch: &Fetch) -> Result<(u32, Option<u64>, Vec<String>)> {
+    Ok((
+        fetch
+            .uid
+            .ok_or_else(|| BackendError::InvalidInput("IMAP FETCH response has no UID".into()))?,
+        fetch.modseq,
+        fetch.flags().map(flag_text).collect(),
+    ))
+}
+
+pub(crate) fn flag_text(flag: Flag<'_>) -> String {
     match flag {
         Flag::Seen => "\\Seen".into(),
         Flag::Answered => "\\Answered".into(),

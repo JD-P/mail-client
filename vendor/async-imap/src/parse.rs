@@ -404,6 +404,88 @@ pub(crate) async fn parse_mailbox<T: Stream<Item = io::Result<ResponseData>> + U
     Ok(mailbox)
 }
 
+pub(crate) async fn parse_qresync_select<T: Stream<Item = io::Result<ResponseData>> + Unpin>(
+    stream: &mut T,
+    pending_command: &mut Option<RequestId>,
+    unsolicited: UnsolicitedSender,
+    command_tag: RequestId,
+) -> Result<QresyncSelect> {
+    let mut mailbox = Mailbox::default();
+    let mut vanished = Vec::new();
+    let mut changed = Vec::new();
+
+    loop {
+        let Some(resp) = next_command_response(stream, pending_command, &command_tag).await? else {
+            break;
+        };
+        match resp.parsed() {
+            Response::Vanished { uids, .. } => vanished.extend(uids.iter().cloned()),
+            Response::Fetch(..) => changed.push(Fetch::new(resp)),
+            Response::Data { status, outcome } => {
+                use imap_proto::Status;
+
+                match status {
+                    Status::Ok => {
+                        use imap_proto::ResponseCode;
+                        match &outcome.code {
+                            Some(ResponseCode::UidValidity(uid)) => {
+                                mailbox.uid_validity = Some(*uid);
+                            }
+                            Some(ResponseCode::UidNext(uid_next)) => {
+                                mailbox.uid_next = Some(*uid_next);
+                            }
+                            Some(ResponseCode::HighestModSeq(highest_modseq)) => {
+                                mailbox.highest_modseq = Some(*highest_modseq);
+                            }
+                            Some(ResponseCode::Unseen(sequence)) => {
+                                mailbox.unseen = Some(*sequence);
+                            }
+                            Some(ResponseCode::PermanentFlags(flags)) => {
+                                mailbox.permanent_flags.extend(
+                                    flags.iter().map(|flag| (*flag).to_string()).map(Flag::from),
+                                );
+                            }
+                            _ => {}
+                        }
+                    }
+                    Status::Bad => {
+                        return Err(Error::Bad(format!("outcome: {outcome:?}")));
+                    }
+                    Status::No => {
+                        return Err(Error::No(format!("outcome: {outcome:?}")));
+                    }
+                    _ => {
+                        return Err(Error::Io(io::Error::other(format!(
+                            "status: {status:?}, outcome: {outcome:?}"
+                        ))));
+                    }
+                }
+            }
+            Response::MailboxData(datum) => match datum {
+                MailboxDatum::Status { .. } => handle_unilateral(resp, unsolicited.clone()),
+                MailboxDatum::Exists(exists) => mailbox.exists = *exists,
+                MailboxDatum::Recent(recent) => mailbox.recent = *recent,
+                MailboxDatum::Flags(flags) => mailbox
+                    .flags
+                    .extend(flags.iter().map(|flag| (*flag).to_string()).map(Flag::from)),
+                MailboxDatum::List { .. }
+                | MailboxDatum::MetadataSolicited { .. }
+                | MailboxDatum::MetadataUnsolicited { .. }
+                | MailboxDatum::Search { .. }
+                | MailboxDatum::Sort { .. } => {}
+                _ => {}
+            },
+            _ => handle_unilateral(resp, unsolicited.clone()),
+        }
+    }
+
+    Ok(QresyncSelect {
+        mailbox,
+        vanished,
+        changed,
+    })
+}
+
 pub(crate) async fn parse_ids<T: Stream<Item = io::Result<ResponseData>> + Unpin>(
     stream: &mut T,
     pending_command: &mut Option<RequestId>,
@@ -566,6 +648,39 @@ mod tests {
         for e in expected_capabilities {
             assert!(capabilities.has_str(e));
         }
+    }
+
+    #[cfg_attr(feature = "runtime-tokio", tokio::test)]
+    #[cfg_attr(feature = "runtime-async-std", async_std::test)]
+    async fn parse_qresync_select_preserves_changes_and_vanished_uids() {
+        let responses = input_stream(&[
+            "* FLAGS (\\Seen \\Answered)\r\n",
+            "* 4 EXISTS\r\n",
+            "* OK [UIDVALIDITY 7] UIDs valid\r\n",
+            "* OK [UIDNEXT 12] Predicted next UID\r\n",
+            "* OK [HIGHESTMODSEQ 99] Highest\r\n",
+            "* VANISHED (EARLIER) 2:3,9\r\n",
+            "* 1 FETCH (UID 4 FLAGS (\\Seen) MODSEQ (99))\r\n",
+        ]);
+        let mut stream = async_std::stream::from_iter(responses);
+        let (send, recv) = bounded(10);
+        let id = RequestId("A0001".into());
+        let mut pending = Some(id.clone());
+
+        let selected = parse_qresync_select(&mut stream, &mut pending, send, id)
+            .await
+            .unwrap();
+
+        assert!(recv.is_empty());
+        assert_eq!(selected.mailbox.exists, 4);
+        assert_eq!(selected.mailbox.uid_validity, Some(7));
+        assert_eq!(selected.mailbox.uid_next, Some(12));
+        assert_eq!(selected.mailbox.highest_modseq, Some(99));
+        assert_eq!(selected.vanished, vec![2..=3, 9..=9]);
+        assert_eq!(selected.changed.len(), 1);
+        assert_eq!(selected.changed[0].uid, Some(4));
+        assert_eq!(selected.changed[0].modseq, Some(99));
+        assert!(selected.changed[0].flags().any(|flag| flag == Flag::Seen));
     }
 
     #[cfg_attr(feature = "runtime-tokio", tokio::test)]
