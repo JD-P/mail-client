@@ -54,5 +54,8 @@ id_type!(HeuristicId);
 id_type!(FindingId);
 id_type!(MessageId);
 id_type!(ThreadId);
+id_type!(DraftId);
+id_type!(DraftAttachmentId);
+id_type!(SubmissionId);
 id_type!(ImapMutationId);
 id_type!(ImapMutationConflictId);

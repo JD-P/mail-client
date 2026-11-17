@@ -40,10 +40,24 @@ struct PreparedIngest {
     id: MessageId,
     remote: Option<RemoteMessageIdentity>,
     remote_flags_json: Option<String>,
-    attachments: Vec<Attachment>,
+    attachments: Vec<PreparedAttachment>,
+    resources: Vec<PreparedResource>,
+    mime_parts: Vec<crate::MimePart>,
     links: Vec<MessageLink>,
     threading: crate::thread::ThreadInput,
     stage: Option<StagedMessage>,
+}
+
+struct PreparedAttachment {
+    metadata: Attachment,
+    blob_hash: String,
+    decode_problems_json: String,
+}
+
+struct PreparedResource {
+    part_id: u32,
+    blob_hash: String,
+    decoded_size: u64,
 }
 
 struct StagedMessage {
@@ -72,6 +86,8 @@ struct StagedMessage {
     content_state: String,
     search_metadata: String,
     dkim_json: String,
+    mime_state: String,
+    mime_detail: Option<String>,
     created_at: i64,
 }
 
@@ -91,6 +107,7 @@ impl StagedMessage {
             + self.attachment_names.len()
             + self.search_metadata.len()
             + self.dkim_json.len()
+            + self.mime_detail.as_ref().map_or(0, String::len)
     }
 }
 
@@ -105,7 +122,7 @@ pub(crate) struct Inner {
     pub(crate) connection: Mutex<Connection>,
     search_index: Arc<SearchIndex>,
     pub(crate) search_sync: RwLock<()>,
-    blobs: BlobStore,
+    pub(crate) blobs: BlobStore,
     dkim_verifier: DkimVerifier,
     pub(crate) events: broadcast::Sender<BackendEvent>,
 }
@@ -157,6 +174,7 @@ impl Backend {
             }),
         };
         backend.backfill_thread_projection().await?;
+        backend.backfill_mime_projection().await?;
         Ok(backend)
     }
 
@@ -172,8 +190,24 @@ impl Backend {
         Messages(self.clone())
     }
 
+    pub fn mime(&self) -> crate::Mime {
+        crate::Mime::new(self.clone())
+    }
+
     pub fn threads(&self) -> crate::Threads {
         crate::Threads::new(self.clone())
+    }
+
+    pub fn sending(&self) -> crate::Sending {
+        crate::Sending::new(self.clone())
+    }
+
+    pub fn drafts(&self) -> crate::Drafts {
+        crate::Drafts::new(self.clone())
+    }
+
+    pub fn outbox(&self) -> crate::Outbox {
+        crate::Outbox::new(self.clone())
     }
 
     pub fn contacts(&self) -> Contacts {
@@ -210,6 +244,14 @@ impl Backend {
         config: crate::ImapAccountEngineConfig,
     ) -> Result<crate::ImapAccountEngine> {
         crate::ImapAccountEngine::new(self.clone(), credentials, config)
+    }
+
+    pub async fn smtp_engine(
+        &self,
+        credentials: Arc<dyn crate::CredentialProvider>,
+        config: crate::SmtpEngineConfig,
+    ) -> Result<crate::SmtpEngine> {
+        crate::SmtpEngine::new(self.clone(), credentials, config).await
     }
 
     /// Store an exact RFC 5322 message. Protocol adapters should call this
@@ -318,10 +360,41 @@ impl Backend {
         let attachment_names = parsed
             .attachments
             .iter()
-            .filter_map(|attachment| attachment.name.as_deref())
+            .filter_map(|attachment| attachment.metadata.name.as_deref())
             .collect::<Vec<_>>()
             .join(" ");
         let has_attachment = !parsed.attachments.is_empty();
+        let mut resources = Vec::with_capacity(parsed.resources.len());
+        let mut resource_hashes = HashMap::with_capacity(parsed.resources.len());
+        for resource in parsed.resources {
+            let decoded_size = resource.bytes.len() as u64;
+            let blob_hash = self.inner.blobs.put(&resource.bytes).await?;
+            resource_hashes.insert(resource.part_id, blob_hash.clone());
+            resources.push(PreparedResource {
+                part_id: resource.part_id,
+                blob_hash,
+                decoded_size,
+            });
+        }
+        let attachments = parsed
+            .attachments
+            .into_iter()
+            .map(|attachment| {
+                let blob_hash = resource_hashes
+                    .get(&attachment.metadata.mime_part_id)
+                    .cloned()
+                    .ok_or_else(|| {
+                        BackendError::InvalidInput(
+                            "parsed attachment is missing its decoded resource".into(),
+                        )
+                    })?;
+                Ok(PreparedAttachment {
+                    metadata: attachment.metadata,
+                    blob_hash,
+                    decode_problems_json: serde_json::to_string(&attachment.decode_problems)?,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
         let mut remote = request.remote;
         if let Some(remote) = &mut remote {
             remote.flags = canonical_flags(&remote.flags);
@@ -374,13 +447,17 @@ impl Backend {
             content_state: content_state_text(parsed.content_state).to_owned(),
             search_metadata: json!({"received_at": received_at}).to_string(),
             dkim_json,
+            mime_state: mime_parse_state_text(parsed.mime_state).to_owned(),
+            mime_detail: parsed.mime_detail,
             created_at: now,
         };
         Ok(PreparedIngest {
             id,
             remote,
             remote_flags_json,
-            attachments: parsed.attachments,
+            attachments,
+            resources,
+            mime_parts: parsed.mime_parts,
             links: parsed.links,
             threading,
             stage: Some(stage),
@@ -396,6 +473,7 @@ impl Backend {
         let mut connection = self.inner.connection.lock().await;
         let transaction = connection.transaction().await?;
         let mut existing_ids = vec![None; prepared.len()];
+        let mut reconciled_sent = vec![false; prepared.len()];
         for (position, message) in prepared.iter().enumerate() {
             if let Some(remote) = &message.remote {
                 existing_ids[position] = lookup_remote_on(
@@ -405,6 +483,19 @@ impl Backend {
                     remote.uid,
                 )
                 .await?;
+                if existing_ids[position].is_none() {
+                    if let Some(stage) = message.stage.as_ref() {
+                        existing_ids[position] = lookup_sent_reconciliation_on(
+                            &transaction,
+                            remote.account_id,
+                            remote.folder_id,
+                            stage.rfc_message_id.as_deref(),
+                            stage.from_address.as_deref(),
+                        )
+                        .await?;
+                        reconciled_sent[position] = existing_ids[position].is_some();
+                    }
+                }
             }
         }
 
@@ -426,11 +517,12 @@ impl Backend {
                         bcc_addresses, reply_to_addresses, delivered_to_addresses, list_id, body_text,
                         body_html, preview, sent_at, received_at, size_bytes,
                         has_attachment, attachment_names, is_read, is_starred,
-                        user_classification, content_state, search_metadata, dkim_json, created_at
+                        user_classification, content_state, search_metadata, dkim_json,
+                        mime_state, mime_detail, created_at
                     ) VALUES (
                         ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
                         ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22,
-                        ?23, ?24, ?25, ?26, ?27, ?28, ?29
+                        ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31
                     )"#,
                     turso::params![
                         batch_id.clone(),
@@ -461,6 +553,8 @@ impl Backend {
                         stage.content_state,
                         stage.search_metadata,
                         stage.dkim_json,
+                        stage.mime_state,
+                        stage.mime_detail,
                         stage.created_at,
                     ],
                 )
@@ -475,13 +569,15 @@ impl Backend {
                         to_addresses, cc_addresses, bcc_addresses, reply_to_addresses, delivered_to_addresses,
                         list_id, body_text, body_html, preview, sent_at, received_at,
                         size_bytes, has_attachment, attachment_names, is_read, is_starred,
-                        user_classification, content_state, search_metadata, dkim_json, created_at
+                        user_classification, content_state, search_metadata, dkim_json,
+                        mime_state, mime_detail, created_at
                     )
                     SELECT id, blob_hash, rfc_message_id, subject, from_address, from_name,
                         to_addresses, cc_addresses, bcc_addresses, reply_to_addresses, delivered_to_addresses,
                         list_id, body_text, body_html, preview, sent_at, received_at,
                         size_bytes, has_attachment, attachment_names, is_read, is_starred,
-                        user_classification, content_state, search_metadata, dkim_json, created_at
+                        user_classification, content_state, search_metadata, dkim_json,
+                        mime_state, mime_detail, created_at
                     FROM ingest_message_stage
                     WHERE batch_id = ?1
                     ORDER BY position"#,
@@ -506,6 +602,62 @@ impl Backend {
         let mut events = Vec::with_capacity(prepared.len());
         for (position, message) in prepared.iter().enumerate() {
             if let Some(existing) = existing_ids[position] {
+                if reconciled_sent[position] {
+                    let remote = message
+                        .remote
+                        .as_ref()
+                        .expect("sent reconciliation has remote identity");
+                    transaction
+                        .execute(
+                            "INSERT INTO message_instances(message_id, account_id, folder_id, uid_validity, imap_uid, mod_sequence, flags_json) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                            turso::params![
+                                existing.to_string(),
+                                remote.account_id.to_string(),
+                                remote.folder_id.to_string(),
+                                i64::from(remote.uid_validity),
+                                i64::from(remote.uid),
+                                remote.mod_sequence.map(|value| value as i64),
+                                message.remote_flags_json.clone().expect("remote flags"),
+                            ],
+                        )
+                        .await?;
+                    let is_read = remote
+                        .flags
+                        .iter()
+                        .any(|flag| flag.eq_ignore_ascii_case("\\Seen"));
+                    let is_starred = remote
+                        .flags
+                        .iter()
+                        .any(|flag| flag.eq_ignore_ascii_case("\\Flagged"));
+                    transaction
+                        .execute(
+                            "UPDATE messages SET is_read = ?1, is_starred = ?2 WHERE id = ?3",
+                            (is_read, is_starred, existing.to_string()),
+                        )
+                        .await?;
+                    transaction
+                        .execute(
+                            "UPDATE sent_reconciliation SET reconciled_at = ?1 WHERE message_id = ?2 AND account_id = ?3",
+                            (
+                                Utc::now().timestamp(),
+                                existing.to_string(),
+                                remote.account_id.to_string(),
+                            ),
+                        )
+                        .await?;
+                    events.push(
+                        insert_event(
+                            &transaction,
+                            Utc::now().timestamp(),
+                            "sent_message_reconciled",
+                            existing.to_string(),
+                            json!({"message_id": existing, "folder_id": remote.folder_id, "uid": remote.uid}),
+                        )
+                        .await?,
+                    );
+                    message_ids.push(existing);
+                    continue;
+                }
                 if let Some(event) = refresh_remote_in_transaction(
                     &transaction,
                     existing,
@@ -525,21 +677,75 @@ impl Backend {
                 crate::thread::assign_message_on(&transaction, message.id, &message.threading)
                     .await?;
             for attachment in &message.attachments {
+                let metadata = &attachment.metadata;
                 transaction
                     .execute(
                         r#"INSERT INTO attachments (
-                            message_id, ordinal, name, declared_media_type, decoded_size,
-                            inline, content_id
-                        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"#,
+                            message_id, ordinal, part_id, name, declared_media_type,
+                            detected_media_type, decoded_size, inline, content_id,
+                            blob_hash, decode_state, decode_problems_json
+                        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)"#,
                         turso::params![
                             message.id.to_string(),
-                            attachment.ordinal as i64,
-                            attachment.name.clone(),
-                            attachment.declared_media_type.clone(),
-                            attachment.decoded_size as i64,
-                            attachment.inline,
-                            attachment.content_id.clone(),
+                            metadata.ordinal as i64,
+                            metadata.mime_part_id as i64,
+                            metadata.name.clone(),
+                            metadata.declared_media_type.clone(),
+                            metadata.detected_media_type.clone(),
+                            metadata.decoded_size as i64,
+                            metadata.inline,
+                            metadata.content_id.clone(),
+                            attachment.blob_hash.clone(),
+                            mime_decode_state_text(metadata.decode_state),
+                            attachment.decode_problems_json.clone(),
                         ],
+                    )
+                    .await?;
+            }
+            for part in &message.mime_parts {
+                transaction
+                    .execute(
+                        r#"INSERT INTO mime_parts (
+                            message_id, part_id, parent_part_id, child_ids_json,
+                            kind, role, declared_media_type, name, content_id,
+                            content_location, inline, attachment, decoded_size,
+                            decode_state, parse_flags_json, decode_problems_json,
+                            in_plain_body, in_html_body
+                        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9,
+                            ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)"#,
+                        turso::params![
+                            message.id.to_string(),
+                            i64::from(part.id),
+                            part.parent_id.map(i64::from),
+                            serde_json::to_string(&part.child_ids)?,
+                            mime_part_kind_text(part.kind),
+                            mime_part_role_text(part.role),
+                            part.declared_media_type.clone(),
+                            part.name.clone(),
+                            part.content_id.clone(),
+                            part.content_location.clone(),
+                            part.inline,
+                            part.attachment,
+                            part.decoded_size as i64,
+                            mime_decode_state_text(part.decode_state),
+                            serde_json::to_string(&part.parse_flags)?,
+                            serde_json::to_string(&part.decode_problems)?,
+                            part.in_plain_body,
+                            part.in_html_body,
+                        ],
+                    )
+                    .await?;
+            }
+            for resource in &message.resources {
+                transaction
+                    .execute(
+                        "INSERT INTO mime_part_blobs(message_id, part_id, blob_hash, decoded_size) VALUES (?1, ?2, ?3, ?4)",
+                        (
+                            message.id.to_string(),
+                            i64::from(resource.part_id),
+                            resource.blob_hash.clone(),
+                            resource.decoded_size as i64,
+                        ),
                     )
                     .await?;
             }
@@ -663,6 +869,147 @@ impl Backend {
                     )
                     .await?;
                 crate::thread::assign_message_on(&transaction, message_id, &threading).await?;
+            }
+            transaction.commit().await?;
+        }
+    }
+
+    /// Materialize the version-nine MIME tree and decoded attachment/resource
+    /// blobs for messages stored by earlier versions. Work is bounded per
+    /// transaction and resumes after interruption.
+    async fn backfill_mime_projection(&self) -> Result<()> {
+        loop {
+            let missing = {
+                let connection = self.inner.connection.lock().await;
+                let mut rows = connection
+                    .query(
+                        "SELECT id, blob_hash FROM messages m WHERE NOT EXISTS (SELECT 1 FROM mime_parts p WHERE p.message_id = m.id) ORDER BY id LIMIT 20",
+                        (),
+                    )
+                    .await?;
+                let mut missing = Vec::new();
+                while let Some(row) = rows.next().await? {
+                    missing.push((
+                        parse_id::<MessageId>(row.get(0)?, "message")?,
+                        row.get::<String>(1)?,
+                    ));
+                }
+                missing
+            };
+            if missing.is_empty() {
+                return Ok(());
+            }
+            let mut projected = Vec::with_capacity(missing.len());
+            for (message_id, blob_hash) in missing {
+                let raw = self.inner.blobs.get(&blob_hash).await?;
+                let parsed = mime::parse(&raw, &self.inner.config.limits)?;
+                let mut resources = Vec::new();
+                let mut hashes = HashMap::new();
+                for resource in parsed.resources {
+                    let size = resource.bytes.len() as u64;
+                    let hash = self.inner.blobs.put(&resource.bytes).await?;
+                    hashes.insert(resource.part_id, hash.clone());
+                    resources.push(PreparedResource {
+                        part_id: resource.part_id,
+                        blob_hash: hash,
+                        decoded_size: size,
+                    });
+                }
+                let attachments = parsed
+                    .attachments
+                    .into_iter()
+                    .map(|attachment| {
+                        Ok(PreparedAttachment {
+                            blob_hash: hashes
+                                .get(&attachment.metadata.mime_part_id)
+                                .cloned()
+                                .ok_or_else(|| {
+                                    BackendError::InvalidInput(
+                                        "attachment resource missing during MIME backfill".into(),
+                                    )
+                                })?,
+                            decode_problems_json: serde_json::to_string(
+                                &attachment.decode_problems,
+                            )?,
+                            metadata: attachment.metadata,
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                projected.push((
+                    message_id,
+                    parsed.mime_parts,
+                    attachments,
+                    resources,
+                    parsed.mime_state,
+                    parsed.mime_detail,
+                ));
+            }
+            let mut connection = self.inner.connection.lock().await;
+            let transaction = connection.transaction().await?;
+            for (message_id, parts, attachments, resources, state, detail) in projected {
+                transaction
+                    .execute(
+                        "UPDATE messages SET mime_state = ?1, mime_detail = ?2 WHERE id = ?3",
+                        (mime_parse_state_text(state), detail, message_id.to_string()),
+                    )
+                    .await?;
+                for part in parts {
+                    transaction
+                        .execute(
+                            "INSERT INTO mime_parts(message_id, part_id, parent_part_id, child_ids_json, kind, role, declared_media_type, name, content_id, content_location, inline, attachment, decoded_size, decode_state, parse_flags_json, decode_problems_json, in_plain_body, in_html_body) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+                            turso::params![
+                                message_id.to_string(),
+                                i64::from(part.id),
+                                part.parent_id.map(i64::from),
+                                serde_json::to_string(&part.child_ids)?,
+                                mime_part_kind_text(part.kind),
+                                mime_part_role_text(part.role),
+                                part.declared_media_type,
+                                part.name,
+                                part.content_id,
+                                part.content_location,
+                                part.inline,
+                                part.attachment,
+                                part.decoded_size as i64,
+                                mime_decode_state_text(part.decode_state),
+                                serde_json::to_string(&part.parse_flags)?,
+                                serde_json::to_string(&part.decode_problems)?,
+                                part.in_plain_body,
+                                part.in_html_body,
+                            ],
+                        )
+                        .await?;
+                }
+                for resource in resources {
+                    transaction
+                        .execute(
+                            "INSERT INTO mime_part_blobs(message_id, part_id, blob_hash, decoded_size) VALUES (?1, ?2, ?3, ?4)",
+                            (
+                                message_id.to_string(),
+                                i64::from(resource.part_id),
+                                resource.blob_hash,
+                                resource.decoded_size as i64,
+                            ),
+                        )
+                        .await?;
+                }
+                for attachment in attachments {
+                    let metadata = attachment.metadata;
+                    transaction
+                        .execute(
+                            "UPDATE attachments SET part_id = ?1, detected_media_type = ?2, blob_hash = ?3, decode_state = ?4, decode_problems_json = ?5 WHERE message_id = ?6 AND ordinal = ?7",
+                            turso::params![
+                                i64::from(metadata.mime_part_id),
+                                metadata.detected_media_type,
+                                attachment.blob_hash,
+                                mime_decode_state_text(metadata.decode_state),
+                                attachment.decode_problems_json,
+                                message_id.to_string(),
+                                i64::from(metadata.ordinal),
+                            ],
+                        )
+                        .await?;
+                }
             }
             transaction.commit().await?;
         }
@@ -984,7 +1331,7 @@ impl Messages {
 
         let mut rows = connection
             .query(
-                "SELECT ordinal, name, declared_media_type, decoded_size, inline, content_id FROM attachments WHERE message_id = ?1 ORDER BY ordinal",
+                "SELECT ordinal, part_id, name, declared_media_type, detected_media_type, decoded_size, inline, content_id, decode_state FROM attachments WHERE message_id = ?1 ORDER BY ordinal",
                 (id.to_string(),),
             )
             .await?;
@@ -994,11 +1341,18 @@ impl Messages {
             attachments.push(Attachment {
                 id: format!("attachment:{ordinal}"),
                 ordinal,
-                name: row.get(1)?,
-                declared_media_type: row.get(2)?,
-                decoded_size: row.get::<i64>(3)? as u64,
-                inline: row.get(4)?,
-                content_id: row.get(5)?,
+                mime_part_id: u32::try_from(row.get::<i64>(1)?).map_err(|_| {
+                    BackendError::InvalidInput("database contains invalid MIME part ID".into())
+                })?,
+                name: row.get(2)?,
+                declared_media_type: row.get(3)?,
+                detected_media_type: row.get(4)?,
+                decoded_size: u64::try_from(row.get::<i64>(5)?).map_err(|_| {
+                    BackendError::InvalidInput("database contains invalid attachment size".into())
+                })?,
+                inline: row.get(6)?,
+                content_id: row.get(7)?,
+                decode_state: parse_mime_decode_state(&row.get::<String>(8)?)?,
             });
         }
         drop(rows);
@@ -2170,6 +2524,52 @@ async fn lookup_remote_on(
         .transpose()
 }
 
+async fn lookup_sent_reconciliation_on(
+    connection: &Connection,
+    account_id: AccountId,
+    folder_id: FolderId,
+    rfc_message_id: Option<&str>,
+    from_address: Option<&str>,
+) -> Result<Option<MessageId>> {
+    let (Some(rfc_message_id), Some(from_address)) = (rfc_message_id, from_address) else {
+        return Ok(None);
+    };
+    let mut rows = connection
+        .query(
+            "SELECT attributes_json FROM imap_mailbox_state WHERE folder_id = ?1 AND remote_present = 1",
+            (folder_id.to_string(),),
+        )
+        .await?;
+    let Some(row) = rows.next().await? else {
+        return Ok(None);
+    };
+    let attributes: Vec<String> = serde_json::from_str(&row.get::<String>(0)?)?;
+    if !attributes
+        .iter()
+        .any(|attribute| attribute.eq_ignore_ascii_case("\\Sent"))
+    {
+        return Ok(None);
+    }
+    drop(rows);
+    let mut rows = connection
+        .query(
+            "SELECT reconciliation.message_id FROM sent_reconciliation reconciliation JOIN messages ON messages.id = reconciliation.message_id WHERE reconciliation.rfc_message_id = ?1 AND reconciliation.account_id = ?2 AND messages.from_address = ?3 COLLATE NOCASE LIMIT 2",
+            (rfc_message_id, account_id.to_string(), from_address),
+        )
+        .await?;
+    let first = rows
+        .next()
+        .await?
+        .map(|row| parse_id(row.get::<String>(0)?, "message"))
+        .transpose()?;
+    if first.is_some() && rows.next().await?.is_some() {
+        return Err(BackendError::Conflict(
+            "multiple sent messages share one protected Message-ID".into(),
+        ));
+    }
+    Ok(first)
+}
+
 pub(crate) async fn refresh_remote_in_transaction(
     connection: &Connection,
     id: MessageId,
@@ -2427,6 +2827,58 @@ fn content_state_text(state: ContentState) -> &'static str {
     match state {
         ContentState::Complete => "complete",
         ContentState::Limited => "limited",
+    }
+}
+
+fn mime_parse_state_text(value: crate::MimeParseState) -> &'static str {
+    match value {
+        crate::MimeParseState::Complete => "complete",
+        crate::MimeParseState::Limited => "limited",
+        crate::MimeParseState::Failed => "failed",
+    }
+}
+
+fn mime_decode_state_text(value: crate::MimeDecodeState) -> &'static str {
+    match value {
+        crate::MimeDecodeState::Complete => "complete",
+        crate::MimeDecodeState::Problems => "problems",
+        crate::MimeDecodeState::Limited => "limited",
+        crate::MimeDecodeState::Failed => "failed",
+    }
+}
+
+fn parse_mime_decode_state(value: &str) -> Result<crate::MimeDecodeState> {
+    match value {
+        "complete" => Ok(crate::MimeDecodeState::Complete),
+        "problems" => Ok(crate::MimeDecodeState::Problems),
+        "limited" => Ok(crate::MimeDecodeState::Limited),
+        "failed" => Ok(crate::MimeDecodeState::Failed),
+        _ => Err(BackendError::InvalidInput(
+            "database contains invalid MIME decode state".into(),
+        )),
+    }
+}
+
+fn mime_part_kind_text(value: crate::MimePartKind) -> &'static str {
+    match value {
+        crate::MimePartKind::Text => "text",
+        crate::MimePartKind::Html => "html",
+        crate::MimePartKind::Binary => "binary",
+        crate::MimePartKind::InlineBinary => "inline_binary",
+        crate::MimePartKind::Multipart => "multipart",
+        crate::MimePartKind::Message => "message",
+    }
+}
+
+fn mime_part_role_text(value: crate::MimePartRole) -> &'static str {
+    match value {
+        crate::MimePartRole::Container => "container",
+        crate::MimePartRole::TextBody => "text_body",
+        crate::MimePartRole::HtmlBody => "html_body",
+        crate::MimePartRole::CopiedBody => "copied_body",
+        crate::MimePartRole::MediaBody => "media_body",
+        crate::MimePartRole::Attachment => "attachment",
+        crate::MimePartRole::Dropped => "dropped",
     }
 }
 

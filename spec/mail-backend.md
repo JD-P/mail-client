@@ -6,16 +6,19 @@ schema, immutable content-addressed raw blobs, bounded RFC 5322/MIME ingestion,
 accounts and folders, remote IMAP identities, local-folder membership,
 contacts, dynamic Warm/Cold/Spam classification, Gmail-shaped search, stable
 keyset pagination, durable security-partitioned conversation threads and a
-durable/live change stream. Its account-owned IMAP
+durable/live change stream. It also provides revisioned drafts, protected MIME
+construction, a durable SMTP outbox, verified TLS/OAuth submission, Sent-copy
+reconciliation, a materialized MIME tree, CID access, bounded attachment
+streaming/export and sandboxed extraction hooks. Its account-owned IMAP
 engine establishes verified TLS, obtains credentials through an opaque provider
 boundary, discovers mailboxes, negotiates capabilities, reconciles UID state
 and routes bounded body streams through the same idempotent ingestion path as
 local imports.
 
 The current slice does **not** yet run OpenPGP verification, extract every
-security heuristic, send mail, or expose inter-process transport. Those are
-tracked here as the next layers; the presence of their data-model requirements
-below is not a claim that they are implemented.
+security heuristic, or expose inter-process transport. Those are tracked here
+as the next layers; the presence of their data-model requirements below is not
+a claim that they are implemented.
 
 Related frontend requirements: [security-ui.md](security-ui.md).
 
@@ -29,9 +32,9 @@ than separately replaying filters or reparsing hostile messages.
 The backend must support offline use and remain useful without any Turso cloud
 service. "Turso" in this document means the local, in-process Rust database.
 
-The initial protocol is IMAP. POP3 follows after the storage and synchronization
-model is stable. Sending mail is a separate but required workstream and is
-listed below.
+The initial receive protocol is IMAP. POP3 follows after the storage and
+synchronization model is stable. Sending uses a separate SMTP submission
+engine over the same account, credential-provider and durable-state model.
 
 ## Architectural boundaries
 
@@ -667,6 +670,16 @@ The original list omits several systems needed for a complete mail client:
 - persistence of the already-constructed reply/forward intent in drafts and
   the outbox.
 
+Implemented: draft autosave is optimistic and revisioned; enqueue freezes one
+exact protected-header/MIME snapshot and envelope (with Bcc excluded from the
+message). SMTP supports verified implicit TLS and STARTTLS plus PLAIN, XOAUTH2
+and OAUTHBEARER through opaque credential references. Pending, in-flight,
+retry-scheduled, failed, ambiguous, cancelled and sent are separate durable
+states. A lost response after DATA is ambiguous and is never retried
+automatically. DKIM signing is deliberately absent because the submission
+server owns it. A local accepted copy is reconciled with later `\\Sent` IMAP
+copies using the protected Message-ID, account and sender identity.
+
 ### Contacts
 
 - a backend-owned address book exposed through the same API and change stream
@@ -689,6 +702,15 @@ would vary by client.
 - content IDs and explicit renderer resource capabilities;
 - attachment type detection, archive budgets and safe export; and
 - optional attachment-text extraction in a sandbox, never in the core process.
+
+Implemented: ingest materializes stable parent/child part IDs, roles, selected
+plain/HTML alternatives, parse/decode state and decoded CID resources. Decoded
+attachments stream from hash-checked blobs under caller limits and safe export
+uses a caller-selected create-new path, never the untrusted filename. ZIP
+inspection checks entry, compressed-input, per-entry, total-output, path and
+compression-ratio budgets before expansion. Document extraction is an optional
+trait boundary with byte, output and timeout budgets; implementations are
+required to run disposable sandbox workers.
 
 ### Threads
 
@@ -736,7 +758,8 @@ would vary by client.
 5. Backend address book plus Warm/Cold query predicates.
 6. OpenPGP evidence and the remaining built-in heuristic feature pipeline.
 7. Change-stream API and official CLI/GUI integration.
-8. Drafts and SMTP submission (IMAP mutations are implemented).
+8. Broader SMTP interoperability and provider-native send adapters (drafts,
+   SMTP submission and IMAP mutations are implemented).
 9. POP3 and import/export adapters.
 
 ## Research references

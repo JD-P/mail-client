@@ -11,7 +11,7 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 version INTEGER NOT NULL
             );
             INSERT INTO schema_meta(version)
-                SELECT 8 WHERE NOT EXISTS (SELECT 1 FROM schema_meta);
+                SELECT 9 WHERE NOT EXISTS (SELECT 1 FROM schema_meta);
 
             CREATE TABLE IF NOT EXISTS accounts (
                 id TEXT PRIMARY KEY,
@@ -85,6 +85,8 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 content_state TEXT NOT NULL,
                 search_metadata TEXT NOT NULL,
                 dkim_json TEXT NOT NULL,
+                mime_state TEXT NOT NULL DEFAULT 'complete',
+                mime_detail TEXT,
                 created_at INTEGER NOT NULL
             );
 
@@ -109,12 +111,49 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
             CREATE TABLE IF NOT EXISTS attachments (
                 message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
                 ordinal INTEGER NOT NULL,
+                part_id INTEGER NOT NULL DEFAULT 0,
                 name TEXT,
                 declared_media_type TEXT,
+                detected_media_type TEXT,
                 decoded_size INTEGER NOT NULL,
                 inline INTEGER NOT NULL,
                 content_id TEXT,
+                blob_hash TEXT,
+                decode_state TEXT NOT NULL DEFAULT 'complete',
+                decode_problems_json TEXT NOT NULL DEFAULT '[]',
                 PRIMARY KEY(message_id, ordinal)
+            );
+
+            CREATE TABLE IF NOT EXISTS mime_parts (
+                message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+                part_id INTEGER NOT NULL,
+                parent_part_id INTEGER,
+                child_ids_json TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                role TEXT NOT NULL,
+                declared_media_type TEXT,
+                name TEXT,
+                content_id TEXT,
+                content_location TEXT,
+                inline INTEGER NOT NULL,
+                attachment INTEGER NOT NULL,
+                decoded_size INTEGER NOT NULL,
+                decode_state TEXT NOT NULL,
+                parse_flags_json TEXT NOT NULL,
+                decode_problems_json TEXT NOT NULL,
+                in_plain_body INTEGER NOT NULL,
+                in_html_body INTEGER NOT NULL,
+                PRIMARY KEY(message_id, part_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS mime_part_blobs (
+                message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+                part_id INTEGER NOT NULL,
+                blob_hash TEXT NOT NULL,
+                decoded_size INTEGER NOT NULL,
+                PRIMARY KEY(message_id, part_id),
+                FOREIGN KEY(message_id, part_id)
+                    REFERENCES mime_parts(message_id, part_id) ON DELETE CASCADE
             );
 
             CREATE TABLE IF NOT EXISTS message_links (
@@ -219,6 +258,75 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 resolved_at INTEGER
             );
 
+            CREATE TABLE IF NOT EXISTS smtp_accounts (
+                account_id TEXT PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+                settings_json TEXT NOT NULL,
+                credential_ref TEXT NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS drafts (
+                id TEXT PRIMARY KEY,
+                account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+                revision INTEGER NOT NULL CHECK(revision > 0),
+                status TEXT NOT NULL,
+                thread_id TEXT NOT NULL,
+                parent_message_id TEXT REFERENCES messages(id) ON DELETE SET NULL,
+                to_addresses TEXT NOT NULL,
+                cc_addresses TEXT NOT NULL,
+                bcc_addresses TEXT NOT NULL,
+                subject TEXT NOT NULL,
+                body_text TEXT NOT NULL,
+                body_html TEXT,
+                in_reply_to TEXT,
+                references_json TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS draft_attachments (
+                id TEXT PRIMARY KEY,
+                draft_id TEXT NOT NULL REFERENCES drafts(id) ON DELETE CASCADE,
+                ordinal INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                media_type TEXT NOT NULL,
+                disposition TEXT NOT NULL,
+                content_id TEXT,
+                blob_hash TEXT NOT NULL,
+                size_bytes INTEGER NOT NULL,
+                created_at INTEGER NOT NULL,
+                UNIQUE(draft_id, ordinal)
+            );
+
+            CREATE TABLE IF NOT EXISTS submissions (
+                id TEXT PRIMARY KEY,
+                draft_id TEXT NOT NULL UNIQUE REFERENCES drafts(id) ON DELETE CASCADE,
+                account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+                rfc_message_id TEXT NOT NULL UNIQUE,
+                envelope_from TEXT NOT NULL,
+                recipients_json TEXT NOT NULL,
+                raw_blob_hash TEXT NOT NULL,
+                raw_size_bytes INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                next_attempt_at INTEGER,
+                last_error TEXT,
+                smtp_response TEXT,
+                sent_message_id TEXT REFERENCES messages(id) ON DELETE SET NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                completed_at INTEGER
+            );
+
+            CREATE TABLE IF NOT EXISTS sent_reconciliation (
+                rfc_message_id TEXT PRIMARY KEY,
+                blob_hash TEXT NOT NULL,
+                message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+                submission_id TEXT NOT NULL UNIQUE REFERENCES submissions(id) ON DELETE CASCADE,
+                account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+                reconciled_at INTEGER
+            );
+
             CREATE TABLE IF NOT EXISTS filter_rules (
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
@@ -321,6 +429,8 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 ON local_folder_memberships(folder_id, message_id);
             CREATE INDEX IF NOT EXISTS message_links_message
                 ON message_links(message_id, ordinal);
+            CREATE INDEX IF NOT EXISTS mime_parts_message
+                ON mime_parts(message_id, part_id);
             CREATE INDEX IF NOT EXISTS changes_sequence
                 ON changes(sequence);
             CREATE INDEX IF NOT EXISTS filter_rules_execution
@@ -333,6 +443,8 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 ON imap_mutations(account_id, status, created_at, id);
             CREATE INDEX IF NOT EXISTS imap_mutation_conflicts_active
                 ON imap_mutation_conflicts(mutation_id, resolved_at, created_at);
+            CREATE INDEX IF NOT EXISTS submissions_due
+                ON submissions(status, next_attempt_at, created_at, id);
             "#,
         )
         .await?;
@@ -470,7 +582,56 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
             .await?;
         version = 8;
     }
-    if version != 8 {
+    if version == 8 {
+        let mut rows = connection.query("PRAGMA table_info(messages)", ()).await?;
+        let mut message_columns = HashSet::new();
+        while let Some(row) = rows.next().await? {
+            message_columns.insert(row.get::<String>(1)?);
+        }
+        drop(rows);
+        for (name, definition) in [
+            ("mime_state", "TEXT NOT NULL DEFAULT 'complete'"),
+            ("mime_detail", "TEXT"),
+        ] {
+            if !message_columns.contains(name) {
+                connection
+                    .execute(
+                        &format!("ALTER TABLE messages ADD COLUMN {name} {definition}"),
+                        (),
+                    )
+                    .await?;
+            }
+        }
+        let mut rows = connection
+            .query("PRAGMA table_info(attachments)", ())
+            .await?;
+        let mut attachment_columns = HashSet::new();
+        while let Some(row) = rows.next().await? {
+            attachment_columns.insert(row.get::<String>(1)?);
+        }
+        drop(rows);
+        for (name, definition) in [
+            ("part_id", "INTEGER NOT NULL DEFAULT 0"),
+            ("detected_media_type", "TEXT"),
+            ("blob_hash", "TEXT"),
+            ("decode_state", "TEXT NOT NULL DEFAULT 'complete'"),
+            ("decode_problems_json", "TEXT NOT NULL DEFAULT '[]'"),
+        ] {
+            if !attachment_columns.contains(name) {
+                connection
+                    .execute(
+                        &format!("ALTER TABLE attachments ADD COLUMN {name} {definition}"),
+                        (),
+                    )
+                    .await?;
+            }
+        }
+        connection
+            .execute("UPDATE schema_meta SET version = 9", ())
+            .await?;
+        version = 9;
+    }
+    if version != 9 {
         return Err(crate::BackendError::InvalidInput(format!(
             "unsupported database schema version {version}"
         )));
@@ -524,6 +685,8 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 content_state TEXT NOT NULL,
                 search_metadata TEXT NOT NULL,
                 dkim_json TEXT NOT NULL,
+                mime_state TEXT NOT NULL,
+                mime_detail TEXT,
                 created_at INTEGER NOT NULL,
                 PRIMARY KEY(batch_id, position)
             );
@@ -603,7 +766,7 @@ mod tests {
             .await
             .unwrap();
         let row = rows.next().await.unwrap().unwrap();
-        assert_eq!(row.get::<i64>(0).unwrap(), 8);
+        assert_eq!(row.get::<i64>(0).unwrap(), 9);
         assert_eq!(row.get::<String>(1).unwrap(), r#"{"received_at":123}"#);
         drop(rows);
 
@@ -646,7 +809,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap(),
-            8
+            9
         );
     }
 }

@@ -1,6 +1,6 @@
 use crate::{
-    AccountId, ContactId, FilterRuleId, FindingId, FolderId, HeuristicId, ImapMutationConflictId,
-    ImapMutationId, MessageId, ThreadId,
+    AccountId, ContactId, DraftAttachmentId, DraftId, FilterRuleId, FindingId, FolderId,
+    HeuristicId, ImapMutationConflictId, ImapMutationId, MessageId, SubmissionId, ThreadId,
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -205,11 +205,138 @@ pub struct Attachment {
     /// Stable within an immutable message and suitable as a finding target.
     pub id: String,
     pub ordinal: u32,
+    /// Part identifier in [`MimeStructure::parts`].
+    pub mime_part_id: u32,
     pub name: Option<String>,
     pub declared_media_type: Option<String>,
+    pub detected_media_type: Option<String>,
     pub decoded_size: u64,
     pub inline: bool,
     pub content_id: Option<String>,
+    pub decode_state: MimeDecodeState,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MimeParseState {
+    Complete,
+    Limited,
+    Failed,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MimeDecodeState {
+    Complete,
+    Problems,
+    Limited,
+    Failed,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MimePartKind {
+    Text,
+    Html,
+    Binary,
+    InlineBinary,
+    Multipart,
+    Message,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MimePartRole {
+    Container,
+    TextBody,
+    HtmlBody,
+    CopiedBody,
+    MediaBody,
+    Attachment,
+    Dropped,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct MimePart {
+    pub id: u32,
+    pub parent_id: Option<u32>,
+    pub child_ids: Vec<u32>,
+    pub kind: MimePartKind,
+    pub role: MimePartRole,
+    pub declared_media_type: Option<String>,
+    pub name: Option<String>,
+    pub content_id: Option<String>,
+    pub content_location: Option<String>,
+    pub inline: bool,
+    pub attachment: bool,
+    pub in_plain_body: bool,
+    pub in_html_body: bool,
+    pub decoded_size: u64,
+    pub decode_state: MimeDecodeState,
+    pub parse_flags: Vec<String>,
+    pub decode_problems: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct MimeStructure {
+    pub message_id: MessageId,
+    pub state: MimeParseState,
+    pub detail: Option<String>,
+    pub root_part_id: u32,
+    pub parts: Vec<MimePart>,
+    /// Ordered alternatives chosen by the parser's RFC 8621 body semantics.
+    pub plain_body_part_ids: Vec<u32>,
+    pub html_body_part_ids: Vec<u32>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ArchiveLimits {
+    /// Maximum compressed archive bytes read from the blob store.
+    pub max_archive_bytes: u64,
+    pub max_entries: usize,
+    pub max_entry_bytes: u64,
+    pub max_total_uncompressed_bytes: u64,
+    pub max_compression_ratio: u32,
+}
+
+impl Default for ArchiveLimits {
+    fn default() -> Self {
+        Self {
+            max_archive_bytes: 256 * 1024 * 1024,
+            max_entries: 1_000,
+            max_entry_bytes: 64 * 1024 * 1024,
+            max_total_uncompressed_bytes: 256 * 1024 * 1024,
+            max_compression_ratio: 200,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ArchiveInspectionState {
+    Complete,
+    Limited,
+    Encrypted,
+    Unsupported,
+    Invalid,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ArchiveEntry {
+    pub index: u32,
+    pub path: String,
+    pub directory: bool,
+    pub encrypted: bool,
+    pub compressed_size: u64,
+    pub uncompressed_size: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ArchiveInspection {
+    pub state: ArchiveInspectionState,
+    pub entries: Vec<ArchiveEntry>,
+    pub total_uncompressed_bytes: u64,
+    pub detail: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -370,6 +497,181 @@ pub struct MessageComposition {
     pub references: Vec<String>,
     pub attached_message_id: Option<MessageId>,
     pub attached_media_type: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SmtpSecurity {
+    ImplicitTls,
+    StartTls,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SmtpAuthMethod {
+    Password,
+    XOAuth2,
+    OAuthBearer,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SmtpSettings {
+    pub host: String,
+    pub port: u16,
+    pub username: String,
+    pub security: SmtpSecurity,
+    pub auth: SmtpAuthMethod,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SmtpAccount {
+    pub account_id: AccountId,
+    pub settings: SmtpSettings,
+    /// Opaque platform credential-store reference; never a password/token.
+    pub credential_ref: String,
+    pub updated_at: i64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DraftStatus {
+    Editing,
+    Queued,
+    Sent,
+    Cancelled,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DraftContent {
+    pub account_id: AccountId,
+    pub thread_id: ThreadId,
+    pub parent_message_id: Option<MessageId>,
+    pub to_addresses: Vec<String>,
+    pub cc_addresses: Vec<String>,
+    pub bcc_addresses: Vec<String>,
+    pub subject: String,
+    pub body_text: String,
+    pub body_html: Option<String>,
+    pub in_reply_to: Option<String>,
+    pub references: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DraftAttachmentDisposition {
+    Attachment,
+    Inline,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DraftAttachment {
+    pub id: DraftAttachmentId,
+    pub ordinal: u32,
+    pub name: String,
+    pub media_type: String,
+    pub disposition: DraftAttachmentDisposition,
+    pub content_id: Option<String>,
+    pub size_bytes: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct Draft {
+    pub id: DraftId,
+    pub revision: u32,
+    pub status: DraftStatus,
+    #[serde(flatten)]
+    pub content: DraftContent,
+    pub attachments: Vec<DraftAttachment>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct NewDraftAttachment {
+    pub name: String,
+    pub media_type: String,
+    pub disposition: DraftAttachmentDisposition,
+    pub content_id: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubmissionStatus {
+    Pending,
+    InFlight,
+    RetryScheduled,
+    Sent,
+    Failed,
+    Ambiguous,
+    Cancelled,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct Submission {
+    pub id: SubmissionId,
+    pub draft_id: DraftId,
+    pub account_id: AccountId,
+    pub rfc_message_id: String,
+    pub status: SubmissionStatus,
+    pub attempts: u32,
+    pub next_attempt_at: Option<i64>,
+    pub last_error: Option<String>,
+    pub smtp_response: Option<String>,
+    pub sent_message_id: Option<MessageId>,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub completed_at: Option<i64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SendingLimits {
+    pub max_attachments: usize,
+    pub max_attachment_bytes: u64,
+    pub max_total_attachment_bytes: u64,
+    pub max_message_bytes: u64,
+}
+
+impl Default for SendingLimits {
+    fn default() -> Self {
+        Self {
+            max_attachments: 100,
+            max_attachment_bytes: 25 * 1024 * 1024,
+            max_total_attachment_bytes: 50 * 1024 * 1024,
+            max_message_bytes: 64 * 1024 * 1024,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DocumentExtractionLimits {
+    pub max_input_bytes: u64,
+    pub max_output_bytes: usize,
+    pub timeout_seconds: u64,
+}
+
+impl Default for DocumentExtractionLimits {
+    fn default() -> Self {
+        Self {
+            max_input_bytes: 32 * 1024 * 1024,
+            max_output_bytes: 2 * 1024 * 1024,
+            timeout_seconds: 30,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct DocumentExtractionRequest {
+    pub declared_media_type: Option<String>,
+    pub detected_media_type: Option<String>,
+    pub name: Option<String>,
+    pub bytes: Vec<u8>,
+    pub max_output_bytes: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DocumentExtractionResult {
+    pub text: String,
+    pub truncated: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]

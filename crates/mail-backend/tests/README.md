@@ -42,3 +42,15 @@ convergence, `References`/`In-Reply-To`, normalized-subject fallback, stable
 IDs across reopen, Reply/Reply-All and forward construction, and the adversarial
 case where an unknown sender copies a known conversation's identifiers. That
 message must remain in a separate unknown-sender thread.
+
+`sending.rs` runs an in-process ESMTP server with a private test root and a
+real STARTTLS upgrade. It covers revisioned autosave, streamed attachment
+ingest, protected MIME headers, envelope-only Bcc, definite and temporary SMTP
+failures, post-DATA ambiguity, cancellation, retry policy, durable/live events
+and decoded attachment recovery. An internal test additionally covers crash
+recovery and Sent-folder reconciliation when the server adds transport headers.
+
+`mime_api.rs` covers materialized MIME parent/child and alternative-selection
+semantics, CID lookup, bounded decoded streams, create-new export, magic-byte
+typing, ZIP path/ratio/size budgets, sandbox extraction limits and explicit
+complete, limited and failed parsing states.

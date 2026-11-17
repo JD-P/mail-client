@@ -19,9 +19,12 @@ mod imap;
 mod imap_engine;
 mod imap_mutation;
 mod mime;
+mod mime_api;
 mod query;
 mod schema;
 mod search_index;
+mod sending;
+mod smtp;
 mod thread;
 mod types;
 
@@ -31,8 +34,8 @@ pub use error::{BackendError, ErrorCode, Result};
 pub use event::{ChangeCursor, EventRecvError, EventSubscription};
 pub use heuristic::compile_heuristic;
 pub use id::{
-    AccountId, ContactId, FilterRuleId, FindingId, FolderId, HeuristicId, ImapMutationConflictId,
-    ImapMutationId, MessageId, ThreadId,
+    AccountId, ContactId, DraftAttachmentId, DraftId, FilterRuleId, FindingId, FolderId,
+    HeuristicId, ImapMutationConflictId, ImapMutationId, MessageId, SubmissionId, ThreadId,
 };
 pub use imap::imap_fetch_message;
 pub use imap_engine::{
@@ -41,6 +44,9 @@ pub use imap_engine::{
     ImapMailboxCompleteness, ImapMailboxSyncState, ImapMutationSyncReport, SecretValue,
 };
 pub use imap_mutation::ImapMutations;
+pub use mime_api::{Mime, SandboxedDocumentExtractor};
 pub use query::{parse_query, QueryExpr, QueryParseError, QueryTerm};
+pub use sending::{Drafts, Outbox, Sending};
+pub use smtp::{SmtpEngine, SmtpEngineConfig};
 pub use thread::Threads;
 pub use types::*;

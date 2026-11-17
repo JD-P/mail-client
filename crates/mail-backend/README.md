@@ -23,6 +23,13 @@ Current invariants:
 - on Unix, the profile directory is forced to owner-only permissions;
 - normalized metadata/search text is rebuildable local Turso state;
 - MIME parsing and decoded body extraction have explicit byte/depth/part limits;
+- the complete MIME tree, selected plain/HTML alternatives, per-part decode
+  state and decoded Content-ID resources are materialized once during ingest;
+  attachments have bounded streaming reads, create-new safe export, magic-byte
+  type evidence and ZIP inspection/expansion budgets;
+- hostile document conversion is an optional `SandboxedDocumentExtractor`
+  boundary with input, output and wall-clock budgets, never an in-process
+  office/PDF parser;
 - every physical DKIM signature is verified from the stored bytes under parser,
   signature, DNS-query and wall-clock budgets, then persisted as typed evidence;
 - the default DKIM resolver uses Quad9 DNS-over-TLS with local DNSSEC
@@ -71,6 +78,18 @@ Current invariants:
 - interrupted non-idempotent COPY/MOVE operations become blocking ambiguity
   conflicts instead of being retried into duplicate mail. Clients can inspect
   the conflict evidence and explicitly cancel the operation to acknowledge it.
+- draft autosaves use optimistic revisions; attachment ingest is streamed into
+  the content-addressed store under individual and aggregate limits;
+- enqueue freezes protected headers, envelope recipients and exact MIME bytes
+  into a durable outbox entry. Bcc is envelope-only and the client never adds a
+  DKIM signature;
+- `SmtpEngine` supports verified implicit TLS/STARTTLS and credential-provider
+  Password, XOAUTH2 or OAUTHBEARER authentication. Definite failures, bounded
+  backoff, safe cancellation and post-DATA ambiguous delivery are distinct
+  durable states; ambiguous delivery is never retried automatically;
+- an accepted submission is ingested as the local Sent message, then a later
+  server Sent-folder copy is reconciled by protected Message-ID, account,
+  sender identity and `\\Sent` mailbox role without creating a duplicate.
 
 `Backend::threads` lists and reads conversation objects rather than requiring
 frontends to group messages themselves. Membership exposes the selected parent,
@@ -133,10 +152,11 @@ Its generated corpus is useful for regression and scaling measurements, not as
 a substitute for the representative mixed corpus specified in
 `../../spec/mail-backend.md`.
 
-The crate now includes an account-owned IMAP receive engine, durable
-security-partitioned threads, reply/forward construction, structured filter
-execution, bounded Python-shaped heuristic programs, and persisted DKIM
-evidence. Findings and authentication results are returned with message reads.
-OpenPGP, trusted-provider `Authentication-Results`, durable drafts/SMTP
-submission and the broader built-in extractor library remain future work. See
-`../../spec/mail-backend.md` for the authority and presentation model.
+The crate now includes account-owned IMAP receive and SMTP submission engines,
+durable security-partitioned threads, reply/forward and MIME construction,
+structured filter execution, bounded Python-shaped heuristic programs,
+materialized MIME resources, and persisted DKIM evidence. Findings and
+authentication results are returned with message reads. OpenPGP,
+trusted-provider `Authentication-Results` and the broader built-in extractor
+library remain future work. See `../../spec/mail-backend.md` for the authority
+and presentation model.

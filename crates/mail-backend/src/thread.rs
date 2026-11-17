@@ -485,6 +485,16 @@ async fn own_addresses_on(connection: &Connection) -> Result<HashSet<String>> {
             addresses.insert(normalize_address(&settings.username));
         }
     }
+    drop(rows);
+    let mut rows = connection
+        .query("SELECT settings_json FROM smtp_accounts", ())
+        .await?;
+    while let Some(row) = rows.next().await? {
+        let settings: crate::SmtpSettings = serde_json::from_str(&row.get::<String>(0)?)?;
+        if settings.username.contains('@') {
+            addresses.insert(normalize_address(&settings.username));
+        }
+    }
     Ok(addresses)
 }
 

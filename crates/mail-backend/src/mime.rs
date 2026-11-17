@@ -1,5 +1,6 @@
 use crate::{
-    Attachment, BackendError, ContentState, IngestLimits, MessageLink, MessageLinkSource, Result,
+    Attachment, BackendError, ContentState, IngestLimits, MessageLink, MessageLinkSource,
+    MimeDecodeState, MimeParseState, MimePart, MimePartKind, MimePartRole, Result,
 };
 use html5ever::tendril::StrTendril;
 use html5ever::tokenizer::states::RawKind;
@@ -7,8 +8,11 @@ use html5ever::tokenizer::{
     BufferQueue, StartTag, TagToken, Token, TokenSink, TokenSinkResult, Tokenizer, TokenizerOpts,
 };
 use linkify::{LinkFinder, LinkKind};
-use mail_parser::{AddressList, HeaderForm, MessageParser, PartFlags, PartKind};
-use std::cell::{Cell, RefCell};
+use mail_parser::{AddressList, HeaderForm, MessageParser, PartFlags, PartKind, PartRole};
+use std::{
+    cell::{Cell, RefCell},
+    collections::HashMap,
+};
 use url::Url;
 
 pub(crate) struct ParsedMessage {
@@ -28,9 +32,23 @@ pub(crate) struct ParsedMessage {
     pub body_text: String,
     pub body_html: Option<String>,
     pub preview: String,
-    pub attachments: Vec<Attachment>,
+    pub attachments: Vec<ParsedAttachment>,
+    pub resources: Vec<ParsedResource>,
+    pub mime_parts: Vec<MimePart>,
+    pub mime_state: MimeParseState,
+    pub mime_detail: Option<String>,
     pub links: Vec<MessageLink>,
     pub content_state: ContentState,
+}
+
+pub(crate) struct ParsedAttachment {
+    pub metadata: Attachment,
+    pub decode_problems: Vec<String>,
+}
+
+pub(crate) struct ParsedResource {
+    pub part_id: u32,
+    pub bytes: Vec<u8>,
 }
 
 pub(crate) struct ParsedThreadHeaders {
@@ -82,12 +100,60 @@ pub(crate) fn parse(raw: &[u8], limits: &IngestLimits) -> Result<ParsedMessage> 
             limit: limits.max_message_bytes,
         });
     }
-    let message = MessageParser::new()
+    let Some(message) = MessageParser::new()
         .max_depth(limits.max_mime_depth as usize)
         .max_parts(limits.max_mime_parts)
         .max_encoded_nesting(4)
         .parse(raw)
-        .ok_or(BackendError::Parse)?;
+    else {
+        // Preserve exact bytes even when an RFC 5322/MIME interpretation is
+        // impossible. Callers can inspect the explicit failed projection and
+        // offer raw export without accidentally presenting arbitrary bytes as
+        // a successfully parsed message.
+        return Ok(ParsedMessage {
+            subject: None,
+            from_address: None,
+            from_name: None,
+            to_addresses: Vec::new(),
+            cc_addresses: Vec::new(),
+            bcc_addresses: Vec::new(),
+            reply_to_addresses: Vec::new(),
+            delivered_to_addresses: Vec::new(),
+            list_id: None,
+            rfc_message_id: None,
+            in_reply_to: Vec::new(),
+            references: Vec::new(),
+            sent_at: None,
+            body_text: String::new(),
+            body_html: None,
+            preview: String::new(),
+            attachments: Vec::new(),
+            resources: Vec::new(),
+            mime_parts: vec![MimePart {
+                id: 0,
+                parent_id: None,
+                child_ids: Vec::new(),
+                kind: MimePartKind::Binary,
+                role: MimePartRole::Dropped,
+                declared_media_type: None,
+                name: None,
+                content_id: None,
+                content_location: None,
+                inline: false,
+                attachment: false,
+                in_plain_body: false,
+                in_html_body: false,
+                decoded_size: raw.len() as u64,
+                decode_state: MimeDecodeState::Failed,
+                parse_flags: vec!["parse_failed".into()],
+                decode_problems: vec!["input has no RFC 5322 header block or separator".into()],
+            }],
+            mime_state: MimeParseState::Failed,
+            mime_detail: Some("message could not be parsed as RFC 5322/MIME".into()),
+            links: Vec::new(),
+            content_state: ContentState::Limited,
+        });
+    };
 
     let sender = message.from().and_then(|addresses| addresses.first());
     let from_address = sender
@@ -124,24 +190,94 @@ pub(crate) fn parse(raw: &[u8], limits: &IngestLimits) -> Result<ParsedMessage> 
         }
     }
 
-    let attachments = message
-        .attachments()
-        .enumerate()
-        .map(|(ordinal, part)| {
-            let declared_media_type = part.content_type().map(|media| {
-                media
-                    .subtype()
-                    .map(|subtype| format!("{}/{}", media.ctype(), subtype))
-                    .unwrap_or_else(|| media.ctype().to_owned())
+    let mut attachments = Vec::new();
+    let mut resources = Vec::new();
+    let mut resource_problems = HashMap::new();
+    for part in message.parts() {
+        if !part.is_attachment() && part.content_id().is_none() {
+            continue;
+        }
+        let (decoded, problems) = part.decoded_checked();
+        let problem_names = problems.names().map(str::to_owned).collect::<Vec<_>>();
+        let bytes = decoded.into_owned();
+        let detected_media_type = detect_media_type(&bytes).map(str::to_owned);
+        let decode_state = if part.flags().contains(PartFlags::LIMIT_REACHED) {
+            MimeDecodeState::Limited
+        } else if !problem_names.is_empty() {
+            MimeDecodeState::Problems
+        } else {
+            MimeDecodeState::Complete
+        };
+        resource_problems.insert(part.id(), (decode_state, problem_names.clone()));
+        resources.push(ParsedResource {
+            part_id: part.id(),
+            bytes,
+        });
+        if part.is_attachment() {
+            let ordinal = attachments.len() as u32;
+            attachments.push(ParsedAttachment {
+                metadata: Attachment {
+                    id: format!("attachment:{ordinal}"),
+                    ordinal,
+                    mime_part_id: part.id(),
+                    name: part.attachment_name().map(str::to_owned),
+                    declared_media_type: declared_media_type(part.content_type()),
+                    detected_media_type,
+                    decoded_size: part.decoded_len() as u64,
+                    inline: part.is_inline(),
+                    content_id: part.content_id().map(str::to_owned),
+                    decode_state,
+                },
+                decode_problems: problem_names,
             });
-            Attachment {
-                id: format!("attachment:{ordinal}"),
-                ordinal: ordinal as u32,
+        }
+    }
+    let mime_parts = message
+        .parts()
+        .map(|part| {
+            let (decode_state, decode_problems) = resource_problems
+                .get(&part.id())
+                .cloned()
+                .unwrap_or_else(|| {
+                    if part.flags().contains(PartFlags::LIMIT_REACHED) {
+                        (MimeDecodeState::Limited, Vec::new())
+                    } else {
+                        (MimeDecodeState::Complete, Vec::new())
+                    }
+                });
+            MimePart {
+                id: part.id(),
+                parent_id: part.parent().map(|parent| parent.id()),
+                child_ids: part.children().map(|child| child.id()).collect(),
+                kind: match part.kind() {
+                    PartKind::Text => MimePartKind::Text,
+                    PartKind::Html => MimePartKind::Html,
+                    PartKind::Binary => MimePartKind::Binary,
+                    PartKind::InlineBinary => MimePartKind::InlineBinary,
+                    PartKind::Multipart => MimePartKind::Multipart,
+                    PartKind::Message(_) => MimePartKind::Message,
+                },
+                role: match part.role() {
+                    PartRole::Container => MimePartRole::Container,
+                    PartRole::TextBody => MimePartRole::TextBody,
+                    PartRole::HtmlBody => MimePartRole::HtmlBody,
+                    PartRole::CopiedBody => MimePartRole::CopiedBody,
+                    PartRole::MediaBody => MimePartRole::MediaBody,
+                    PartRole::Attachment => MimePartRole::Attachment,
+                    PartRole::Dropped => MimePartRole::Dropped,
+                },
+                declared_media_type: declared_media_type(part.content_type()),
                 name: part.attachment_name().map(str::to_owned),
-                declared_media_type,
-                decoded_size: part.decoded_len() as u64,
-                inline: part.is_inline(),
                 content_id: part.content_id().map(str::to_owned),
+                content_location: part.content_location().map(str::to_owned),
+                inline: part.is_inline(),
+                attachment: part.is_attachment(),
+                in_plain_body: part.in_text_body(),
+                in_html_body: part.in_html_body(),
+                decoded_size: part.decoded_len() as u64,
+                decode_state,
+                parse_flags: part.flags().names().map(str::to_owned).collect(),
+                decode_problems,
             }
         })
         .collect::<Vec<_>>();
@@ -163,6 +299,11 @@ pub(crate) fn parse(raw: &[u8], limits: &IngestLimits) -> Result<ParsedMessage> 
     });
 
     let preview = make_preview(&body_text, 240);
+    let mime_state = if limited {
+        MimeParseState::Limited
+    } else {
+        MimeParseState::Complete
+    };
     Ok(ParsedMessage {
         subject: message.subject().map(str::to_owned),
         from_address,
@@ -187,6 +328,10 @@ pub(crate) fn parse(raw: &[u8], limits: &IngestLimits) -> Result<ParsedMessage> 
         body_html: (!html.is_empty()).then_some(html),
         preview,
         attachments,
+        resources,
+        mime_parts,
+        mime_state,
+        mime_detail: limited.then(|| "configured MIME or decoded-content limit reached".into()),
         links,
         content_state: if limited {
             ContentState::Limited
@@ -194,6 +339,40 @@ pub(crate) fn parse(raw: &[u8], limits: &IngestLimits) -> Result<ParsedMessage> 
             ContentState::Complete
         },
     })
+}
+
+fn declared_media_type(media: Option<mail_parser::ContentType<'_>>) -> Option<String> {
+    media.map(|media| {
+        media
+            .subtype()
+            .map(|subtype| format!("{}/{}", media.ctype(), subtype))
+            .unwrap_or_else(|| media.ctype().to_owned())
+    })
+}
+
+pub(crate) fn detect_media_type(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"%PDF-") {
+        Some("application/pdf")
+    } else if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("image/png")
+    } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
+        Some("image/jpeg")
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        Some("image/gif")
+    } else if bytes.starts_with(b"PK\x03\x04")
+        || bytes.starts_with(b"PK\x05\x06")
+        || bytes.starts_with(b"PK\x07\x08")
+    {
+        Some("application/zip")
+    } else if bytes.starts_with(b"\x7fELF") {
+        Some("application/x-executable")
+    } else if bytes.starts_with(b"MZ") {
+        Some("application/vnd.microsoft.portable-executable")
+    } else if bytes.starts_with(b"{\\rtf") {
+        Some("application/rtf")
+    } else {
+        None
+    }
 }
 
 fn extract_links(
