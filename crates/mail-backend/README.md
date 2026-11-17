@@ -30,6 +30,12 @@ Current invariants:
 - a remote identity is `(folder, UIDVALIDITY, UID)`, never RFC `Message-ID`;
 - contacts are the single source of truth for Warm versus Cold, while explicit
   Spam wins over contact state;
+- every message receives a stable `ThreadId` atomically with ingestion;
+  `References`/`In-Reply-To` take precedence, while normalized-subject fallback
+  requires an unambiguous recent match from the same sender;
+- known-origin threads have a permanent trust boundary, so an unknown sender
+  cannot inject a forged reply even when it copies a real `Message-ID`;
+  known/self senders may continue an older cold thread without upgrading it;
 - remote mailbox instances and local folder memberships are durable state;
 - filter conditions are pure implicit-AND checks and filter authority is limited
   to local placement of the message being evaluated;
@@ -65,6 +71,14 @@ Current invariants:
 - interrupted non-idempotent COPY/MOVE operations become blocking ambiguity
   conflicts instead of being retried into duplicate mail. Clients can inspect
   the conflict evidence and explicitly cancel the operation to acknowledge it.
+
+`Backend::threads` lists and reads conversation objects rather than requiring
+frontends to group messages themselves. Membership exposes the selected parent,
+source (`References`, `In-Reply-To`, normalized subject or root) and immutable
+sender-trust partition. `Threads::reply` constructs bounded reply headers and
+Reply-All recipients while removing the user's account identities.
+`Threads::forward` deliberately creates a new thread with no reply headers and
+identifies the exact original message as a `message/rfc822` attachment.
 
 `Backend::imap_account_engine` accepts a `CredentialProvider` implemented by an
 OS keychain or OAuth broker. The provider receives only the account's opaque
@@ -119,9 +133,10 @@ Its generated corpus is useful for regression and scaling measurements, not as
 a substitute for the representative mixed corpus specified in
 `../../spec/mail-backend.md`.
 
-The crate now includes an account-owned IMAP receive engine, structured filter
+The crate now includes an account-owned IMAP receive engine, durable
+security-partitioned threads, reply/forward construction, structured filter
 execution, bounded Python-shaped heuristic programs, and persisted DKIM
 evidence. Findings and authentication results are returned with message reads.
-OpenPGP, trusted-provider `Authentication-Results`, drafts/SMTP submission and
-the broader built-in extractor library remain future work. See
+OpenPGP, trusted-provider `Authentication-Results`, durable drafts/SMTP
+submission and the broader built-in extractor library remain future work. See
 `../../spec/mail-backend.md` for the authority and presentation model.

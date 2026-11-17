@@ -1,4 +1,5 @@
 use crate::Result;
+use std::collections::HashSet;
 
 pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
     connection
@@ -10,7 +11,7 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 version INTEGER NOT NULL
             );
             INSERT INTO schema_meta(version)
-                SELECT 7 WHERE NOT EXISTS (SELECT 1 FROM schema_meta);
+                SELECT 8 WHERE NOT EXISTS (SELECT 1 FROM schema_meta);
 
             CREATE TABLE IF NOT EXISTS accounts (
                 id TEXT PRIMARY KEY,
@@ -33,16 +34,41 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 UNIQUE(account_id, remote_name)
             );
 
+            CREATE TABLE IF NOT EXISTS threads (
+                id TEXT PRIMARY KEY,
+                subject TEXT,
+                normalized_subject TEXT,
+                sender_trust TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS thread_participants (
+                message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+                thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+                address TEXT NOT NULL COLLATE NOCASE,
+                PRIMARY KEY(message_id, address)
+            );
+
             CREATE TABLE IF NOT EXISTS messages (
                 id TEXT PRIMARY KEY,
                 blob_hash TEXT NOT NULL,
                 rfc_message_id TEXT,
+                thread_message_id TEXT,
+                thread_id TEXT REFERENCES threads(id),
+                parent_message_id TEXT REFERENCES messages(id) ON DELETE SET NULL,
+                threading_source TEXT,
+                sender_trust TEXT,
+                normalized_subject TEXT,
+                in_reply_to_json TEXT NOT NULL DEFAULT '[]',
+                references_json TEXT NOT NULL DEFAULT '[]',
                 subject TEXT,
                 from_address TEXT,
                 from_name TEXT,
                 to_addresses TEXT NOT NULL,
                 cc_addresses TEXT NOT NULL,
                 bcc_addresses TEXT NOT NULL,
+                reply_to_addresses TEXT NOT NULL DEFAULT '[]',
                 delivered_to_addresses TEXT NOT NULL,
                 list_id TEXT,
                 body_text TEXT NOT NULL,
@@ -407,11 +433,62 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
             .await?;
         version = 7;
     }
-    if version != 7 {
+    if version == 7 {
+        // A version-eight upgrade can be interrupted between ALTER TABLE
+        // statements. Probe each column so reopening resumes safely.
+        let mut rows = connection.query("PRAGMA table_info(messages)", ()).await?;
+        let mut columns = HashSet::new();
+        while let Some(row) = rows.next().await? {
+            columns.insert(row.get::<String>(1)?);
+        }
+        drop(rows);
+        for (name, definition) in [
+            ("thread_id", "TEXT REFERENCES threads(id)"),
+            ("thread_message_id", "TEXT"),
+            (
+                "parent_message_id",
+                "TEXT REFERENCES messages(id) ON DELETE SET NULL",
+            ),
+            ("threading_source", "TEXT"),
+            ("sender_trust", "TEXT"),
+            ("normalized_subject", "TEXT"),
+            ("in_reply_to_json", "TEXT NOT NULL DEFAULT '[]'"),
+            ("references_json", "TEXT NOT NULL DEFAULT '[]'"),
+            ("reply_to_addresses", "TEXT NOT NULL DEFAULT '[]'"),
+        ] {
+            if !columns.contains(name) {
+                connection
+                    .execute(
+                        &format!("ALTER TABLE messages ADD COLUMN {name} {definition}"),
+                        (),
+                    )
+                    .await?;
+            }
+        }
+        connection
+            .execute("UPDATE schema_meta SET version = 8", ())
+            .await?;
+        version = 8;
+    }
+    if version != 8 {
         return Err(crate::BackendError::InvalidInput(format!(
             "unsupported database schema version {version}"
         )));
     }
+    connection
+        .execute_batch(
+            r#"
+            CREATE INDEX IF NOT EXISTS messages_thread
+                ON messages(thread_id, received_at, id);
+            CREATE INDEX IF NOT EXISTS messages_thread_message_id
+                ON messages(thread_message_id, sender_trust, thread_id);
+            CREATE INDEX IF NOT EXISTS threads_subject_fallback
+                ON threads(sender_trust, normalized_subject, updated_at DESC);
+            CREATE INDEX IF NOT EXISTS thread_participants_address
+                ON thread_participants(address, thread_id, message_id);
+            "#,
+        )
+        .await?;
     // Scratch rows never need durability. Keeping them in the connection's
     // temporary database avoids doubling main-database WAL traffic while a
     // normalized batch is copied into the authoritative messages table.
@@ -430,6 +507,7 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 to_addresses TEXT NOT NULL,
                 cc_addresses TEXT NOT NULL,
                 bcc_addresses TEXT NOT NULL,
+                reply_to_addresses TEXT NOT NULL,
                 delivered_to_addresses TEXT NOT NULL,
                 list_id TEXT,
                 body_text TEXT NOT NULL,
@@ -525,7 +603,7 @@ mod tests {
             .await
             .unwrap();
         let row = rows.next().await.unwrap().unwrap();
-        assert_eq!(row.get::<i64>(0).unwrap(), 7);
+        assert_eq!(row.get::<i64>(0).unwrap(), 8);
         assert_eq!(row.get::<String>(1).unwrap(), r#"{"received_at":123}"#);
         drop(rows);
 
@@ -568,7 +646,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap(),
-            7
+            8
         );
     }
 }

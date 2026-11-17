@@ -22,6 +22,7 @@ mod mime;
 mod query;
 mod schema;
 mod search_index;
+mod thread;
 mod types;
 
 pub use automation::{FilterRules, Heuristics};
@@ -31,7 +32,7 @@ pub use event::{ChangeCursor, EventRecvError, EventSubscription};
 pub use heuristic::compile_heuristic;
 pub use id::{
     AccountId, ContactId, FilterRuleId, FindingId, FolderId, HeuristicId, ImapMutationConflictId,
-    ImapMutationId, MessageId,
+    ImapMutationId, MessageId, ThreadId,
 };
 pub use imap::imap_fetch_message;
 pub use imap_engine::{
@@ -41,4 +42,5 @@ pub use imap_engine::{
 };
 pub use imap_mutation::ImapMutations;
 pub use query::{parse_query, QueryExpr, QueryParseError, QueryTerm};
+pub use thread::Threads;
 pub use types::*;

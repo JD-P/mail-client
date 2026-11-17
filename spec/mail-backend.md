@@ -5,7 +5,8 @@ Status: design plus an implemented first vertical slice in
 schema, immutable content-addressed raw blobs, bounded RFC 5322/MIME ingestion,
 accounts and folders, remote IMAP identities, local-folder membership,
 contacts, dynamic Warm/Cold/Spam classification, Gmail-shaped search, stable
-keyset pagination and a durable/live change stream. Its account-owned IMAP
+keyset pagination, durable security-partitioned conversation threads and a
+durable/live change stream. Its account-owned IMAP
 engine establishes verified TLS, obtains credentials through an opaque provider
 boundary, discovers mailboxes, negotiates capabilities, reconciles UID state
 and routes bounded body streams through the same idempotent ingestion path as
@@ -102,6 +103,42 @@ Exact schema is deferred, but the model must represent at least:
 Do not use RFC `Message-ID` as a primary key: it can be absent, duplicated or
 attacker-controlled. Do not assume that an IMAP UID is meaningful outside its
 mailbox and UIDVALIDITY epoch.
+
+### Conversation threading
+
+Thread membership is backend-owned durable state, not a frontend grouping
+guess. Every message receives a stable application `ThreadId` in the same
+transaction that inserts the message. The stored evidence includes canonical
+`References`, `In-Reply-To`, the selected local parent, normalized subject, the
+reason for the match and sender trust at ingest time.
+
+Resolution is conservative and ordered:
+
+1. use the nearest uniquely resolved `References` identifier;
+2. otherwise use a uniquely resolved `In-Reply-To` identifier;
+3. if neither header exists, use normalized subject only for one recent,
+   unambiguous thread containing the same sender; and
+4. otherwise create a root thread. Header-derived roots use a deterministic
+   UUID namespace so a reply received before its root still converges on the
+   same stable thread when the root arrives.
+
+Threads created by a known/self sender have an immutable trust boundary. An
+unknown sender copying a real message's identifiers therefore cannot enter that
+known-origin conversation. A known/self sender may continue an older cold
+thread (important when contacts import after mail, and when the user replies to
+a cold message), but this does not silently upgrade the thread boundary. Later
+address-book edits can change the Warm/Cold view without rewriting historical
+thread identity. Subject fallback has a 30-day window, requires exact
+normalized sender continuity, refuses ambiguous matches and never overrides
+explicit reply headers.
+
+The thread API returns summaries and complete ordered conversations with
+keyset pagination. Reply construction reuses the source `ThreadId`, produces a
+bounded `References` chain, honors parsed Reply-To and removes the user's own
+account identities from Reply-All. Forward construction creates a new
+`ThreadId`, emits no reply headers and carries the immutable source message as
+`message/rfc822`. Durable drafts, sending and Sent reconciliation remain a
+separate layer.
 
 ### Remote mailboxes, local folders and views
 
@@ -627,7 +664,8 @@ The original list omits several systems needed for a complete mail client:
 - drafts, outbox, retry/idempotency and delivery-failure state;
 - attachment streaming and size limits;
 - Sent-folder reconciliation without creating duplicates; and
-- reply/forward header and thread construction.
+- persistence of the already-constructed reply/forward intent in drafts and
+  the outbox.
 
 ### Contacts
 

@@ -1,6 +1,6 @@
 use crate::{
     AccountId, ContactId, FilterRuleId, FindingId, FolderId, HeuristicId, ImapMutationConflictId,
-    ImapMutationId, MessageId,
+    ImapMutationId, MessageId, ThreadId,
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -215,6 +215,8 @@ pub struct Attachment {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct MessageSummary {
     pub id: MessageId,
+    /// Stable backend identity of the conversation containing this message.
+    pub thread_id: ThreadId,
     pub subject: Option<String>,
     pub from_address: Option<String>,
     pub from_name: Option<String>,
@@ -234,6 +236,12 @@ pub struct Message {
     #[serde(flatten)]
     pub summary: MessageSummary,
     pub rfc_message_id: Option<String>,
+    /// Canonical message identifiers supplied by the sender. These remain
+    /// untrusted evidence; [`threading`] records the backend's actual choice.
+    pub in_reply_to: Vec<String>,
+    pub references: Vec<String>,
+    pub reply_to_addresses: Vec<String>,
+    pub threading: ThreadMembership,
     pub to_addresses: Vec<String>,
     pub cc_addresses: Vec<String>,
     pub bcc_addresses: Vec<String>,
@@ -251,6 +259,117 @@ pub struct Message {
     /// Active, materialized heuristic results. Clients render these through
     /// the finite [`FindingPresentation`] vocabulary; they never execute code.
     pub findings: Vec<HeuristicFinding>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ThreadSenderTrust {
+    /// The sender was one of the user's account identities or address-book
+    /// contacts when the message was ingested.
+    Known,
+    /// The sender was not known when the message was ingested.
+    Unknown,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ThreadingSource {
+    Root,
+    References,
+    InReplyTo,
+    NormalizedSubject,
+}
+
+/// The backend's durable, security-partitioned interpretation of a message's
+/// conversation headers.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ThreadMembership {
+    pub thread_id: ThreadId,
+    pub parent_message_id: Option<MessageId>,
+    pub source: ThreadingSource,
+    pub sender_trust: ThreadSenderTrust,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ThreadSummary {
+    pub id: ThreadId,
+    pub subject: Option<String>,
+    pub normalized_subject: Option<String>,
+    pub participants: Vec<String>,
+    pub message_count: u64,
+    pub unread_count: u64,
+    pub starred_count: u64,
+    pub latest_message_id: MessageId,
+    pub latest_received_at: i64,
+    pub latest_preview: String,
+    /// Immutable trust boundary established when the thread was created.
+    /// Unknown senders cannot enter a known-origin conversation; known/self
+    /// senders may continue an older cold conversation without upgrading it.
+    pub sender_trust: ThreadSenderTrust,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct Thread {
+    #[serde(flatten)]
+    pub summary: ThreadSummary,
+    pub messages: Vec<Message>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ThreadFilter {
+    pub account_id: Option<AccountId>,
+    pub folder_id: Option<FolderId>,
+    pub inbox_class: Option<InboxClass>,
+    pub sort: MessageSort,
+    pub page_size: usize,
+    pub cursor: Option<String>,
+}
+
+impl Default for ThreadFilter {
+    fn default() -> Self {
+        Self {
+            account_id: None,
+            folder_id: None,
+            inbox_class: None,
+            sort: MessageSort::ReceivedNewest,
+            page_size: 50,
+            cursor: None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReplyAudience {
+    Sender,
+    All,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompositionKind {
+    Reply,
+    Forward,
+}
+
+/// Headers and durable thread intent for a future draft/outbox layer.
+///
+/// A reply remains in its source thread. A forward deliberately starts a new
+/// thread and carries the original as `message/rfc822`; it never pretends to
+/// be a reply by copying References headers.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct MessageComposition {
+    pub kind: CompositionKind,
+    pub thread_id: ThreadId,
+    pub source_message_id: MessageId,
+    pub parent_message_id: Option<MessageId>,
+    pub to_addresses: Vec<String>,
+    pub cc_addresses: Vec<String>,
+    pub subject: String,
+    pub in_reply_to: Option<String>,
+    pub references: Vec<String>,
+    pub attached_message_id: Option<MessageId>,
+    pub attached_media_type: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]

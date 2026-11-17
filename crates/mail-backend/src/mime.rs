@@ -18,9 +18,12 @@ pub(crate) struct ParsedMessage {
     pub to_addresses: Vec<String>,
     pub cc_addresses: Vec<String>,
     pub bcc_addresses: Vec<String>,
+    pub reply_to_addresses: Vec<String>,
     pub delivered_to_addresses: Vec<String>,
     pub list_id: Option<String>,
     pub rfc_message_id: Option<String>,
+    pub in_reply_to: Vec<String>,
+    pub references: Vec<String>,
     pub sent_at: Option<i64>,
     pub body_text: String,
     pub body_html: Option<String>,
@@ -28,6 +31,48 @@ pub(crate) struct ParsedMessage {
     pub attachments: Vec<Attachment>,
     pub links: Vec<MessageLink>,
     pub content_state: ContentState,
+}
+
+pub(crate) struct ParsedThreadHeaders {
+    pub subject: Option<String>,
+    pub from_address: Option<String>,
+    pub to_addresses: Vec<String>,
+    pub cc_addresses: Vec<String>,
+    pub bcc_addresses: Vec<String>,
+    pub reply_to_addresses: Vec<String>,
+    pub delivered_to_addresses: Vec<String>,
+    pub rfc_message_id: Option<String>,
+    pub in_reply_to: Vec<String>,
+    pub references: Vec<String>,
+}
+
+/// Parse only the RFC 5322 header block when rebuilding the thread projection.
+/// This avoids decoding MIME bodies during a one-time profile upgrade.
+pub(crate) fn parse_thread_headers(raw: &[u8]) -> Result<ParsedThreadHeaders> {
+    let message = MessageParser::new()
+        .parse_headers(raw)
+        .ok_or(BackendError::Parse)?;
+    let sender = message.from().and_then(|addresses| addresses.first());
+    Ok(ParsedThreadHeaders {
+        subject: message.subject().map(str::to_owned),
+        from_address: sender
+            .and_then(|mailbox| mailbox.address())
+            .map(normalize_address),
+        to_addresses: addresses(message.to()),
+        cc_addresses: addresses(message.cc()),
+        bcc_addresses: addresses(message.bcc()),
+        reply_to_addresses: addresses(message.reply_to()),
+        delivered_to_addresses: delivered_to_addresses(&message),
+        rfc_message_id: message.message_id().map(str::to_owned),
+        in_reply_to: message
+            .in_reply_to()
+            .map(|values| values.iter().map(str::to_owned).collect())
+            .unwrap_or_default(),
+        references: message
+            .references()
+            .map(|values| values.iter().map(str::to_owned).collect())
+            .unwrap_or_default(),
+    })
 }
 
 pub(crate) fn parse(raw: &[u8], limits: &IngestLimits) -> Result<ParsedMessage> {
@@ -107,15 +152,7 @@ pub(crate) fn parse(raw: &[u8], limits: &IngestLimits) -> Result<ParsedMessage> 
         &mut limited,
     );
 
-    let mut delivered_to_addresses = Vec::new();
-    for header in message.headers().all("Delivered-To") {
-        let parsed = header.parse_as(HeaderForm::Addresses);
-        if let Some(list) = parsed.value().as_address() {
-            delivered_to_addresses.extend(addresses(Some(list)));
-        }
-    }
-    delivered_to_addresses.sort_unstable();
-    delivered_to_addresses.dedup();
+    let delivered_to_addresses = delivered_to_addresses(&message);
     let list_id = message.list_id().and_then(|list| {
         list.first().and_then(|mailbox| {
             mailbox
@@ -133,9 +170,18 @@ pub(crate) fn parse(raw: &[u8], limits: &IngestLimits) -> Result<ParsedMessage> 
         to_addresses: addresses(message.to()),
         cc_addresses: addresses(message.cc()),
         bcc_addresses: addresses(message.bcc()),
+        reply_to_addresses: addresses(message.reply_to()),
         delivered_to_addresses,
         list_id,
         rfc_message_id: message.message_id().map(str::to_owned),
+        in_reply_to: message
+            .in_reply_to()
+            .map(|values| values.iter().map(str::to_owned).collect())
+            .unwrap_or_default(),
+        references: message
+            .references()
+            .map(|values| values.iter().map(str::to_owned).collect())
+            .unwrap_or_default(),
         sent_at: message.date().map(|date| date.to_timestamp()),
         body_text,
         body_html: (!html.is_empty()).then_some(html),
@@ -282,6 +328,19 @@ fn addresses(list: Option<AddressList<'_>>) -> Vec<String> {
         .flat_map(|items| items.mailboxes())
         .filter_map(|mailbox| mailbox.address().map(normalize_address))
         .collect()
+}
+
+fn delivered_to_addresses(message: &mail_parser::Message<'_>) -> Vec<String> {
+    let mut delivered = Vec::new();
+    for header in message.headers().all("Delivered-To") {
+        let parsed = header.parse_as(HeaderForm::Addresses);
+        if let Some(list) = parsed.value().as_address() {
+            delivered.extend(addresses(Some(list)));
+        }
+    }
+    delivered.sort_unstable();
+    delivered.dedup();
+    delivered
 }
 
 fn normalize_address(value: &str) -> String {

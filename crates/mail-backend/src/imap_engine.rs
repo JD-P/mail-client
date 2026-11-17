@@ -1718,7 +1718,7 @@ impl ImapAccountEngine {
                 .await?;
             let mut rows = transaction
                 .query(
-                    "SELECT EXISTS(SELECT 1 FROM message_instances WHERE message_id = ?1), EXISTS(SELECT 1 FROM local_folder_memberships WHERE message_id = ?1)",
+                    "SELECT EXISTS(SELECT 1 FROM message_instances WHERE message_id = ?1), EXISTS(SELECT 1 FROM local_folder_memberships WHERE message_id = ?1), (SELECT thread_id FROM messages WHERE id = ?1)",
                     (message_id.clone(),),
                 )
                 .await?;
@@ -1727,6 +1727,7 @@ impl ImapAccountEngine {
             })?;
             let has_remote: bool = row.get(0)?;
             let has_local: bool = row.get(1)?;
+            let thread_id: Option<String> = row.get(2)?;
             drop(rows);
             if has_remote || has_local {
                 let id = crate::MessageId::from_str(message_id).map_err(|_| {
@@ -1743,6 +1744,20 @@ impl ImapAccountEngine {
                 transaction
                     .execute("DELETE FROM messages WHERE id = ?1", (message_id.clone(),))
                     .await?;
+                if let Some(thread_id) = thread_id {
+                    transaction
+                        .execute(
+                            "UPDATE threads SET updated_at = (SELECT MAX(received_at) FROM messages WHERE thread_id = ?1) WHERE id = ?1 AND EXISTS (SELECT 1 FROM messages WHERE thread_id = ?1)",
+                            (thread_id.clone(),),
+                        )
+                        .await?;
+                    transaction
+                        .execute(
+                            "DELETE FROM threads WHERE id = ?1 AND NOT EXISTS (SELECT 1 FROM messages WHERE thread_id = ?1)",
+                            (thread_id,),
+                        )
+                        .await?;
+                }
             }
             events.push(
                 insert_event(

@@ -53,5 +53,6 @@ id_type!(FilterRuleId);
 id_type!(HeuristicId);
 id_type!(FindingId);
 id_type!(MessageId);
+id_type!(ThreadId);
 id_type!(ImapMutationId);
 id_type!(ImapMutationConflictId);

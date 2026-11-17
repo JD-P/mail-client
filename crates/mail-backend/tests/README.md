@@ -3,7 +3,7 @@
 `dovecot_imap.rs` starts the official Dovecot CE image, populates an account
 through IMAP `APPEND`, and makes the backend pull that mail through its real
 IMAP sync path. It checks MIME ingestion, flags, search indexing, cursor-based
-deduplication, and a later incremental delivery.
+deduplication, `References` threading, and a later incremental delivery.
 
 The image is pinned by digest. The test is ignored during the ordinary unit
 suite because it requires Docker and may need to pull the image. Run it with:
@@ -36,3 +36,9 @@ cargo test -p lizard-mail-backend --test imap_account_engine -- --ignored --noca
 The container publishes Dovecot's IMAP and IMAPS ports on random loopback ports,
 creates an ephemeral test-only TLS certificate, and is force-removed by the test
 guard, including when an assertion unwinds.
+
+The ordinary `threads.rs` integration suite covers deterministic late-root
+convergence, `References`/`In-Reply-To`, normalized-subject fallback, stable
+IDs across reopen, Reply/Reply-All and forward construction, and the adversarial
+case where an unknown sender copies a known conversation's identifiers. That
+message must remain in a separate unknown-sender thread.

@@ -12,7 +12,7 @@ use crate::{
     ImapFetchedMessage, ImapSettings, InboxClass, IngestMessage, Message, MessageFilter, MessageId,
     MessageInstance, MessageLink, MessageLinkSource, MessageSort, MessageSummary, NewAccount,
     NewContact, NewFolder, Page, RemoteMessageIdentity, Result, SearchRequest, SyncBatchResult,
-    UserClassification,
+    ThreadMembership, UserClassification,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use chrono::Utc;
@@ -42,6 +42,7 @@ struct PreparedIngest {
     remote_flags_json: Option<String>,
     attachments: Vec<Attachment>,
     links: Vec<MessageLink>,
+    threading: crate::thread::ThreadInput,
     stage: Option<StagedMessage>,
 }
 
@@ -54,6 +55,7 @@ struct StagedMessage {
     to_addresses: String,
     cc_addresses: String,
     bcc_addresses: String,
+    reply_to_addresses: String,
     delivered_to_addresses: String,
     list_id: Option<String>,
     body_text: String,
@@ -81,6 +83,7 @@ impl StagedMessage {
             + self.to_addresses.len()
             + self.cc_addresses.len()
             + self.bcc_addresses.len()
+            + self.reply_to_addresses.len()
             + self.delivered_to_addresses.len()
             + self.list_id.as_ref().map_or(0, String::len)
             + self.body_text.len()
@@ -141,7 +144,7 @@ impl Backend {
             BackendError::InvalidInput(format!("could not initialize DKIM resolver: {error}"))
         })?;
         let (events, _) = broadcast::channel(config.event_buffer.max(1));
-        Ok(Self {
+        let backend = Self {
             inner: Arc::new(Inner {
                 config,
                 _database: database,
@@ -152,7 +155,9 @@ impl Backend {
                 dkim_verifier,
                 events,
             }),
-        })
+        };
+        backend.backfill_thread_projection().await?;
+        Ok(backend)
     }
 
     pub fn accounts(&self) -> Accounts {
@@ -165,6 +170,10 @@ impl Backend {
 
     pub fn messages(&self) -> Messages {
         Messages(self.clone())
+    }
+
+    pub fn threads(&self) -> crate::Threads {
+        crate::Threads::new(self.clone())
     }
 
     pub fn contacts(&self) -> Contacts {
@@ -293,6 +302,19 @@ impl Backend {
         let dkim_json =
             serde_json::to_string(&self.inner.dkim_verifier.verify(&request.raw, now).await)?;
         let received_at = request.received_at.or(parsed.sent_at).unwrap_or(now);
+        let threading = crate::thread::ThreadInput::new(
+            parsed.rfc_message_id.as_deref(),
+            &parsed.in_reply_to,
+            &parsed.references,
+            parsed.subject.as_deref(),
+            parsed.from_address.as_deref(),
+            &parsed.to_addresses,
+            &parsed.cc_addresses,
+            &parsed.bcc_addresses,
+            &parsed.reply_to_addresses,
+            &parsed.delivered_to_addresses,
+            received_at,
+        );
         let attachment_names = parsed
             .attachments
             .iter()
@@ -332,6 +354,7 @@ impl Backend {
             to_addresses: serde_json::to_string(&parsed.to_addresses)?,
             cc_addresses: serde_json::to_string(&parsed.cc_addresses)?,
             bcc_addresses: serde_json::to_string(&parsed.bcc_addresses)?,
+            reply_to_addresses: serde_json::to_string(&parsed.reply_to_addresses)?,
             delivered_to_addresses: serde_json::to_string(&parsed.delivered_to_addresses)?,
             list_id: parsed.list_id,
             body_text: parsed.body_text,
@@ -359,6 +382,7 @@ impl Backend {
             remote_flags_json,
             attachments: parsed.attachments,
             links: parsed.links,
+            threading,
             stage: Some(stage),
         })
     }
@@ -399,14 +423,14 @@ impl Backend {
                     r#"INSERT INTO ingest_message_stage (
                         batch_id, position, id, blob_hash, rfc_message_id, subject,
                         from_address, from_name, to_addresses, cc_addresses,
-                        bcc_addresses, delivered_to_addresses, list_id, body_text,
+                        bcc_addresses, reply_to_addresses, delivered_to_addresses, list_id, body_text,
                         body_html, preview, sent_at, received_at, size_bytes,
                         has_attachment, attachment_names, is_read, is_starred,
                         user_classification, content_state, search_metadata, dkim_json, created_at
                     ) VALUES (
                         ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
                         ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22,
-                        ?23, ?24, ?25, ?26, ?27, ?28
+                        ?23, ?24, ?25, ?26, ?27, ?28, ?29
                     )"#,
                     turso::params![
                         batch_id.clone(),
@@ -420,6 +444,7 @@ impl Backend {
                         stage.to_addresses,
                         stage.cc_addresses,
                         stage.bcc_addresses,
+                        stage.reply_to_addresses,
                         stage.delivered_to_addresses,
                         stage.list_id,
                         stage.body_text,
@@ -447,13 +472,13 @@ impl Backend {
                 .execute(
                     r#"INSERT INTO messages (
                         id, blob_hash, rfc_message_id, subject, from_address, from_name,
-                        to_addresses, cc_addresses, bcc_addresses, delivered_to_addresses,
+                        to_addresses, cc_addresses, bcc_addresses, reply_to_addresses, delivered_to_addresses,
                         list_id, body_text, body_html, preview, sent_at, received_at,
                         size_bytes, has_attachment, attachment_names, is_read, is_starred,
                         user_classification, content_state, search_metadata, dkim_json, created_at
                     )
                     SELECT id, blob_hash, rfc_message_id, subject, from_address, from_name,
-                        to_addresses, cc_addresses, bcc_addresses, delivered_to_addresses,
+                        to_addresses, cc_addresses, bcc_addresses, reply_to_addresses, delivered_to_addresses,
                         list_id, body_text, body_html, preview, sent_at, received_at,
                         size_bytes, has_attachment, attachment_names, is_read, is_starred,
                         user_classification, content_state, search_metadata, dkim_json, created_at
@@ -496,6 +521,9 @@ impl Backend {
                 message_ids.push(existing);
                 continue;
             }
+            let membership =
+                crate::thread::assign_message_on(&transaction, message.id, &message.threading)
+                    .await?;
             for attachment in &message.attachments {
                 transaction
                     .execute(
@@ -562,7 +590,7 @@ impl Backend {
                     Utc::now().timestamp(),
                     "message_ingested",
                     message.id.to_string(),
-                    json!({"message_id": message.id}),
+                    json!({"message_id": message.id, "thread_id": membership.thread_id}),
                 )
                 .await?,
             );
@@ -575,6 +603,69 @@ impl Backend {
             let _ = self.inner.events.send(event);
         }
         Ok(message_ids)
+    }
+
+    /// Version-eight adds durable thread metadata. Reparse only messages that
+    /// predate that projection, in bounded chunks, and make each chunk atomic.
+    async fn backfill_thread_projection(&self) -> Result<()> {
+        loop {
+            let missing = {
+                let connection = self.inner.connection.lock().await;
+                let mut rows = connection
+                    .query(
+                        "SELECT id, blob_hash, received_at FROM messages WHERE thread_id IS NULL ORDER BY received_at, id LIMIT 100",
+                        (),
+                    )
+                    .await?;
+                let mut missing = Vec::new();
+                while let Some(row) = rows.next().await? {
+                    missing.push((
+                        parse_id::<MessageId>(row.get(0)?, "message")?,
+                        row.get::<String>(1)?,
+                        row.get::<i64>(2)?,
+                    ));
+                }
+                missing
+            };
+            if missing.is_empty() {
+                return Ok(());
+            }
+            let mut projected = Vec::with_capacity(missing.len());
+            for (message_id, blob_hash, received_at) in missing {
+                let raw = self.inner.blobs.get(&blob_hash).await?;
+                let parsed = mime::parse_thread_headers(&raw)?;
+                let threading = crate::thread::ThreadInput::new(
+                    parsed.rfc_message_id.as_deref(),
+                    &parsed.in_reply_to,
+                    &parsed.references,
+                    parsed.subject.as_deref(),
+                    parsed.from_address.as_deref(),
+                    &parsed.to_addresses,
+                    &parsed.cc_addresses,
+                    &parsed.bcc_addresses,
+                    &parsed.reply_to_addresses,
+                    &parsed.delivered_to_addresses,
+                    received_at,
+                );
+                projected.push((
+                    message_id,
+                    threading,
+                    serde_json::to_string(&parsed.reply_to_addresses)?,
+                ));
+            }
+            let mut connection = self.inner.connection.lock().await;
+            let transaction = connection.transaction().await?;
+            for (message_id, threading, reply_to_addresses) in projected {
+                transaction
+                    .execute(
+                        "UPDATE messages SET reply_to_addresses = ?1 WHERE id = ?2 AND thread_id IS NULL",
+                        (reply_to_addresses, message_id.to_string()),
+                    )
+                    .await?;
+                crate::thread::assign_message_on(&transaction, message_id, &threading).await?;
+            }
+            transaction.commit().await?;
+        }
     }
 
     pub(crate) async fn flush_search_projection(&self) -> Result<()> {
@@ -862,7 +953,7 @@ impl Messages {
         let mut rows = connection
             .query(
                 &format!(
-                    "SELECT {}, rfc_message_id, to_addresses, cc_addresses, bcc_addresses, delivered_to_addresses, list_id, body_text, body_html, dkim_json FROM messages m WHERE m.id = ?1",
+                    "SELECT {}, rfc_message_id, to_addresses, cc_addresses, bcc_addresses, delivered_to_addresses, list_id, body_text, body_html, dkim_json, in_reply_to_json, references_json, reply_to_addresses, parent_message_id, threading_source, sender_trust FROM messages m WHERE m.id = ?1",
                     SUMMARY_COLUMNS
                 ),
                 (id.to_string(),),
@@ -879,6 +970,16 @@ impl Messages {
         let body_text = row.get(SUMMARY_COLUMN_COUNT + 6)?;
         let body_html = row.get(SUMMARY_COLUMN_COUNT + 7)?;
         let dkim = serde_json::from_str(&row.get::<String>(SUMMARY_COLUMN_COUNT + 8)?)?;
+        let in_reply_to = serde_json::from_str(&row.get::<String>(SUMMARY_COLUMN_COUNT + 9)?)?;
+        let references = serde_json::from_str(&row.get::<String>(SUMMARY_COLUMN_COUNT + 10)?)?;
+        let reply_to_addresses = json_addresses(row.get(SUMMARY_COLUMN_COUNT + 11)?)?;
+        let parent_message_id = row
+            .get::<Option<String>>(SUMMARY_COLUMN_COUNT + 12)?
+            .map(|value| parse_id(value, "message"))
+            .transpose()?;
+        let source = crate::thread::parse_source(&row.get::<String>(SUMMARY_COLUMN_COUNT + 13)?)?;
+        let sender_trust =
+            crate::thread::parse_sender_trust(&row.get::<String>(SUMMARY_COLUMN_COUNT + 14)?)?;
         drop(rows);
 
         let mut rows = connection
@@ -987,9 +1088,19 @@ impl Messages {
                 dismissed_at: row.get(13)?,
             });
         }
+        let thread_id = summary.thread_id;
         Ok(Message {
             summary,
             rfc_message_id,
+            in_reply_to,
+            references,
+            reply_to_addresses,
+            threading: ThreadMembership {
+                thread_id,
+                parent_message_id,
+                source,
+                sender_trust,
+            },
             to_addresses,
             cc_addresses,
             bcc_addresses,
@@ -1705,8 +1816,8 @@ fn optional_database_u32(value: Option<i64>, field: &str) -> Result<Option<u32>>
 const WARM_PREDICATE: &str = "m.user_classification IS NOT 'spam' AND m.from_address IS NOT NULL AND EXISTS (SELECT 1 FROM contact_addresses ca WHERE ca.address = m.from_address COLLATE NOCASE)";
 const COLD_PREDICATE: &str = "m.user_classification IS NOT 'spam' AND (m.from_address IS NULL OR NOT EXISTS (SELECT 1 FROM contact_addresses ca WHERE ca.address = m.from_address COLLATE NOCASE))";
 const SPAM_PREDICATE: &str = "COALESCE(m.user_classification = 'spam', 0)";
-const SUMMARY_COLUMNS: &str = "m.id, m.subject, m.from_address, m.from_name, m.preview, m.sent_at, m.received_at, m.size_bytes, m.has_attachment, m.is_read, m.is_starred, CASE WHEN m.user_classification = 'spam' THEN 'spam' WHEN m.from_address IS NOT NULL AND EXISTS (SELECT 1 FROM contact_addresses ca WHERE ca.address = m.from_address COLLATE NOCASE) THEN 'warm' ELSE 'cold' END, m.content_state";
-const SUMMARY_COLUMN_COUNT: usize = 13;
+const SUMMARY_COLUMNS: &str = "m.id, m.subject, m.from_address, m.from_name, m.preview, m.sent_at, m.received_at, m.size_bytes, m.has_attachment, m.is_read, m.is_starred, CASE WHEN m.user_classification = 'spam' THEN 'spam' WHEN m.from_address IS NOT NULL AND EXISTS (SELECT 1 FROM contact_addresses ca WHERE ca.address = m.from_address COLLATE NOCASE) THEN 'warm' ELSE 'cold' END, m.content_state, m.thread_id";
+const SUMMARY_COLUMN_COUNT: usize = 14;
 
 async fn query_page_on(
     backend: &Backend,
@@ -2025,6 +2136,7 @@ async fn message_count_on(connection: &Connection) -> Result<u64> {
 fn summary_from_row(row: &turso::Row) -> Result<MessageSummary> {
     Ok(MessageSummary {
         id: parse_id(row.get::<String>(0)?, "message")?,
+        thread_id: parse_id(row.get::<String>(13)?, "thread")?,
         subject: row.get(1)?,
         from_address: row.get(2)?,
         from_name: row.get(3)?,

@@ -47,6 +47,23 @@ fn multipart_message() -> Vec<u8> {
     .to_vec()
 }
 
+fn reply_message() -> Vec<u8> {
+    concat!(
+        "From: Sender <sender@example.test>\r\n",
+        "To: Reader <reader@example.test>\r\n",
+        "Date: Mon, 16 Nov 2026 10:02:00 +0000\r\n",
+        "Message-ID: <dovecot-four@example.test>\r\n",
+        "In-Reply-To: <dovecot-one@example.test>\r\n",
+        "References: <dovecot-one@example.test>\r\n",
+        "Subject: Re: Dovecot alpha\r\n",
+        "Content-Type: text/plain; charset=utf-8\r\n",
+        "\r\n",
+        "silver astrolabe\r\n"
+    )
+    .as_bytes()
+    .to_vec()
+}
+
 #[tokio::test]
 #[ignore = "requires a running Docker daemon and pulls the pinned Dovecot image when absent"]
 async fn pulls_real_mail_from_dovecot_incrementally() {
@@ -150,7 +167,7 @@ async fn pulls_real_mail_from_dovecot_incrementally() {
         .unwrap();
     assert!(no_changes.message_ids.is_empty());
 
-    let fourth_raw = plain_message("dovecot-four", "Dovecot delta", "silver astrolabe");
+    let fourth_raw = reply_message();
     session
         .append("INBOX", None, None, &fourth_raw)
         .await
@@ -161,6 +178,22 @@ async fn pulls_real_mail_from_dovecot_incrementally() {
         .await
         .unwrap();
     assert_eq!(incremental.message_ids.len(), 1);
+    assert_eq!(
+        backend
+            .messages()
+            .get(first_sync.message_ids[0])
+            .await
+            .unwrap()
+            .summary
+            .thread_id,
+        backend
+            .messages()
+            .get(incremental.message_ids[0])
+            .await
+            .unwrap()
+            .summary
+            .thread_id
+    );
     assert_eq!(search_count(&backend, "silver astrolabe").await, 1);
     assert_eq!(search_count(&backend, "in:Inbox").await, 4);
 
