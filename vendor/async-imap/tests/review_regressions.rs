@@ -355,6 +355,26 @@ async fn review_uid_body_download_streams_bounded_partial_fetches() {
 }
 
 #[tokio::test]
+async fn review_uid_body_download_resumes_at_durable_offset() {
+    let responses = b"* 1 FETCH (UID 42 RFC822.SIZE 5)\r\nA0002 OK size\r\n\
+* 1 FETCH (UID 42 BODY[]<3> {2}\r\n\
+de)\r\nA0003 OK resumed chunk\r\n";
+    let mut session = session(responses).await;
+    let mut destination = Wire::new(b"");
+    let downloaded = session
+        .uid_fetch_body_to_from(42, &mut destination, 3, 3)
+        .await
+        .unwrap();
+
+    assert_eq!(downloaded, 5);
+    assert_eq!(&*destination.written.lock().unwrap(), b"de");
+    let commands = session.get_ref().written.lock().unwrap();
+    let commands = String::from_utf8_lossy(&commands);
+    assert!(commands.contains("UID FETCH 42 (UID BODY.PEEK[]<3.2>)"));
+    assert!(!commands.contains("BODY.PEEK[]<0."));
+}
+
+#[tokio::test]
 async fn review_unsolicited_queue_reports_overflow() {
     let mut response = b"* 1 EXISTS\r\n".repeat(101);
     response.extend_from_slice(b"A0002 OK noop\r\n");

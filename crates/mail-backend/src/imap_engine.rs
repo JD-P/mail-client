@@ -4,7 +4,7 @@ use crate::imap_mutation::normalize_mutable_flags;
 use crate::{
     Account, AccountId, AccountKind, Backend, BackendError, FolderId, ImapMutation,
     ImapMutationConflictKind, ImapMutationOperation, ImapMutationStatus, ImapSecurity,
-    RemoteMessageIdentity, Result,
+    MessageContentAvailability, MessageContentStatus, MessageId, RemoteMessageIdentity, Result,
 };
 use async_imap::extensions::idle::IdleResponse;
 use async_imap::types::{Capabilities, Capability, CopyUid, NameAttribute};
@@ -286,6 +286,71 @@ impl ImapAccountEngine {
             })?,
             last_error: row.get(6)?,
         })
+    }
+
+    /// Open a verified IMAP connection and hydrate one message selected by a
+    /// front end. Retries resume the durable partial payload rather than
+    /// starting at byte zero.
+    pub async fn fetch_message_content(
+        &self,
+        message_id: MessageId,
+    ) -> Result<MessageContentStatus> {
+        let status = self.backend.messages().content_status(message_id).await?;
+        if status.availability == MessageContentAvailability::Complete {
+            return Ok(status);
+        }
+        let account_id = {
+            let connection = self.backend.inner.connection.lock().await;
+            let mut rows = connection
+                .query(
+                    r#"SELECT mi.account_id
+                    FROM message_instances mi
+                    JOIN folders f ON f.id = mi.folder_id
+                    LEFT JOIN imap_mailbox_state ims ON ims.folder_id = f.id
+                    WHERE mi.message_id = ?1 AND f.kind = 'remote'
+                        AND f.remote_name IS NOT NULL
+                        AND COALESCE(ims.remote_present, 1) = 1
+                        AND COALESCE(ims.selectable, 1) = 1
+                    ORDER BY mi.account_id, mi.folder_id, mi.imap_uid
+                    LIMIT 1"#,
+                    (message_id.to_string(),),
+                )
+                .await?;
+            let row = rows.next().await?.ok_or_else(|| {
+                BackendError::InvalidInput("message has no remote IMAP instance to download".into())
+            })?;
+            AccountId::from_str(&row.get::<String>(0)?).map_err(|_| {
+                BackendError::InvalidInput("database contains invalid account identifier".into())
+            })?
+        };
+        let account = self.load_imap_account(account_id).await?;
+        let (mut session, _) = self.connect_and_authenticate(&account).await?;
+        let result = timeout(
+            self.config.folder_sync_timeout,
+            self.backend
+                .sync()
+                .fetch_imap_message_content(&mut session, account_id, message_id),
+        )
+        .await;
+        let _ = timeout(self.config.command_timeout, session.logout()).await;
+        match result {
+            Ok(result) => result,
+            Err(_) => {
+                let path = self.backend.partial_download_path(message_id);
+                if let Ok(file) = tokio::fs::OpenOptions::new().write(true).open(&path).await {
+                    let _ = file.sync_all().await;
+                }
+                let downloaded = tokio::fs::metadata(path)
+                    .await
+                    .map(|metadata| metadata.len())
+                    .unwrap_or(status.downloaded_bytes);
+                let error = BackendError::Imap("message content download timed out".into());
+                self.backend
+                    .store_download_failure(message_id, downloaded, &error.to_string())
+                    .await?;
+                Err(error)
+            }
+        }
     }
 
     pub async fn mailbox_states(&self, account_id: AccountId) -> Result<Vec<ImapMailboxSyncState>> {
@@ -1551,8 +1616,9 @@ impl ImapAccountEngine {
             }
         }
 
-        // The lower-level puller performs bounded streaming body downloads and
-        // advances UIDNEXT only after each ingested chunk is durable.
+        // The lower-level puller persists selected headers and BODYSTRUCTURE,
+        // then advances UIDNEXT only after each projection chunk is durable.
+        // Complete bodies are a separate on-demand operation.
         let pulled = self
             .backend
             .sync()
@@ -1705,6 +1771,7 @@ impl ImapAccountEngine {
         }
         drop(rows);
         let mut events = Vec::new();
+        let mut deleted_downloads = Vec::new();
         for (uid, message_id) in &matches {
             transaction
                 .execute(
@@ -1735,12 +1802,16 @@ impl ImapAccountEngine {
                 })?;
                 enqueue_search_on(&transaction, id).await?;
             } else {
+                let deleted_message_id = crate::MessageId::from_str(message_id).map_err(|_| {
+                    BackendError::InvalidInput("database contains invalid message ID".into())
+                })?;
                 transaction
                     .execute(
                         "INSERT OR IGNORE INTO search_index_delete_queue(message_id) VALUES (?1)",
                         (message_id.clone(),),
                     )
                     .await?;
+                deleted_downloads.push(deleted_message_id);
                 transaction
                     .execute("DELETE FROM messages WHERE id = ?1", (message_id.clone(),))
                     .await?;
@@ -1778,6 +1849,9 @@ impl ImapAccountEngine {
         }
         transaction.commit().await?;
         drop(connection);
+        for message_id in deleted_downloads {
+            let _ = tokio::fs::remove_file(self.backend.partial_download_path(message_id)).await;
+        }
         self.backend.flush_search_projection().await?;
         for event in events {
             let _ = self.backend.inner.events.send(event);

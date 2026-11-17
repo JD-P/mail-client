@@ -163,10 +163,13 @@ version.
 
 ## Ingestion pipeline
 
-Each newly fetched or changed message passes through a bounded, cancellable
-pipeline:
+IMAP ingestion has two explicit phases. Initial synchronization persists a
+bounded selected-header projection, BODYSTRUCTURE attachment evidence, remote
+identity, flags and server size. That is enough for mailbox lists, header
+search and trustworthy threading without transferring bodies. Opening a
+message or selecting it for offline caching starts the complete-payload phase:
 
-1. persist the exact original bytes and remote identity;
+1. stream the exact original bytes with bounded partial IMAP FETCH requests;
 2. parse RFC 5322 and MIME with depth, size, part-count and expansion limits;
 3. extract normalized headers, readable plain text, safe HTML input, links and
    attachment metadata;
@@ -176,7 +179,8 @@ pipeline:
    rule or built-in policy requires them;
 7. index searchable fields;
 8. execute stateful filtering rules and persist their actions/explanations;
-9. commit the visible message state; and
+9. atomically replace the header-only projection with visible complete-message
+   state; and
 10. emit one change-stream transaction to interested clients.
 
 Partial failure must be explicit. For example, a body that is not yet
@@ -473,10 +477,27 @@ The implemented account engine supports:
 - UIDVALIDITY, UIDNEXT and per-mailbox UID state;
 - CONDSTORE/QRESYNC/MODSEQ when available;
 - IDLE with reconnect, polling fallback and cancellation;
-- bounded streaming full-body fetches with explicit incomplete/failure state;
+- header-first synchronization using selected header fields and BODYSTRUCTURE;
+- bounded on-demand full-body fetches that resume a durable partial file at its
+  exact byte offset;
 - remote flag and deletion reconciliation;
 - backoff, offline operation and resumable synchronization; and
-- explicit mailbox/body completeness state.
+- explicit per-message `headers_only`/`downloading`/`complete`/`failed` state,
+  expected and downloaded byte counts, last failure, and restart recovery.
+
+Header-only messages participate in mailbox lists, header operators, remote
+mutations and security-partitioned threading. Empty body fields are never used
+as an implicit completeness signal: raw export, MIME structure, attachment
+access and DKIM claims reject the message until hydration completes. Body
+search, decoded attachments, DKIM verification and body-dependent automation
+are republished together after the exact full payload is parsed. A timeout or
+disconnect retains the partial prefix and a subsequent request resumes it;
+the UIDVALIDITY epoch and RFC822.SIZE must still match before publication.
+Search responses explicitly mark content-dependent results incomplete while
+any message still lacks full content; header-only operators remain exhaustive.
+Dropping a download future records a resumable failure rather than leaving a
+permanent in-progress state; startup recovery does the same after a crash and
+truncates any uncommitted tail to the last synchronized byte count.
 
 The engine exposes `sync_once` and a cancellable continuous `run` loop. The
 continuous path uses IDLE on a discovered selectable INBOX, periodically renews

@@ -11,7 +11,7 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 version INTEGER NOT NULL
             );
             INSERT INTO schema_meta(version)
-                SELECT 9 WHERE NOT EXISTS (SELECT 1 FROM schema_meta);
+                SELECT 10 WHERE NOT EXISTS (SELECT 1 FROM schema_meta);
 
             CREATE TABLE IF NOT EXISTS accounts (
                 id TEXT PRIMARY KEY,
@@ -87,6 +87,10 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 dkim_json TEXT NOT NULL,
                 mime_state TEXT NOT NULL DEFAULT 'complete',
                 mime_detail TEXT,
+                content_availability TEXT NOT NULL DEFAULT 'complete',
+                downloaded_bytes INTEGER NOT NULL DEFAULT 0,
+                download_error TEXT,
+                download_updated_at INTEGER NOT NULL DEFAULT 0,
                 created_at INTEGER NOT NULL
             );
 
@@ -631,7 +635,42 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
             .await?;
         version = 9;
     }
-    if version != 9 {
+    if version == 9 {
+        // Existing messages were ingested from complete RFC 5322 payloads.
+        // Probe every column so an interrupted migration resumes safely.
+        let mut rows = connection.query("PRAGMA table_info(messages)", ()).await?;
+        let mut columns = HashSet::new();
+        while let Some(row) = rows.next().await? {
+            columns.insert(row.get::<String>(1)?);
+        }
+        drop(rows);
+        for (name, definition) in [
+            ("content_availability", "TEXT NOT NULL DEFAULT 'complete'"),
+            ("downloaded_bytes", "INTEGER NOT NULL DEFAULT 0"),
+            ("download_error", "TEXT"),
+            ("download_updated_at", "INTEGER NOT NULL DEFAULT 0"),
+        ] {
+            if !columns.contains(name) {
+                connection
+                    .execute(
+                        &format!("ALTER TABLE messages ADD COLUMN {name} {definition}"),
+                        (),
+                    )
+                    .await?;
+            }
+        }
+        connection
+            .execute(
+                "UPDATE messages SET downloaded_bytes = size_bytes, download_updated_at = created_at WHERE content_availability = 'complete' AND downloaded_bytes = 0",
+                (),
+            )
+            .await?;
+        connection
+            .execute("UPDATE schema_meta SET version = 10", ())
+            .await?;
+        version = 10;
+    }
+    if version != 10 {
         return Err(crate::BackendError::InvalidInput(format!(
             "unsupported database schema version {version}"
         )));
@@ -647,6 +686,8 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 ON threads(sender_trust, normalized_subject, updated_at DESC);
             CREATE INDEX IF NOT EXISTS thread_participants_address
                 ON thread_participants(address, thread_id, message_id);
+            CREATE INDEX IF NOT EXISTS messages_content_availability
+                ON messages(content_availability);
             "#,
         )
         .await?;
@@ -687,6 +728,10 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 dkim_json TEXT NOT NULL,
                 mime_state TEXT NOT NULL,
                 mime_detail TEXT,
+                content_availability TEXT NOT NULL,
+                downloaded_bytes INTEGER NOT NULL,
+                download_error TEXT,
+                download_updated_at INTEGER NOT NULL,
                 created_at INTEGER NOT NULL,
                 PRIMARY KEY(batch_id, position)
             );
@@ -766,7 +811,7 @@ mod tests {
             .await
             .unwrap();
         let row = rows.next().await.unwrap().unwrap();
-        assert_eq!(row.get::<i64>(0).unwrap(), 9);
+        assert_eq!(row.get::<i64>(0).unwrap(), 10);
         assert_eq!(row.get::<String>(1).unwrap(), r#"{"received_at":123}"#);
         drop(rows);
 
@@ -809,7 +854,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap(),
-            9
+            10
         );
     }
 }

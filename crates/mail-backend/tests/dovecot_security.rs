@@ -399,6 +399,11 @@ async fn receives_every_security_warning_fixture_through_dovecot() {
         .collect::<BTreeMap<_, _>>();
     let mut messages = BTreeMap::new();
     for message_id in sync.message_ids {
+        backend
+            .sync()
+            .fetch_imap_message_content(&mut session, account.id, message_id)
+            .await
+            .unwrap();
         let stored = backend.messages().get(message_id).await.unwrap();
         let subject = stored.summary.subject.clone().unwrap();
         let fixture = fixtures_by_subject

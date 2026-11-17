@@ -641,6 +641,24 @@ impl<T: Read + Write + Unpin + fmt::Debug + Send> Session<T> {
         destination: &mut W,
         chunk_size: usize,
     ) -> Result<u32> {
+        self.uid_fetch_body_to_from(uid, destination, 0, chunk_size)
+            .await
+    }
+
+    /// Resume streaming one complete message body at `offset` using bounded
+    /// partial `UID FETCH` requests.
+    ///
+    /// The caller owns and validates the already-written prefix. IMAP message
+    /// bodies are immutable within a UIDVALIDITY epoch, so a persisted prefix
+    /// can be resumed without downloading it again. The returned value is the
+    /// server's complete `RFC822.SIZE`.
+    pub async fn uid_fetch_body_to_from<W: Write + Unpin>(
+        &mut self,
+        uid: Uid,
+        destination: &mut W,
+        offset: u32,
+        chunk_size: usize,
+    ) -> Result<u32> {
         let chunk_size = u32::try_from(chunk_size).map_err(|_| {
             Error::Io(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -654,12 +672,34 @@ impl<T: Read + Write + Unpin + fmt::Debug + Send> Session<T> {
             )));
         }
 
+        let size = self.uid_fetch_body_size(uid).await?;
+
+        if offset > size {
+            return Err(Error::Io(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("resume offset {offset} exceeds message size {size}"),
+            )));
+        }
+
+        let mut offset = offset;
+        while offset < size {
+            let requested = chunk_size.min(size - offset);
+            self.uid_fetch_body_range_to(uid, destination, offset, requested as usize)
+                .await?;
+            offset += requested;
+        }
+        destination.flush().await?;
+        Ok(size)
+    }
+
+    /// Fetch the immutable RFC 5322 size for one UID.
+    pub async fn uid_fetch_body_size(&mut self, uid: Uid) -> Result<u32> {
         let metadata = self
             .uid_fetch(uid.to_string(), "(UID RFC822.SIZE)")
             .await?
             .try_collect::<Vec<_>>()
             .await?;
-        let size = metadata
+        metadata
             .iter()
             .find(|fetch| fetch.uid == Some(uid))
             .and_then(|fetch| fetch.size)
@@ -667,37 +707,52 @@ impl<T: Read + Write + Unpin + fmt::Debug + Send> Session<T> {
                 Error::Parse(ParseError::ExpectedResponseNotFound(format!(
                     "RFC822.SIZE for UID {uid}"
                 )))
-            })?;
+            })
+    }
 
-        let mut offset = 0_u32;
-        while offset < size {
-            let requested = chunk_size.min(size - offset);
-            let query = format!("(UID BODY.PEEK[]<{offset}.{requested}>)");
-            let responses = self
-                .uid_fetch(uid.to_string(), query)
-                .await?
-                .try_collect::<Vec<_>>()
-                .await?;
-            let body = responses
-                .iter()
-                .find(|fetch| fetch.uid == Some(uid))
-                .and_then(Fetch::body)
-                .ok_or_else(|| {
-                    Error::Parse(ParseError::ExpectedResponseNotFound(format!(
-                        "BODY[] partial for UID {uid} at offset {offset}"
-                    )))
-                })?;
-            if body.len() != requested as usize {
-                return Err(Error::Parse(ParseError::Unexpected(format!(
-                    "BODY[] partial for UID {uid} at offset {offset} contained {} bytes, expected {requested}",
-                    body.len()
-                ))));
-            }
-            destination.write_all(body).await?;
-            offset += requested;
+    /// Fetch exactly one bounded `BODY.PEEK[]<offset.count>` range.
+    pub async fn uid_fetch_body_range_to<W: Write + Unpin>(
+        &mut self,
+        uid: Uid,
+        destination: &mut W,
+        offset: u32,
+        count: usize,
+    ) -> Result<u32> {
+        let count = u32::try_from(count).map_err(|_| {
+            Error::Io(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "FETCH body range exceeds the IMAP size range",
+            ))
+        })?;
+        if count == 0 || offset.checked_add(count).is_none() {
+            return Err(Error::Io(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "FETCH body range must be non-empty and fit the IMAP size range",
+            )));
         }
-        destination.flush().await?;
-        Ok(size)
+        let query = format!("(UID BODY.PEEK[]<{offset}.{count}>)");
+        let responses = self
+            .uid_fetch(uid.to_string(), query)
+            .await?
+            .try_collect::<Vec<_>>()
+            .await?;
+        let body = responses
+            .iter()
+            .find(|fetch| fetch.uid == Some(uid))
+            .and_then(Fetch::body)
+            .ok_or_else(|| {
+                Error::Parse(ParseError::ExpectedResponseNotFound(format!(
+                    "BODY[] partial for UID {uid} at offset {offset}"
+                )))
+            })?;
+        if body.len() != count as usize {
+            return Err(Error::Parse(ParseError::Unexpected(format!(
+                "BODY[] partial for UID {uid} at offset {offset} contained {} bytes, expected {count}",
+                body.len()
+            ))));
+        }
+        destination.write_all(body).await?;
+        Ok(count)
     }
 
     /// Noop always succeeds, and it does nothing.

@@ -1,7 +1,8 @@
 use crate::{
     ArchiveEntry, ArchiveInspection, ArchiveInspectionState, ArchiveLimits, Backend, BackendError,
-    DocumentExtractionLimits, DocumentExtractionRequest, DocumentExtractionResult, MessageId,
-    MimeDecodeState, MimeParseState, MimePart, MimePartKind, MimePartRole, MimeStructure, Result,
+    DocumentExtractionLimits, DocumentExtractionRequest, DocumentExtractionResult,
+    MessageContentAvailability, MessageId, MimeDecodeState, MimeParseState, MimePart, MimePartKind,
+    MimePartRole, MimeStructure, Result,
 };
 use futures_util::future::BoxFuture;
 use std::{
@@ -33,7 +34,7 @@ impl Mime {
         let connection = self.0.inner.connection.lock().await;
         let mut rows = connection
             .query(
-                "SELECT mime_state, mime_detail FROM messages WHERE id = ?1",
+                "SELECT mime_state, mime_detail, content_availability FROM messages WHERE id = ?1",
                 (message_id.to_string(),),
             )
             .await?;
@@ -43,6 +44,13 @@ impl Mime {
         })?;
         let state = parse_parse_state(&row.get::<String>(0)?)?;
         let detail = row.get(1)?;
+        let availability = parse_availability(&row.get::<String>(2)?)?;
+        if availability != MessageContentAvailability::Complete {
+            return Err(BackendError::ContentUnavailable {
+                id: message_id.to_string(),
+                state: availability_text(availability).into(),
+            });
+        }
         drop(rows);
         let mut rows = connection
             .query(
@@ -128,6 +136,7 @@ impl Mime {
         writer: &mut W,
         maximum_bytes: u64,
     ) -> Result<bool> {
+        self.ensure_content_complete(message_id).await?;
         let content_id = normalize_content_id(content_id)?;
         let hash = {
             let connection = self.0.inner.connection.lock().await;
@@ -311,6 +320,7 @@ impl Mime {
         message_id: MessageId,
         ordinal: u32,
     ) -> Result<(String, Option<String>, Option<String>, Option<String>, u64)> {
+        self.ensure_content_complete(message_id).await?;
         let connection = self.0.inner.connection.lock().await;
         let mut rows = connection
             .query(
@@ -328,6 +338,28 @@ impl Mime {
         let size = u64::try_from(row.get::<i64>(4)?)
             .map_err(|_| BackendError::InvalidInput("invalid attachment size".into()))?;
         Ok((hash, row.get(1)?, row.get(2)?, row.get(3)?, size))
+    }
+
+    async fn ensure_content_complete(&self, message_id: MessageId) -> Result<()> {
+        let connection = self.0.inner.connection.lock().await;
+        let mut rows = connection
+            .query(
+                "SELECT content_availability FROM messages WHERE id = ?1",
+                (message_id.to_string(),),
+            )
+            .await?;
+        let row = rows.next().await?.ok_or_else(|| BackendError::NotFound {
+            entity: "message",
+            id: message_id.to_string(),
+        })?;
+        let availability = parse_availability(&row.get::<String>(0)?)?;
+        if availability != MessageContentAvailability::Complete {
+            return Err(BackendError::ContentUnavailable {
+                id: message_id.to_string(),
+                state: availability_text(availability).into(),
+            });
+        }
+        Ok(())
     }
 
     async fn read_attachment(
@@ -506,6 +538,27 @@ fn parse_parse_state(value: &str) -> Result<MimeParseState> {
         _ => Err(BackendError::InvalidInput(
             "invalid MIME parse state".into(),
         )),
+    }
+}
+
+fn parse_availability(value: &str) -> Result<MessageContentAvailability> {
+    match value {
+        "headers_only" => Ok(MessageContentAvailability::HeadersOnly),
+        "downloading" => Ok(MessageContentAvailability::Downloading),
+        "complete" => Ok(MessageContentAvailability::Complete),
+        "failed" => Ok(MessageContentAvailability::Failed),
+        _ => Err(BackendError::InvalidInput(
+            "invalid message content availability".into(),
+        )),
+    }
+}
+
+fn availability_text(value: MessageContentAvailability) -> &'static str {
+    match value {
+        MessageContentAvailability::HeadersOnly => "headers_only",
+        MessageContentAvailability::Downloading => "downloading",
+        MessageContentAvailability::Complete => "complete",
+        MessageContentAvailability::Failed => "failed",
     }
 }
 

@@ -18,6 +18,7 @@ pub enum ErrorCode {
     NotFound,
     Conflict,
     CorruptBlob,
+    ContentUnavailable,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -48,6 +49,8 @@ pub enum BackendError {
     Conflict(String),
     #[error("blob {hash} failed its content hash check")]
     CorruptBlob { hash: String },
+    #[error("message content is unavailable for {id}: {state}")]
+    ContentUnavailable { id: String, state: String },
     #[error("serialized state is invalid: {0}")]
     Serialization(#[from] serde_json::Error),
 }
@@ -66,6 +69,7 @@ impl BackendError {
             Self::NotFound { .. } => ErrorCode::NotFound,
             Self::Conflict(_) => ErrorCode::Conflict,
             Self::CorruptBlob { .. } => ErrorCode::CorruptBlob,
+            Self::ContentUnavailable { .. } => ErrorCode::ContentUnavailable,
             Self::Serialization(_) => ErrorCode::InvalidInput,
         }
     }

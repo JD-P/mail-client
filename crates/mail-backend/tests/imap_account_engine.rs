@@ -5,7 +5,7 @@ use futures_util::TryStreamExt;
 use lizard_mail_backend::{
     AccountKind, Backend, BackendConfig, CredentialProvider, ImapAccountEngineConfig,
     ImapCredential, ImapMailboxCompleteness, ImapMutationConflictKind, ImapMutationStatus,
-    ImapSecurity, ImapSettings, MessageFilter, NewAccount, SecretValue,
+    ImapSecurity, ImapSettings, MessageContentAvailability, MessageFilter, NewAccount, SecretValue,
 };
 use std::sync::Arc;
 use std::time::Duration;
@@ -108,6 +108,16 @@ async fn owns_tls_auth_discovery_and_remote_reconciliation() {
     assert_eq!(stored.items.len(), 1);
     let message_id = stored.items[0].id;
     assert!(!stored.items[0].is_read);
+    assert_eq!(
+        stored.items[0].content_availability,
+        MessageContentAvailability::HeadersOnly
+    );
+    let downloaded = engine.fetch_message_content(message_id).await.unwrap();
+    assert_eq!(
+        downloaded.availability,
+        MessageContentAvailability::Complete
+    );
+    assert_eq!(downloaded.downloaded_bytes, downloaded.expected_bytes);
 
     let implicit_profile = tempfile::tempdir().unwrap();
     let implicit_backend = Backend::open(BackendConfig::new(implicit_profile.path()))

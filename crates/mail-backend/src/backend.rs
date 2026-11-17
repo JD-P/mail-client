@@ -1,7 +1,7 @@
 use crate::authentication::DkimVerifier;
 use crate::blob::BlobStore;
 use crate::event::{ChangeCursor, EventSubscription};
-use crate::imap::imap_fetch_metadata;
+use crate::imap::imap_fetch_headers;
 use crate::mime;
 use crate::query::parse_query;
 use crate::schema;
@@ -9,9 +9,10 @@ use crate::search_index::{QueuedSearchDocument, SearchDocument, SearchIndex};
 use crate::{
     Account, AccountId, AccountKind, Attachment, BackendConfig, BackendError, BackendEvent,
     Contact, ContactAddress, ContactId, ContentState, Folder, FolderId, FolderKind,
-    ImapFetchedMessage, ImapSettings, InboxClass, IngestMessage, Message, MessageFilter, MessageId,
-    MessageInstance, MessageLink, MessageLinkSource, MessageSort, MessageSummary, NewAccount,
-    NewContact, NewFolder, Page, RemoteMessageIdentity, Result, SearchRequest, SyncBatchResult,
+    ImapFetchedHeaders, ImapFetchedMessage, ImapSettings, InboxClass, IngestMessage, Message,
+    MessageContentAvailability, MessageContentStatus, MessageFilter, MessageId, MessageInstance,
+    MessageLink, MessageLinkSource, MessageSort, MessageSummary, NewAccount, NewContact, NewFolder,
+    Page, RemoteMessageIdentity, Result, SearchPage, SearchRequest, SyncBatchResult,
     ThreadMembership, UserClassification,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
@@ -23,7 +24,7 @@ use std::{
     collections::{HashMap, HashSet},
     mem,
     str::FromStr,
-    sync::Arc,
+    sync::{Arc, Weak},
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{broadcast, Mutex, RwLock};
@@ -33,7 +34,7 @@ use uuid::Uuid;
 const MAX_INGEST_BATCH_MESSAGES: usize = 1_000;
 const MAX_INGEST_BATCH_BYTES: usize = 64 * 1024 * 1024;
 const MAX_PREPARE_CONCURRENCY: usize = 16;
-const MAX_IMAP_METADATA_UIDS: usize = 500;
+const MAX_IMAP_METADATA_UIDS: usize = 100;
 const IMAP_BODY_CHUNK_BYTES: usize = 1024 * 1024;
 
 struct PreparedIngest {
@@ -58,6 +59,61 @@ struct PreparedResource {
     part_id: u32,
     blob_hash: String,
     decoded_size: u64,
+}
+
+struct DownloadAttemptGuard {
+    backend: Backend,
+    message_id: MessageId,
+    armed: bool,
+}
+
+impl DownloadAttemptGuard {
+    fn new(backend: Backend, message_id: MessageId) -> Self {
+        Self {
+            backend,
+            message_id,
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for DownloadAttemptGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let backend = self.backend.clone();
+        let message_id = self.message_id;
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                let Ok(status) = backend.messages().content_status(message_id).await else {
+                    return;
+                };
+                if status.availability != MessageContentAvailability::Downloading {
+                    return;
+                }
+                let path = backend.partial_download_path(message_id);
+                if let Ok(file) = tokio::fs::OpenOptions::new().write(true).open(&path).await {
+                    let _ = file.sync_all().await;
+                }
+                let downloaded = tokio::fs::metadata(path)
+                    .await
+                    .map(|metadata| metadata.len())
+                    .unwrap_or(status.downloaded_bytes);
+                let _ = backend
+                    .store_download_failure(
+                        message_id,
+                        downloaded,
+                        "message content download was cancelled; retry will resume",
+                    )
+                    .await;
+            });
+        }
+    }
 }
 
 struct StagedMessage {
@@ -88,6 +144,10 @@ struct StagedMessage {
     dkim_json: String,
     mime_state: String,
     mime_detail: Option<String>,
+    content_availability: String,
+    downloaded_bytes: i64,
+    download_error: Option<String>,
+    download_updated_at: i64,
     created_at: i64,
 }
 
@@ -108,6 +168,7 @@ impl StagedMessage {
             + self.search_metadata.len()
             + self.dkim_json.len()
             + self.mime_detail.as_ref().map_or(0, String::len)
+            + self.download_error.as_ref().map_or(0, String::len)
     }
 }
 
@@ -125,6 +186,7 @@ pub(crate) struct Inner {
     pub(crate) blobs: BlobStore,
     dkim_verifier: DkimVerifier,
     pub(crate) events: broadcast::Sender<BackendEvent>,
+    download_locks: Mutex<HashMap<MessageId, Weak<Mutex<()>>>>,
 }
 
 impl Backend {
@@ -133,6 +195,12 @@ impl Backend {
             .await
             .map_err(|source| BackendError::Io {
                 path: config.profile_dir.clone(),
+                source,
+            })?;
+        tokio::fs::create_dir_all(config.profile_dir.join("downloads"))
+            .await
+            .map_err(|source| BackendError::Io {
+                path: config.profile_dir.join("downloads"),
                 source,
             })?;
         #[cfg(unix)]
@@ -171,11 +239,70 @@ impl Backend {
                 blobs,
                 dkim_verifier,
                 events,
+                download_locks: Mutex::new(HashMap::new()),
             }),
         };
+        backend.recover_interrupted_downloads().await?;
         backend.backfill_thread_projection().await?;
         backend.backfill_mime_projection().await?;
         Ok(backend)
+    }
+
+    async fn recover_interrupted_downloads(&self) -> Result<()> {
+        let interrupted = {
+            let connection = self.inner.connection.lock().await;
+            let mut rows = connection
+                .query(
+                    "SELECT id, size_bytes, downloaded_bytes FROM messages WHERE content_availability = 'downloading'",
+                    (),
+                )
+                .await?;
+            let mut values = Vec::new();
+            while let Some(row) = rows.next().await? {
+                values.push((
+                    parse_id::<MessageId>(row.get(0)?, "message")?,
+                    u64::try_from(row.get::<i64>(1)?).map_err(|_| {
+                        BackendError::InvalidInput("database contains invalid message size".into())
+                    })?,
+                    u64::try_from(row.get::<i64>(2)?).map_err(|_| {
+                        BackendError::InvalidInput(
+                            "database contains invalid downloaded byte count".into(),
+                        )
+                    })?,
+                ));
+            }
+            values
+        };
+        for (message_id, expected, recorded) in interrupted {
+            let path = self.partial_download_path(message_id);
+            let downloaded = tokio::fs::metadata(&path)
+                .await
+                .map(|metadata| metadata.len().min(expected).min(recorded))
+                .unwrap_or(0);
+            if let Ok(file) = tokio::fs::OpenOptions::new().write(true).open(&path).await {
+                file.set_len(downloaded)
+                    .await
+                    .map_err(|source| BackendError::Io {
+                        path: path.clone(),
+                        source,
+                    })?;
+            }
+            self.store_download_failure(
+                message_id,
+                downloaded,
+                "download was interrupted; retry will resume from the durable prefix",
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn partial_download_path(&self, message_id: MessageId) -> std::path::PathBuf {
+        self.inner
+            .config
+            .profile_dir
+            .join("downloads")
+            .join(format!("{message_id}.part"))
     }
 
     pub fn accounts(&self) -> Accounts {
@@ -318,10 +445,15 @@ impl Backend {
         if !batch.is_empty() {
             message_ids.extend(self.commit_prepared_batch(batch).await?);
         }
+        self.evaluate_automation(&message_ids).await?;
+        Ok(message_ids)
+    }
+
+    async fn evaluate_automation(&self, message_ids: &[MessageId]) -> Result<()> {
         let mut evaluated = HashSet::new();
         let run_filters = self.filter_rules().has_enabled().await?;
         let run_heuristics = self.heuristics().has_enabled().await?;
-        for message_id in &message_ids {
+        for message_id in message_ids {
             if !evaluated.insert(*message_id) {
                 continue;
             }
@@ -332,7 +464,7 @@ impl Backend {
                 self.heuristics().evaluate_message(*message_id).await?;
             }
         }
-        Ok(message_ids)
+        Ok(())
     }
 
     async fn prepare_ingest(&self, request: IngestMessage) -> Result<PreparedIngest> {
@@ -449,6 +581,11 @@ impl Backend {
             dkim_json,
             mime_state: mime_parse_state_text(parsed.mime_state).to_owned(),
             mime_detail: parsed.mime_detail,
+            content_availability: content_availability_text(MessageContentAvailability::Complete)
+                .to_owned(),
+            downloaded_bytes: size_bytes,
+            download_error: None,
+            download_updated_at: now,
             created_at: now,
         };
         Ok(PreparedIngest {
@@ -462,6 +599,439 @@ impl Backend {
             threading,
             stage: Some(stage),
         })
+    }
+
+    async fn prepare_imap_headers(
+        &self,
+        account_id: AccountId,
+        folder_id: FolderId,
+        uid_validity: u32,
+        message: ImapFetchedHeaders,
+    ) -> Result<PreparedIngest> {
+        if message.headers.len() > self.inner.config.limits.max_header_bytes {
+            return Err(BackendError::MessageTooLarge {
+                actual: message.headers.len(),
+                limit: self.inner.config.limits.max_header_bytes,
+            });
+        }
+        let parsed = mime::parse(&message.headers, &self.inner.config.limits)?;
+        let blob_hash = self.inner.blobs.put(&message.headers).await?;
+        let id = MessageId::new();
+        let now = Utc::now().timestamp();
+        let received_at = message.internal_date.or(parsed.sent_at).unwrap_or(now);
+        let threading = crate::thread::ThreadInput::new(
+            parsed.rfc_message_id.as_deref(),
+            &parsed.in_reply_to,
+            &parsed.references,
+            parsed.subject.as_deref(),
+            parsed.from_address.as_deref(),
+            &parsed.to_addresses,
+            &parsed.cc_addresses,
+            &parsed.bcc_addresses,
+            &parsed.reply_to_addresses,
+            &parsed.delivered_to_addresses,
+            received_at,
+        );
+        let mut remote = RemoteMessageIdentity {
+            account_id,
+            folder_id,
+            uid_validity,
+            uid: message.uid,
+            mod_sequence: message.mod_sequence,
+            flags: message.flags,
+        };
+        remote.flags = canonical_flags(&remote.flags);
+        let is_read = remote
+            .flags
+            .iter()
+            .any(|flag| flag.eq_ignore_ascii_case("\\Seen"));
+        let is_starred = remote
+            .flags
+            .iter()
+            .any(|flag| flag.eq_ignore_ascii_case("\\Flagged"));
+        let remote_flags_json = serde_json::to_string(&remote.flags)?;
+        let dkim_json = serde_json::to_string(&crate::DkimAuthentication {
+            status: crate::DkimAuthenticationStatus::NotEvaluated,
+            signatures: Vec::new(),
+            evaluated_at: now,
+            detail: Some("complete message content has not been downloaded".into()),
+        })?;
+        let size_bytes = i64::from(message.size_bytes);
+        let stage = StagedMessage {
+            blob_hash,
+            rfc_message_id: parsed.rfc_message_id,
+            subject: parsed.subject,
+            from_address: parsed.from_address,
+            from_name: parsed.from_name,
+            to_addresses: serde_json::to_string(&parsed.to_addresses)?,
+            cc_addresses: serde_json::to_string(&parsed.cc_addresses)?,
+            bcc_addresses: serde_json::to_string(&parsed.bcc_addresses)?,
+            reply_to_addresses: serde_json::to_string(&parsed.reply_to_addresses)?,
+            delivered_to_addresses: serde_json::to_string(&parsed.delivered_to_addresses)?,
+            list_id: parsed.list_id,
+            body_text: String::new(),
+            body_html: None,
+            preview: String::new(),
+            sent_at: parsed.sent_at,
+            received_at,
+            size_bytes,
+            has_attachment: message.has_attachment,
+            attachment_names: String::new(),
+            is_read,
+            is_starred,
+            user_classification: None,
+            content_state: content_state_text(crate::ContentState::Complete).to_owned(),
+            search_metadata: json!({"received_at": received_at}).to_string(),
+            dkim_json,
+            mime_state: mime_parse_state_text(crate::MimeParseState::Limited).to_owned(),
+            mime_detail: Some(
+                "MIME tree is unavailable until message content is downloaded".into(),
+            ),
+            content_availability: content_availability_text(
+                MessageContentAvailability::HeadersOnly,
+            )
+            .to_owned(),
+            downloaded_bytes: 0,
+            download_error: None,
+            download_updated_at: now,
+            created_at: now,
+        };
+        Ok(PreparedIngest {
+            id,
+            remote: Some(remote),
+            remote_flags_json: Some(remote_flags_json),
+            attachments: Vec::new(),
+            resources: Vec::new(),
+            mime_parts: Vec::new(),
+            links: Vec::new(),
+            threading,
+            stage: Some(stage),
+        })
+    }
+
+    async fn download_lock(&self, message_id: MessageId) -> Arc<Mutex<()>> {
+        let mut locks = self.inner.download_locks.lock().await;
+        locks.retain(|_, lock| lock.strong_count() > 0);
+        if let Some(lock) = locks.get(&message_id).and_then(Weak::upgrade) {
+            return lock;
+        }
+        let lock = Arc::new(Mutex::new(()));
+        locks.insert(message_id, Arc::downgrade(&lock));
+        lock
+    }
+
+    async fn store_download_started(
+        &self,
+        message_id: MessageId,
+        downloaded_bytes: u64,
+    ) -> Result<()> {
+        let now = Utc::now().timestamp();
+        let connection = self.inner.connection.lock().await;
+        let changed = connection
+            .execute(
+                "UPDATE messages SET content_availability = 'downloading', downloaded_bytes = ?1, download_error = NULL, download_updated_at = ?2 WHERE id = ?3 AND content_availability != 'complete'",
+                (
+                    i64::try_from(downloaded_bytes).unwrap_or(i64::MAX),
+                    now,
+                    message_id.to_string(),
+                ),
+            )
+            .await?;
+        if changed == 0 {
+            let status = load_content_status_on(&connection, message_id).await?;
+            if status.availability != MessageContentAvailability::Complete {
+                return Err(BackendError::Conflict(
+                    "message content state changed before download started".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn store_download_failure(
+        &self,
+        message_id: MessageId,
+        downloaded_bytes: u64,
+        detail: &str,
+    ) -> Result<()> {
+        let now = Utc::now().timestamp();
+        let mut connection = self.inner.connection.lock().await;
+        let transaction = connection.transaction().await?;
+        let changed = transaction
+            .execute(
+                "UPDATE messages SET content_availability = 'failed', downloaded_bytes = MIN(size_bytes, ?1), download_error = ?2, download_updated_at = ?3 WHERE id = ?4 AND content_availability != 'complete'",
+                (
+                    i64::try_from(downloaded_bytes).unwrap_or(i64::MAX),
+                    detail.to_owned(),
+                    now,
+                    message_id.to_string(),
+                ),
+            )
+            .await?;
+        if changed == 0 {
+            let mut rows = transaction
+                .query(
+                    "SELECT 1 FROM messages WHERE id = ?1",
+                    (message_id.to_string(),),
+                )
+                .await?;
+            if rows.next().await?.is_none() {
+                transaction.rollback().await?;
+                return Err(not_found("message", message_id));
+            }
+            transaction.rollback().await?;
+            return Ok(());
+        }
+        let event = insert_event(
+            &transaction,
+            now,
+            "message_download_failed",
+            message_id.to_string(),
+            json!({
+                "message_id": message_id,
+                "downloaded_bytes": downloaded_bytes,
+                "detail": detail,
+            }),
+        )
+        .await?;
+        transaction.commit().await?;
+        let _ = self.inner.events.send(event);
+        Ok(())
+    }
+
+    async fn hydrate_downloaded_message(
+        &self,
+        message_id: MessageId,
+        path: &std::path::Path,
+        expected_bytes: u64,
+    ) -> Result<MessageContentStatus> {
+        if expected_bytes > self.inner.config.limits.max_message_bytes as u64 {
+            return Err(BackendError::MessageTooLarge {
+                actual: usize::try_from(expected_bytes).unwrap_or(usize::MAX),
+                limit: self.inner.config.limits.max_message_bytes,
+            });
+        }
+        let raw = tokio::fs::read(path)
+            .await
+            .map_err(|source| BackendError::Io {
+                path: path.to_owned(),
+                source,
+            })?;
+        if raw.len() as u64 != expected_bytes {
+            return Err(BackendError::Conflict(format!(
+                "downloaded message contains {} bytes; expected {expected_bytes}",
+                raw.len()
+            )));
+        }
+        let received_at = {
+            let connection = self.inner.connection.lock().await;
+            let mut rows = connection
+                .query(
+                    "SELECT received_at FROM messages WHERE id = ?1",
+                    (message_id.to_string(),),
+                )
+                .await?;
+            rows.next()
+                .await?
+                .ok_or_else(|| not_found("message", message_id))?
+                .get::<i64>(0)?
+        };
+        let mut prepared = self
+            .prepare_ingest(IngestMessage {
+                raw,
+                remote: None,
+                received_at: Some(received_at),
+                user_classification: None,
+            })
+            .await?;
+        let stage = prepared
+            .stage
+            .take()
+            .expect("complete projection has staged message data");
+        let _search_guard = self.inner.search_sync.write().await;
+        let now = Utc::now().timestamp();
+        let mut connection = self.inner.connection.lock().await;
+        let transaction = connection.transaction().await?;
+        let changed = transaction
+            .execute(
+                r#"UPDATE messages SET
+                    blob_hash = ?1, rfc_message_id = ?2, subject = ?3,
+                    from_address = ?4, from_name = ?5, to_addresses = ?6,
+                    cc_addresses = ?7, bcc_addresses = ?8,
+                    reply_to_addresses = ?9, delivered_to_addresses = ?10,
+                    list_id = ?11, body_text = ?12, body_html = ?13,
+                    preview = ?14, sent_at = ?15, has_attachment = ?16,
+                    attachment_names = ?17, content_state = ?18,
+                    search_metadata = ?19, dkim_json = ?20, mime_state = ?21,
+                    mime_detail = ?22, content_availability = 'complete',
+                    downloaded_bytes = size_bytes, download_error = NULL,
+                    download_updated_at = ?23
+                WHERE id = ?24 AND content_availability != 'complete' AND size_bytes = ?25"#,
+                turso::params![
+                    stage.blob_hash,
+                    stage.rfc_message_id,
+                    stage.subject,
+                    stage.from_address,
+                    stage.from_name,
+                    stage.to_addresses,
+                    stage.cc_addresses,
+                    stage.bcc_addresses,
+                    stage.reply_to_addresses,
+                    stage.delivered_to_addresses,
+                    stage.list_id,
+                    stage.body_text,
+                    stage.body_html,
+                    stage.preview,
+                    stage.sent_at,
+                    stage.has_attachment,
+                    stage.attachment_names,
+                    stage.content_state,
+                    stage.search_metadata,
+                    stage.dkim_json,
+                    stage.mime_state,
+                    stage.mime_detail,
+                    now,
+                    message_id.to_string(),
+                    i64::try_from(expected_bytes).unwrap_or(i64::MAX),
+                ],
+            )
+            .await?;
+        if changed == 0 {
+            let status = load_content_status_on(&transaction, message_id).await?;
+            transaction.rollback().await?;
+            if status.availability == MessageContentAvailability::Complete {
+                return Ok(status);
+            }
+            return Err(BackendError::Conflict(
+                "message changed while downloaded content was being materialized".into(),
+            ));
+        }
+        transaction
+            .execute(
+                "DELETE FROM attachments WHERE message_id = ?1",
+                (message_id.to_string(),),
+            )
+            .await?;
+        transaction
+            .execute(
+                "DELETE FROM mime_parts WHERE message_id = ?1",
+                (message_id.to_string(),),
+            )
+            .await?;
+        transaction
+            .execute(
+                "DELETE FROM message_links WHERE message_id = ?1",
+                (message_id.to_string(),),
+            )
+            .await?;
+        for attachment in &prepared.attachments {
+            let metadata = &attachment.metadata;
+            transaction
+                .execute(
+                    r#"INSERT INTO attachments (
+                        message_id, ordinal, part_id, name, declared_media_type,
+                        detected_media_type, decoded_size, inline, content_id,
+                        blob_hash, decode_state, decode_problems_json
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)"#,
+                    turso::params![
+                        message_id.to_string(),
+                        i64::from(metadata.ordinal),
+                        i64::from(metadata.mime_part_id),
+                        metadata.name.clone(),
+                        metadata.declared_media_type.clone(),
+                        metadata.detected_media_type.clone(),
+                        metadata.decoded_size as i64,
+                        metadata.inline,
+                        metadata.content_id.clone(),
+                        attachment.blob_hash.clone(),
+                        mime_decode_state_text(metadata.decode_state),
+                        attachment.decode_problems_json.clone(),
+                    ],
+                )
+                .await?;
+        }
+        for part in &prepared.mime_parts {
+            transaction
+                .execute(
+                    r#"INSERT INTO mime_parts (
+                        message_id, part_id, parent_part_id, child_ids_json,
+                        kind, role, declared_media_type, name, content_id,
+                        content_location, inline, attachment, decoded_size,
+                        decode_state, parse_flags_json, decode_problems_json,
+                        in_plain_body, in_html_body
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9,
+                        ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)"#,
+                    turso::params![
+                        message_id.to_string(),
+                        i64::from(part.id),
+                        part.parent_id.map(i64::from),
+                        serde_json::to_string(&part.child_ids)?,
+                        mime_part_kind_text(part.kind),
+                        mime_part_role_text(part.role),
+                        part.declared_media_type.clone(),
+                        part.name.clone(),
+                        part.content_id.clone(),
+                        part.content_location.clone(),
+                        part.inline,
+                        part.attachment,
+                        part.decoded_size as i64,
+                        mime_decode_state_text(part.decode_state),
+                        serde_json::to_string(&part.parse_flags)?,
+                        serde_json::to_string(&part.decode_problems)?,
+                        part.in_plain_body,
+                        part.in_html_body,
+                    ],
+                )
+                .await?;
+        }
+        for resource in &prepared.resources {
+            transaction
+                .execute(
+                    "INSERT INTO mime_part_blobs(message_id, part_id, blob_hash, decoded_size) VALUES (?1, ?2, ?3, ?4)",
+                    (
+                        message_id.to_string(),
+                        i64::from(resource.part_id),
+                        resource.blob_hash.clone(),
+                        resource.decoded_size as i64,
+                    ),
+                )
+                .await?;
+        }
+        for link in &prepared.links {
+            transaction
+                .execute(
+                    "INSERT INTO message_links(message_id, ordinal, destination, scheme, host, registrable_domain, source) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    turso::params![
+                        message_id.to_string(),
+                        i64::from(link.ordinal),
+                        link.destination.clone(),
+                        link.scheme.clone(),
+                        link.host.clone(),
+                        link.registrable_domain.clone(),
+                        match link.source {
+                            MessageLinkSource::PlainText => "plain_text",
+                            MessageLinkSource::Html => "html",
+                        },
+                    ],
+                )
+                .await?;
+        }
+        enqueue_search_on(&transaction, message_id).await?;
+        let event = insert_event(
+            &transaction,
+            now,
+            "message_content_downloaded",
+            message_id.to_string(),
+            json!({"message_id": message_id, "size_bytes": expected_bytes}),
+        )
+        .await?;
+        transaction.commit().await?;
+        drop(connection);
+        self.flush_search_projection().await?;
+        let _ = self.inner.events.send(event);
+        self.evaluate_automation(&[message_id]).await?;
+        let connection = self.inner.connection.lock().await;
+        load_content_status_on(&connection, message_id).await
     }
 
     async fn commit_prepared_batch(
@@ -518,11 +1088,14 @@ impl Backend {
                         body_html, preview, sent_at, received_at, size_bytes,
                         has_attachment, attachment_names, is_read, is_starred,
                         user_classification, content_state, search_metadata, dkim_json,
-                        mime_state, mime_detail, created_at
+                        mime_state, mime_detail, content_availability,
+                        downloaded_bytes, download_error, download_updated_at,
+                        created_at
                     ) VALUES (
                         ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
                         ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22,
-                        ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31
+                        ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32,
+                        ?33, ?34, ?35
                     )"#,
                     turso::params![
                         batch_id.clone(),
@@ -555,6 +1128,10 @@ impl Backend {
                         stage.dkim_json,
                         stage.mime_state,
                         stage.mime_detail,
+                        stage.content_availability,
+                        stage.downloaded_bytes,
+                        stage.download_error,
+                        stage.download_updated_at,
                         stage.created_at,
                     ],
                 )
@@ -570,14 +1147,18 @@ impl Backend {
                         list_id, body_text, body_html, preview, sent_at, received_at,
                         size_bytes, has_attachment, attachment_names, is_read, is_starred,
                         user_classification, content_state, search_metadata, dkim_json,
-                        mime_state, mime_detail, created_at
+                        mime_state, mime_detail, content_availability,
+                        downloaded_bytes, download_error, download_updated_at,
+                        created_at
                     )
                     SELECT id, blob_hash, rfc_message_id, subject, from_address, from_name,
                         to_addresses, cc_addresses, bcc_addresses, reply_to_addresses, delivered_to_addresses,
                         list_id, body_text, body_html, preview, sent_at, received_at,
                         size_bytes, has_attachment, attachment_names, is_read, is_starred,
                         user_classification, content_state, search_metadata, dkim_json,
-                        mime_state, mime_detail, created_at
+                        mime_state, mime_detail, content_availability,
+                        downloaded_bytes, download_error, download_updated_at,
+                        created_at
                     FROM ingest_message_stage
                     WHERE batch_id = ?1
                     ORDER BY position"#,
@@ -819,7 +1400,7 @@ impl Backend {
                 let connection = self.inner.connection.lock().await;
                 let mut rows = connection
                     .query(
-                        "SELECT id, blob_hash, received_at FROM messages WHERE thread_id IS NULL ORDER BY received_at, id LIMIT 100",
+                        "SELECT id, blob_hash, received_at FROM messages WHERE thread_id IS NULL AND content_availability = 'complete' ORDER BY received_at, id LIMIT 100",
                         (),
                     )
                     .await?;
@@ -883,7 +1464,7 @@ impl Backend {
                 let connection = self.inner.connection.lock().await;
                 let mut rows = connection
                     .query(
-                        "SELECT id, blob_hash FROM messages m WHERE NOT EXISTS (SELECT 1 FROM mime_parts p WHERE p.message_id = m.id) ORDER BY id LIMIT 20",
+                        "SELECT id, blob_hash FROM messages m WHERE m.content_availability = 'complete' AND NOT EXISTS (SELECT 1 FROM mime_parts p WHERE p.message_id = m.id) ORDER BY id LIMIT 20",
                         (),
                     )
                     .await?;
@@ -1476,16 +2057,23 @@ impl Messages {
             let connection = self.0.inner.connection.lock().await;
             let mut rows = connection
                 .query(
-                    "SELECT blob_hash FROM messages WHERE id = ?1",
+                    "SELECT blob_hash, content_availability FROM messages WHERE id = ?1",
                     (id.to_string(),),
                 )
                 .await?;
-            rows.next()
-                .await?
-                .ok_or_else(|| not_found("message", id))?
-                .get::<String>(0)?
+            let row = rows.next().await?.ok_or_else(|| not_found("message", id))?;
+            let availability = parse_content_availability(&row.get::<String>(1)?)?;
+            if availability != MessageContentAvailability::Complete {
+                return Err(content_unavailable(id, availability));
+            }
+            row.get::<String>(0)?
         };
         self.0.inner.blobs.get(&hash).await
+    }
+
+    pub async fn content_status(&self, id: MessageId) -> Result<MessageContentStatus> {
+        let connection = self.0.inner.connection.lock().await;
+        load_content_status_on(&connection, id).await
     }
 
     pub async fn list(&self, filter: MessageFilter) -> Result<Page<MessageSummary>> {
@@ -1652,8 +2240,9 @@ impl Messages {
 pub struct Search(Backend);
 
 impl Search {
-    pub async fn search(&self, request: SearchRequest) -> Result<Page<MessageSummary>> {
+    pub async fn search(&self, request: SearchRequest) -> Result<SearchPage> {
         let expression = parse_query(&request.query)?;
+        let requires_complete_content = query_requires_complete_content(&expression);
         let _search_guard = self.0.inner.search_sync.read().await;
         let page_size = bounded_page_size(request.page_size);
         let cursor = request.cursor.as_deref().map(decode_cursor).transpose()?;
@@ -1693,7 +2282,22 @@ impl Search {
         } else {
             None
         };
-        Ok(Page { items, next_cursor })
+        let content_results_complete = if requires_complete_content {
+            let mut rows = connection
+                .query(
+                    "SELECT 1 FROM messages WHERE content_availability IN ('headers_only', 'downloading', 'failed') LIMIT 1",
+                    (),
+                )
+                .await?;
+            rows.next().await?.is_none()
+        } else {
+            true
+        };
+        Ok(SearchPage {
+            items,
+            next_cursor,
+            content_results_complete,
+        })
     }
 }
 
@@ -1896,8 +2500,8 @@ impl Events {
     }
 }
 
-/// Boundary used by IMAP transport code after it has fetched complete
-/// `BODY.PEEK[]` payloads. All messages still pass through [`Backend::ingest`].
+/// Boundary used by IMAP transport code for cheap header discovery and later
+/// on-demand, resumable body hydration.
 #[derive(Clone)]
 pub struct Sync(Backend);
 
@@ -1908,8 +2512,9 @@ impl Sync {
     /// `session` must already be authenticated over a transport which matches
     /// the account's TLS policy. Keeping connection establishment and secret
     /// lookup outside this method prevents the backend from accepting plaintext
-    /// passwords or silently weakening TLS. Message bodies are requested with
-    /// `BODY.PEEK[]` in bounded chunks, so a sync never marks mail as read.
+    /// passwords or silently weakening TLS. Initial sync requests only the
+    /// header fields needed for listing, search, and threading plus
+    /// `BODYSTRUCTURE`; complete bodies are downloaded separately on demand.
     ///
     /// The folder cursor is advanced only after every fetched message has been
     /// durably ingested. If the operation fails partway through, retrying is
@@ -1957,40 +2562,32 @@ impl Sync {
                 .map(u32::to_string)
                 .collect::<Vec<_>>()
                 .join(",");
-            let fetches = session
-                .uid_fetch(uid_set, "(UID FLAGS INTERNALDATE RFC822.SIZE)")
-                .await
-                .map_err(imap_error)?
-                .try_collect::<Vec<_>>()
+            let mut fetches = session
+                .uid_fetch(
+                    uid_set,
+                    "(UID FLAGS INTERNALDATE RFC822.SIZE BODYSTRUCTURE BODY.PEEK[HEADER.FIELDS (DATE FROM TO CC BCC REPLY-TO DELIVERED-TO LIST-ID MESSAGE-ID IN-REPLY-TO REFERENCES SUBJECT CONTENT-TYPE MIME-VERSION)])",
+                )
                 .await
                 .map_err(imap_error)?;
             let requested: HashSet<u32> = uid_chunk.iter().copied().collect();
-            let mut metadata = fetches
-                .iter()
-                .map(imap_fetch_metadata)
-                .collect::<Result<Vec<_>>>()?;
-            metadata.retain(|item| requested.contains(&item.uid));
+            let mut metadata = Vec::with_capacity(uid_chunk.len());
+            while let Some(fetch) = fetches.try_next().await.map_err(imap_error)? {
+                let item = imap_fetch_headers(&fetch)?;
+                if requested.contains(&item.uid) {
+                    metadata.push(item);
+                }
+            }
             metadata.sort_unstable_by_key(|item| item.uid);
             metadata.dedup_by_key(|item| item.uid);
 
             for item in metadata {
-                let size = usize::try_from(item.size).map_err(|_| {
-                    BackendError::InvalidInput("IMAP message size does not fit in memory".into())
-                })?;
-                let limit = self.0.inner.config.limits.max_message_bytes;
-                if size > limit {
-                    return Err(BackendError::MessageTooLarge {
-                        actual: size,
-                        limit,
-                    });
-                }
-
                 if !pending.is_empty()
                     && (pending.len() >= MAX_INGEST_BATCH_MESSAGES
-                        || pending_bytes.saturating_add(size) > MAX_INGEST_BATCH_BYTES)
+                        || pending_bytes.saturating_add(item.headers.len())
+                            > MAX_INGEST_BATCH_BYTES)
                 {
                     let ingested = self
-                        .ingest_imap_batch(
+                        .ingest_imap_header_batch(
                             account_id,
                             folder_id,
                             uid_validity,
@@ -2001,31 +2598,14 @@ impl Sync {
                     pending_bytes = 0;
                 }
 
-                let mut raw = Vec::with_capacity(size);
-                let downloaded = session
-                    .uid_fetch_body_to(item.uid, &mut raw, IMAP_BODY_CHUNK_BYTES)
-                    .await
-                    .map_err(imap_error)?;
-                if downloaded != item.size || raw.len() != size {
-                    return Err(BackendError::Imap(format!(
-                        "UID {} changed size while it was being fetched",
-                        item.uid
-                    )));
-                }
-                pending_bytes = pending_bytes.saturating_add(raw.len());
-                pending.push(ImapFetchedMessage {
-                    uid: item.uid,
-                    mod_sequence: item.mod_sequence,
-                    flags: item.flags,
-                    internal_date: item.internal_date,
-                    raw,
-                });
+                pending_bytes = pending_bytes.saturating_add(item.headers.len());
+                pending.push(item);
             }
         }
 
         if !pending.is_empty() {
             let ingested = self
-                .ingest_imap_batch(account_id, folder_id, uid_validity, pending)
+                .ingest_imap_header_batch(account_id, folder_id, uid_validity, pending)
                 .await?;
             message_ids.extend(ingested.message_ids);
         }
@@ -2039,6 +2619,203 @@ impl Sync {
             .await?;
 
         Ok(SyncBatchResult { message_ids })
+    }
+
+    pub async fn ingest_imap_header_batch(
+        &self,
+        account_id: AccountId,
+        folder_id: FolderId,
+        uid_validity: u32,
+        fetched: Vec<ImapFetchedHeaders>,
+    ) -> Result<SyncBatchResult> {
+        let mut prepared = Vec::with_capacity(fetched.len());
+        for message in fetched {
+            if message.uid == 0 {
+                return Err(BackendError::InvalidInput(
+                    "IMAP UIDs must be non-zero".into(),
+                ));
+            }
+            prepared.push(
+                self.0
+                    .prepare_imap_headers(account_id, folder_id, uid_validity, message)
+                    .await?,
+            );
+        }
+        let message_ids = self.0.commit_prepared_batch(prepared).await?;
+        self.0.evaluate_automation(&message_ids).await?;
+        Ok(SyncBatchResult { message_ids })
+    }
+
+    /// Download and materialize one header-only message. A durable partial
+    /// file is resumed on retry, and the message remains visibly incomplete
+    /// until its exact byte count, MIME projection, DKIM evidence, search
+    /// document, and automation results have committed atomically.
+    pub async fn fetch_imap_message_content<T>(
+        &self,
+        session: &mut async_imap::Session<T>,
+        account_id: AccountId,
+        message_id: MessageId,
+    ) -> Result<MessageContentStatus>
+    where
+        T: AsyncRead + AsyncWrite + Unpin + std::fmt::Debug + Send,
+    {
+        let lock = self.0.download_lock(message_id).await;
+        let _guard = lock.lock().await;
+        let target = self.download_target(account_id, message_id).await?;
+        if target.availability == MessageContentAvailability::Complete {
+            return self.0.messages().content_status(message_id).await;
+        }
+        let path = self.0.partial_download_path(message_id);
+        let downloaded = match tokio::fs::metadata(&path).await {
+            Ok(metadata) => metadata.len(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
+            Err(source) => return Err(BackendError::Io { path, source }),
+        };
+        if downloaded > target.expected_bytes || downloaded > u64::from(u32::MAX) {
+            let error = BackendError::Conflict(
+                "durable partial message is larger than the server message".into(),
+            );
+            self.0
+                .store_download_failure(message_id, downloaded, &error.to_string())
+                .await?;
+            return Err(error);
+        }
+        let limit = self.0.inner.config.limits.max_message_bytes;
+        if target.expected_bytes > limit as u64 {
+            let error = BackendError::MessageTooLarge {
+                actual: usize::try_from(target.expected_bytes).unwrap_or(usize::MAX),
+                limit,
+            };
+            self.0
+                .store_download_failure(message_id, downloaded, &error.to_string())
+                .await?;
+            return Err(error);
+        }
+        let mailbox = match session.examine(&target.remote_name).await {
+            Ok(mailbox) => mailbox,
+            Err(source) => {
+                let error = imap_error(source);
+                self.0
+                    .store_download_failure(message_id, downloaded, &error.to_string())
+                    .await?;
+                return Err(error);
+            }
+        };
+        if mailbox.uid_validity != Some(target.uid_validity) {
+            let error = BackendError::Conflict(
+                "message UIDVALIDITY changed before its content was downloaded".into(),
+            );
+            self.0
+                .store_download_failure(message_id, downloaded, &error.to_string())
+                .await?;
+            return Err(error);
+        }
+        self.0
+            .store_download_started(message_id, downloaded)
+            .await?;
+        let mut attempt = DownloadAttemptGuard::new(self.0.clone(), message_id);
+        let mut file = tokio::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .await
+            .map_err(|source| BackendError::Io {
+                path: path.clone(),
+                source,
+            })?;
+        let remote_size = match session.uid_fetch_body_size(target.uid).await {
+            Ok(size) => u64::from(size),
+            Err(source) => {
+                let error = imap_error(source);
+                self.0
+                    .store_download_failure(message_id, downloaded, &error.to_string())
+                    .await?;
+                return Err(error);
+            }
+        };
+        if remote_size != target.expected_bytes {
+            let error = BackendError::Conflict(format!(
+                "IMAP RFC822.SIZE changed from {} to {remote_size}",
+                target.expected_bytes
+            ));
+            let current = file
+                .metadata()
+                .await
+                .map(|value| value.len())
+                .unwrap_or(downloaded);
+            self.0
+                .store_download_failure(message_id, current, &error.to_string())
+                .await?;
+            return Err(error);
+        }
+        let mut offset = downloaded;
+        while offset < remote_size {
+            let requested =
+                usize::try_from((remote_size - offset).min(IMAP_BODY_CHUNK_BYTES as u64))
+                    .expect("bounded IMAP chunk fits usize");
+            if let Err(source) = session
+                .uid_fetch_body_range_to(target.uid, &mut file, offset as u32, requested)
+                .await
+            {
+                let _ = file.sync_data().await;
+                let current = file
+                    .metadata()
+                    .await
+                    .map(|value| value.len())
+                    .unwrap_or(offset);
+                let error = imap_error(source);
+                self.0
+                    .store_download_failure(message_id, current, &error.to_string())
+                    .await?;
+                return Err(error);
+            }
+            offset += requested as u64;
+            if let Err(source) = file.sync_data().await {
+                let error = BackendError::Io {
+                    path: path.clone(),
+                    source,
+                };
+                self.0
+                    .store_download_failure(message_id, offset, &error.to_string())
+                    .await?;
+                return Err(error);
+            }
+            self.0.store_download_started(message_id, offset).await?;
+        }
+        if let Err(source) = file.sync_all().await {
+            let error = BackendError::Io {
+                path: path.clone(),
+                source,
+            };
+            self.0
+                .store_download_failure(message_id, offset, &error.to_string())
+                .await?;
+            return Err(error);
+        }
+        drop(file);
+        let result = self
+            .0
+            .hydrate_downloaded_message(message_id, &path, target.expected_bytes)
+            .await;
+        match result {
+            Ok(status) => {
+                attempt.disarm();
+                // Publication already committed. Cleanup failure must not make
+                // the caller retry an operation that is now complete.
+                let _ = tokio::fs::remove_file(&path).await;
+                Ok(status)
+            }
+            Err(error) => {
+                let current = tokio::fs::metadata(&path)
+                    .await
+                    .map(|value| value.len())
+                    .unwrap_or(target.expected_bytes);
+                self.0
+                    .store_download_failure(message_id, current, &error.to_string())
+                    .await?;
+                Err(error)
+            }
+        }
     }
 
     pub async fn ingest_imap_batch(
@@ -2119,6 +2896,58 @@ impl Sync {
         })
     }
 
+    async fn download_target(
+        &self,
+        account_id: AccountId,
+        message_id: MessageId,
+    ) -> Result<ImapDownloadTarget> {
+        let connection = self.0.inner.connection.lock().await;
+        let mut rows = connection
+            .query(
+                r#"SELECT mi.folder_id, f.remote_name, mi.uid_validity, mi.imap_uid,
+                    m.size_bytes, m.content_availability
+                FROM messages m
+                JOIN message_instances mi ON mi.message_id = m.id
+                JOIN folders f ON f.id = mi.folder_id
+                LEFT JOIN imap_mailbox_state ims ON ims.folder_id = f.id
+                WHERE m.id = ?1 AND mi.account_id = ?2 AND f.kind = 'remote'
+                    AND f.remote_name IS NOT NULL
+                    AND COALESCE(ims.remote_present, 1) = 1
+                    AND COALESCE(ims.selectable, 1) = 1
+                ORDER BY mi.folder_id, mi.imap_uid
+                LIMIT 1"#,
+                (message_id.to_string(), account_id.to_string()),
+            )
+            .await?;
+        let Some(row) = rows.next().await? else {
+            let mut existing = connection
+                .query(
+                    "SELECT 1 FROM messages WHERE id = ?1",
+                    (message_id.to_string(),),
+                )
+                .await?;
+            if existing.next().await?.is_none() {
+                return Err(not_found("message", message_id));
+            }
+            return Err(BackendError::InvalidInput(
+                "message has no downloadable instance for this IMAP account".into(),
+            ));
+        };
+        Ok(ImapDownloadTarget {
+            remote_name: row.get::<String>(1)?,
+            uid_validity: u32::try_from(row.get::<i64>(2)?).map_err(|_| {
+                BackendError::InvalidInput("database contains invalid UIDVALIDITY".into())
+            })?,
+            uid: u32::try_from(row.get::<i64>(3)?).map_err(|_| {
+                BackendError::InvalidInput("database contains invalid IMAP UID".into())
+            })?,
+            expected_bytes: u64::try_from(row.get::<i64>(4)?).map_err(|_| {
+                BackendError::InvalidInput("database contains invalid message size".into())
+            })?,
+            availability: parse_content_availability(&row.get::<String>(5)?)?,
+        })
+    }
+
     async fn store_imap_cursor(
         &self,
         account_id: AccountId,
@@ -2153,6 +2982,14 @@ struct ImapSyncTarget {
     uid_next: Option<u32>,
 }
 
+struct ImapDownloadTarget {
+    remote_name: String,
+    uid_validity: u32,
+    uid: u32,
+    expected_bytes: u64,
+    availability: MessageContentAvailability,
+}
+
 fn imap_error(error: async_imap::error::Error) -> BackendError {
     BackendError::Imap(error.to_string())
 }
@@ -2170,8 +3007,8 @@ fn optional_database_u32(value: Option<i64>, field: &str) -> Result<Option<u32>>
 const WARM_PREDICATE: &str = "m.user_classification IS NOT 'spam' AND m.from_address IS NOT NULL AND EXISTS (SELECT 1 FROM contact_addresses ca WHERE ca.address = m.from_address COLLATE NOCASE)";
 const COLD_PREDICATE: &str = "m.user_classification IS NOT 'spam' AND (m.from_address IS NULL OR NOT EXISTS (SELECT 1 FROM contact_addresses ca WHERE ca.address = m.from_address COLLATE NOCASE))";
 const SPAM_PREDICATE: &str = "COALESCE(m.user_classification = 'spam', 0)";
-const SUMMARY_COLUMNS: &str = "m.id, m.subject, m.from_address, m.from_name, m.preview, m.sent_at, m.received_at, m.size_bytes, m.has_attachment, m.is_read, m.is_starred, CASE WHEN m.user_classification = 'spam' THEN 'spam' WHEN m.from_address IS NOT NULL AND EXISTS (SELECT 1 FROM contact_addresses ca WHERE ca.address = m.from_address COLLATE NOCASE) THEN 'warm' ELSE 'cold' END, m.content_state, m.thread_id";
-const SUMMARY_COLUMN_COUNT: usize = 14;
+const SUMMARY_COLUMNS: &str = "m.id, m.subject, m.from_address, m.from_name, m.preview, m.sent_at, m.received_at, m.size_bytes, m.has_attachment, m.is_read, m.is_starred, CASE WHEN m.user_classification = 'spam' THEN 'spam' WHEN m.from_address IS NOT NULL AND EXISTS (SELECT 1 FROM contact_addresses ca WHERE ca.address = m.from_address COLLATE NOCASE) THEN 'warm' ELSE 'cold' END, m.content_state, m.thread_id, m.content_availability";
+const SUMMARY_COLUMN_COUNT: usize = 15;
 
 async fn query_page_on(
     backend: &Backend,
@@ -2503,6 +3340,7 @@ fn summary_from_row(row: &turso::Row) -> Result<MessageSummary> {
         is_starred: row.get(10)?,
         inbox_class: parse_inbox_class(&row.get::<String>(11)?)?,
         content_state: parse_content_state(&row.get::<String>(12)?)?,
+        content_availability: parse_content_availability(&row.get::<String>(14)?)?,
     })
 }
 
@@ -2522,6 +3360,34 @@ async fn lookup_remote_on(
         .await?
         .map(|row| parse_id(row.get::<String>(0)?, "message"))
         .transpose()
+}
+
+async fn load_content_status_on(
+    connection: &Connection,
+    message_id: MessageId,
+) -> Result<MessageContentStatus> {
+    let mut rows = connection
+        .query(
+            "SELECT content_availability, size_bytes, downloaded_bytes, download_error, download_updated_at FROM messages WHERE id = ?1",
+            (message_id.to_string(),),
+        )
+        .await?;
+    let row = rows
+        .next()
+        .await?
+        .ok_or_else(|| not_found("message", message_id))?;
+    Ok(MessageContentStatus {
+        message_id,
+        availability: parse_content_availability(&row.get::<String>(0)?)?,
+        expected_bytes: u64::try_from(row.get::<i64>(1)?).map_err(|_| {
+            BackendError::InvalidInput("database contains invalid message size".into())
+        })?,
+        downloaded_bytes: u64::try_from(row.get::<i64>(2)?).map_err(|_| {
+            BackendError::InvalidInput("database contains invalid downloaded byte count".into())
+        })?,
+        last_error: row.get(3)?,
+        updated_at: row.get(4)?,
+    })
 }
 
 async fn lookup_sent_reconciliation_on(
@@ -2827,6 +3693,47 @@ fn content_state_text(state: ContentState) -> &'static str {
     match state {
         ContentState::Complete => "complete",
         ContentState::Limited => "limited",
+    }
+}
+
+fn content_availability_text(state: MessageContentAvailability) -> &'static str {
+    match state {
+        MessageContentAvailability::HeadersOnly => "headers_only",
+        MessageContentAvailability::Downloading => "downloading",
+        MessageContentAvailability::Complete => "complete",
+        MessageContentAvailability::Failed => "failed",
+    }
+}
+
+fn parse_content_availability(value: &str) -> Result<MessageContentAvailability> {
+    match value {
+        "headers_only" => Ok(MessageContentAvailability::HeadersOnly),
+        "downloading" => Ok(MessageContentAvailability::Downloading),
+        "complete" => Ok(MessageContentAvailability::Complete),
+        "failed" => Ok(MessageContentAvailability::Failed),
+        _ => Err(BackendError::InvalidInput(
+            "invalid message content availability in database".into(),
+        )),
+    }
+}
+
+fn content_unavailable(id: MessageId, availability: MessageContentAvailability) -> BackendError {
+    BackendError::ContentUnavailable {
+        id: id.to_string(),
+        state: content_availability_text(availability).into(),
+    }
+}
+
+fn query_requires_complete_content(expression: &crate::QueryExpr) -> bool {
+    match expression {
+        crate::QueryExpr::Term(term) => term
+            .field
+            .as_deref()
+            .is_none_or(|field| field.eq_ignore_ascii_case("filename")),
+        crate::QueryExpr::And(items) | crate::QueryExpr::Or(items) => {
+            items.iter().any(query_requires_complete_content)
+        }
+        crate::QueryExpr::Not(item) => query_requires_complete_content(item),
     }
 }
 

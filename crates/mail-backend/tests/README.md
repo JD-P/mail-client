@@ -2,8 +2,12 @@
 
 `dovecot_imap.rs` starts the official Dovecot CE image, populates an account
 through IMAP `APPEND`, and makes the backend pull that mail through its real
-IMAP sync path. It checks MIME ingestion, flags, search indexing, cursor-based
-deduplication, `References` threading, and a later incremental delivery.
+IMAP sync path. It checks that initial sync publishes searchable/threadable
+headers without bodies, that raw/MIME access remains unavailable, and that an
+on-demand bounded download resumes a durable 700,000-byte prefix before
+publishing exact raw bytes, MIME, body search and attachments. It also checks
+flags, cursor-based deduplication, `References` threading, and a later
+incremental delivery.
 
 The image is pinned by digest. The test is ignored during the ordinary unit
 suite because it requires Docker and may need to pull the image. Run it with:
@@ -23,8 +27,9 @@ cargo test -p lizard-mail-backend --test dovecot_security -- --ignored --nocaptu
 
 `imap_account_engine.rs` exercises the backend-owned connection path against
 the same server: verified STARTTLS and implicit TLS with a private test root,
-credential-provider authentication, capability and mailbox discovery, body
-ingestion, flag refresh, QRESYNC/CONDSTORE state, expunge reconciliation, and
+credential-provider authentication, capability and mailbox discovery,
+header-first sync plus engine-owned on-demand body hydration, flag refresh,
+QRESYNC/CONDSTORE state, expunge reconciliation, and
 an IDLE-driven continuous worker with prompt cancellation. It also exercises
 conditional flag edits, UIDPLUS copy/move identity mapping, exact deletion and
 durable concurrent-flag conflicts:

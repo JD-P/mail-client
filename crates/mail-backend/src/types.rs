@@ -41,6 +41,8 @@ pub enum DkimDnsResolver {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct IngestLimits {
     pub max_message_bytes: usize,
+    #[serde(default = "default_max_header_bytes")]
+    pub max_header_bytes: usize,
     pub max_mime_depth: u8,
     pub max_mime_parts: usize,
     pub max_text_bytes: usize,
@@ -49,10 +51,15 @@ pub struct IngestLimits {
     pub max_links: usize,
 }
 
+const fn default_max_header_bytes() -> usize {
+    512 * 1024
+}
+
 impl Default for IngestLimits {
     fn default() -> Self {
         Self {
             max_message_bytes: 64 * 1024 * 1024,
+            max_header_bytes: default_max_header_bytes(),
             max_mime_depth: 16,
             max_mime_parts: 512,
             max_text_bytes: 2 * 1024 * 1024,
@@ -154,6 +161,20 @@ pub struct ImapFetchedMessage {
     pub raw: Vec<u8>,
 }
 
+/// The cheap first phase of an IMAP download. The header bytes are the exact
+/// `BODY.PEEK[HEADER.FIELDS ...]` response; `size_bytes` remains the size of
+/// the complete RFC 5322 message on the server.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ImapFetchedHeaders {
+    pub uid: u32,
+    pub mod_sequence: Option<u64>,
+    pub flags: Vec<String>,
+    pub internal_date: Option<i64>,
+    pub size_bytes: u32,
+    pub has_attachment: bool,
+    pub headers: Vec<u8>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SyncBatchResult {
     pub message_ids: Vec<MessageId>,
@@ -198,6 +219,28 @@ pub enum InboxClass {
 pub enum ContentState {
     Complete,
     Limited,
+}
+
+/// Whether the exact RFC 5322 payload is locally available. This is separate
+/// from [`ContentState`], which describes limits encountered while parsing a
+/// payload that has already been downloaded.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageContentAvailability {
+    HeadersOnly,
+    Downloading,
+    Complete,
+    Failed,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct MessageContentStatus {
+    pub message_id: MessageId,
+    pub availability: MessageContentAvailability,
+    pub expected_bytes: u64,
+    pub downloaded_bytes: u64,
+    pub last_error: Option<String>,
+    pub updated_at: i64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -356,6 +399,10 @@ pub struct MessageSummary {
     pub is_starred: bool,
     pub inbox_class: InboxClass,
     pub content_state: ContentState,
+    /// Header-only messages are safe to list and thread, but callers must
+    /// hydrate them before presenting a body, MIME tree, DKIM result, or raw
+    /// export.
+    pub content_availability: MessageContentAvailability,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -852,6 +899,15 @@ pub struct SearchRequest {
     pub query: String,
     pub page_size: usize,
     pub cursor: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SearchPage {
+    pub items: Vec<MessageSummary>,
+    pub next_cursor: Option<String>,
+    /// False when the query uses body/attachment-name fields and at least one
+    /// message is not fully downloaded, so additional matches may exist.
+    pub content_results_complete: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

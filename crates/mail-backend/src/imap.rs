@@ -1,4 +1,5 @@
-use crate::{BackendError, ImapFetchedMessage, Result};
+use crate::{BackendError, ImapFetchedHeaders, ImapFetchedMessage, Result};
+use async_imap::imap_proto::{BodyContentCommon, BodyStructure};
 use async_imap::types::{Fetch, Flag};
 
 pub(crate) struct ImapFetchMetadata {
@@ -43,6 +44,59 @@ pub(crate) fn imap_fetch_metadata(fetch: &Fetch) -> Result<ImapFetchMetadata> {
         size: fetch.size.ok_or_else(|| {
             BackendError::InvalidInput("IMAP FETCH response has no RFC822.SIZE".into())
         })?,
+    })
+}
+
+pub(crate) fn imap_fetch_headers(fetch: &Fetch) -> Result<ImapFetchedHeaders> {
+    let metadata = imap_fetch_metadata(fetch)?;
+    let headers = fetch.header().ok_or_else(|| {
+        BackendError::InvalidInput("IMAP FETCH response has no requested header fields".into())
+    })?;
+    let bodystructure = fetch.bodystructure().ok_or_else(|| {
+        BackendError::InvalidInput("IMAP FETCH response has no requested BODYSTRUCTURE".into())
+    })?;
+    Ok(ImapFetchedHeaders {
+        uid: metadata.uid,
+        mod_sequence: metadata.mod_sequence,
+        flags: metadata.flags,
+        internal_date: metadata.internal_date,
+        size_bytes: metadata.size,
+        has_attachment: bodystructure_has_attachment(bodystructure),
+        headers: headers.to_vec(),
+    })
+}
+
+fn bodystructure_has_attachment(body: &BodyStructure<'_>) -> bool {
+    match body {
+        BodyStructure::Multipart { common, bodies, .. } => {
+            common_is_attachment(common) || bodies.iter().any(bodystructure_has_attachment)
+        }
+        BodyStructure::Basic { common, .. } | BodyStructure::Message { common, .. } => {
+            common_is_attachment(common) || !common_is_explicitly_inline(common)
+        }
+        BodyStructure::Text { common, .. } => common_is_attachment(common),
+    }
+}
+
+fn common_is_explicitly_inline(common: &BodyContentCommon<'_>) -> bool {
+    common
+        .disposition
+        .as_ref()
+        .is_some_and(|disposition| disposition.ty.eq_ignore_ascii_case("inline"))
+}
+
+fn common_is_attachment(common: &BodyContentCommon<'_>) -> bool {
+    common.disposition.as_ref().is_some_and(|disposition| {
+        disposition.ty.eq_ignore_ascii_case("attachment")
+            || disposition.params.as_ref().is_some_and(|parameters| {
+                parameters.iter().any(|(name, _)| {
+                    name.eq_ignore_ascii_case("filename") || name.eq_ignore_ascii_case("name")
+                })
+            })
+    }) || common.ty.params.as_ref().is_some_and(|parameters| {
+        parameters
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case("name"))
     })
 }
 

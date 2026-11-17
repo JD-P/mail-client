@@ -1,6 +1,6 @@
 use lizard_mail_backend::{
-    AccountKind, Backend, BackendConfig, FolderKind, ImapSecurity, ImapSettings, NewAccount,
-    NewFolder, SearchRequest,
+    AccountKind, Backend, BackendConfig, BackendError, FolderKind, ImapSecurity, ImapSettings,
+    MessageContentAvailability, NewAccount, NewFolder, SearchRequest,
 };
 mod support;
 use support::dovecot::DovecotContainer;
@@ -133,11 +133,16 @@ async fn pulls_real_mail_from_dovecot_incrementally() {
     assert_eq!(
         backend
             .messages()
-            .raw(first_sync.message_ids[0])
+            .content_status(first_sync.message_ids[0])
             .await
-            .unwrap(),
-        first_raw
+            .unwrap()
+            .availability,
+        MessageContentAvailability::HeadersOnly
     );
+    assert!(matches!(
+        backend.messages().raw(first_sync.message_ids[0]).await,
+        Err(BackendError::ContentUnavailable { .. })
+    ));
     assert!(
         !backend
             .messages()
@@ -157,8 +162,42 @@ async fn pulls_real_mail_from_dovecot_incrementally() {
             .summary
             .is_read
     );
-    assert_eq!(search_count(&backend, "amber narwhal").await, 1);
+    assert_eq!(search_count(&backend, "subject:\"Dovecot alpha\"").await, 1);
+    assert_eq!(search_count(&backend, "amber narwhal").await, 0);
     assert_eq!(search_count(&backend, "has:attachment").await, 1);
+
+    // Simulate a process that durably wrote a prefix before its connection
+    // died. The next on-demand fetch must issue its first partial FETCH at
+    // this offset and still reconstruct the exact server bytes.
+    let durable_prefix = 700_000;
+    tokio::fs::write(
+        profile
+            .path()
+            .join("downloads")
+            .join(format!("{}.part", first_sync.message_ids[0])),
+        &first_raw[..durable_prefix],
+    )
+    .await
+    .unwrap();
+
+    for message_id in &first_sync.message_ids {
+        let status = backend
+            .sync()
+            .fetch_imap_message_content(&mut session, account.id, *message_id)
+            .await
+            .unwrap();
+        assert_eq!(status.availability, MessageContentAvailability::Complete);
+        assert_eq!(status.downloaded_bytes, status.expected_bytes);
+    }
+    assert_eq!(
+        backend
+            .messages()
+            .raw(first_sync.message_ids[0])
+            .await
+            .unwrap(),
+        first_raw
+    );
+    assert_eq!(search_count(&backend, "amber narwhal").await, 1);
 
     let no_changes = backend
         .sync()
@@ -178,6 +217,7 @@ async fn pulls_real_mail_from_dovecot_incrementally() {
         .await
         .unwrap();
     assert_eq!(incremental.message_ids.len(), 1);
+    assert_eq!(search_count(&backend, "silver astrolabe").await, 0);
     assert_eq!(
         backend
             .messages()
@@ -194,6 +234,11 @@ async fn pulls_real_mail_from_dovecot_incrementally() {
             .summary
             .thread_id
     );
+    backend
+        .sync()
+        .fetch_imap_message_content(&mut session, account.id, incremental.message_ids[0])
+        .await
+        .unwrap();
     assert_eq!(search_count(&backend, "silver astrolabe").await, 1);
     assert_eq!(search_count(&backend, "in:Inbox").await, 4);
 

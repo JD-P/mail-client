@@ -19,7 +19,9 @@ let message = backend.messages().get(id).await?;
 
 Current invariants:
 
-- raw RFC 5322 bytes are immutable, content-addressed, and hash-checked on read;
+- complete RFC 5322 payloads are immutable, content-addressed, and hash-checked
+  on read; a header-only projection is separately and explicitly typed until
+  the complete payload arrives;
 - on Unix, the profile directory is forced to owner-only permissions;
 - normalized metadata/search text is rebuildable local Turso state;
 - MIME parsing and decoded body extraction have explicit byte/depth/part limits;
@@ -65,6 +67,17 @@ Current invariants:
   SASL/OAuth authentication, mailbox discovery, capability negotiation,
   UIDVALIDITY/CONDSTORE/QRESYNC reconciliation, IDLE/poll wakeups, cancellation
   and bounded reconnect backoff;
+- initial IMAP synchronization fetches bounded header fields and BODYSTRUCTURE,
+  making sender, subject, flags, size, threading and attachment presence useful
+  without transferring message bodies;
+- `MessageContentStatus` durably distinguishes `headers_only`, `downloading`,
+  `complete` and `failed`, including expected/downloaded byte counts and the
+  last failure; `Messages::raw` and the MIME APIs reject incomplete content;
+- on-demand body downloads use bounded `BODY.PEEK[]<offset.count>` requests,
+  persist a partial file, resume at its exact durable offset after failure or
+  restart, and publish MIME, DKIM, body search and heuristic results only after
+  the exact complete payload commits; dropping a download future durably marks
+  its synchronized prefix as a resumable cancellation;
 - account and mailbox progress, failures, retry time and body completeness are
   durable API state rather than transient log messages;
 - server-side removals update Turso and Tantivy together, so expunged mail does
@@ -106,15 +119,28 @@ engine accepts implicit TLS or verified STARTTLS and never represents plaintext
 production transport. `sync_once` is useful for explicit refresh; `run` uses
 IDLE when available, polling otherwise, and stops through a cancellation token.
 
-`imap_fetch_message` converts complete `async-imap` `FETCH` results into the
-transport-neutral batch type. The caller must request `UID FLAGS INTERNALDATE
-BODY.PEEK[]`; `MODSEQ` is retained when available, and missing UID or complete
-body data is rejected.
+`imap_fetch_message` remains the adapter for importers that already possess a
+complete `async-imap` `FETCH` result. The caller must request `UID FLAGS
+INTERNALDATE BODY.PEEK[]`; `MODSEQ` is retained when available, and missing UID
+or complete body data is rejected.
+
+Ordinary `Sync::pull_imap_folder` instead requests selected header fields,
+`RFC822.SIZE` and `BODYSTRUCTURE`, advances the UID cursor after those durable
+projections commit, and transfers no body bytes. A front end can call
+`ImapAccountEngine::fetch_message_content` or the authenticated-session
+`Sync::fetch_imap_message_content` boundary when a message is opened or chosen
+for offline caching. `Messages::content_status` exposes progress without
+guessing from empty body fields.
+
+Search returns a `SearchPage`. For body terms and `filename:`, its
+`content_results_complete` flag is false whenever any message still lacks
+complete content, so an empty or partial result is never presented as an
+exhaustive answer. Header-only operators remain complete immediately.
+
 `ingest_imap_batch` routes complete fetch batches through the same bounded
 set-based path exposed as `Backend::ingest_batch` and
-`Messages::ingest_batch`. `Sync::pull_imap_folder` accepts an authenticated
-session, performs incremental UID-based fetching, and advances its durable
-cursor only after ingestion succeeds.
+`Messages::ingest_batch`; `ingest_imap_header_batch` is the corresponding
+transport-neutral header projection boundary.
 
 The initial search grammar supports bare terms, quoted phrases, parentheses,
 `AND`, `OR`, unary `-`, `from:`, `to:`, `cc:`, `bcc:`, `subject:`,
