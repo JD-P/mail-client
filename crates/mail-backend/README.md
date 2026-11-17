@@ -56,6 +56,15 @@ Current invariants:
   durable API state rather than transient log messages;
 - server-side removals update Turso and Tantivy together, so expunged mail does
   not survive as a stale search result.
+- `ImapMutations` queues offline-safe flag, copy, move, trash and exact-delete
+  requests against one UIDVALIDITY/UID identity; queue rows, state transitions,
+  conflicts and change events are durable;
+- flag edits are optimistic locally, coalesce while pending, use conditional
+  STORE when available and are verified afterward; COPY/MOVE require UIDPLUS
+  mappings so the destination remains the same logical message;
+- interrupted non-idempotent COPY/MOVE operations become blocking ambiguity
+  conflicts instead of being retried into duplicate mail. Clients can inspect
+  the conflict evidence and explicitly cancel the operation to acknowledge it.
 
 `Backend::imap_account_engine` accepts a `CredentialProvider` implemented by an
 OS keychain or OAuth broker. The provider receives only the account's opaque
@@ -113,6 +122,6 @@ a substitute for the representative mixed corpus specified in
 The crate now includes an account-owned IMAP receive engine, structured filter
 execution, bounded Python-shaped heuristic programs, and persisted DKIM
 evidence. Findings and authentication results are returned with message reads.
-OpenPGP, trusted-provider `Authentication-Results`, outbound/local IMAP
-mutations and the broader built-in extractor library remain future work. See
+OpenPGP, trusted-provider `Authentication-Results`, drafts/SMTP submission and
+the broader built-in extractor library remain future work. See
 `../../spec/mail-backend.md` for the authority and presentation model.

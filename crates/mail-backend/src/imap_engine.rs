@@ -1,11 +1,13 @@
 use crate::backend::{enqueue_search_on, insert_event, refresh_remote_in_transaction};
 use crate::imap::imap_fetch_state;
+use crate::imap_mutation::normalize_mutable_flags;
 use crate::{
-    Account, AccountId, AccountKind, Backend, BackendError, FolderId, ImapSecurity,
+    Account, AccountId, AccountKind, Backend, BackendError, FolderId, ImapMutation,
+    ImapMutationConflictKind, ImapMutationOperation, ImapMutationStatus, ImapSecurity,
     RemoteMessageIdentity, Result,
 };
 use async_imap::extensions::idle::IdleResponse;
-use async_imap::types::{Capabilities, Capability, NameAttribute};
+use async_imap::types::{Capabilities, Capability, CopyUid, NameAttribute};
 use async_imap::{Authenticator, Client, Session};
 use chrono::Utc;
 use futures_util::future::BoxFuture;
@@ -92,6 +94,9 @@ pub struct ImapAccountEngineConfig {
     pub idle_refresh: Duration,
     pub backoff_initial: Duration,
     pub backoff_maximum: Duration,
+    /// Maximum durable outbound mutations attempted on one synchronization
+    /// connection before ordinary mailbox reconciliation resumes.
+    pub mutation_batch_size: usize,
     /// Whether the built-in Mozilla/WebPKI root set is accepted.
     pub use_webpki_roots: bool,
     /// Additional DER-encoded trust anchors, primarily for private mail
@@ -109,6 +114,7 @@ impl Default for ImapAccountEngineConfig {
             idle_refresh: Duration::from_secs(25 * 60),
             backoff_initial: Duration::from_secs(2),
             backoff_maximum: Duration::from_secs(15 * 60),
+            mutation_batch_size: 100,
             use_webpki_roots: true,
             additional_root_certificates_der: Vec::new(),
         }
@@ -180,7 +186,15 @@ pub struct ImapFolderSyncReport {
 pub struct ImapAccountSyncReport {
     pub account_id: AccountId,
     pub capabilities: Vec<String>,
+    pub mutations: ImapMutationSyncReport,
     pub folders: Vec<ImapFolderSyncReport>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ImapMutationSyncReport {
+    pub attempted: usize,
+    pub applied: usize,
+    pub conflicts: usize,
 }
 
 #[derive(Clone)]
@@ -204,9 +218,11 @@ impl ImapAccountEngine {
             || config.idle_refresh.is_zero()
             || config.backoff_initial.is_zero()
             || config.backoff_maximum < config.backoff_initial
+            || config.mutation_batch_size == 0
         {
             return Err(BackendError::InvalidInput(
-                "IMAP engine timeouts and backoff bounds must be positive and ordered".into(),
+                "IMAP engine timeouts, backoff bounds, and mutation batch size must be positive and ordered"
+                    .into(),
             ));
         }
         let mut roots = RootCertStore::empty();
@@ -446,6 +462,9 @@ impl ImapAccountEngine {
             )
             .await
             .is_ok();
+        let mutations = self
+            .process_mutations(&mut session, account_id, &capabilities)
+            .await?;
         let mut folders = Vec::new();
         for mailbox in discovered.iter().filter(|mailbox| mailbox.selectable) {
             match timeout(
@@ -481,6 +500,7 @@ impl ImapAccountEngine {
         Ok(ImapAccountSyncReport {
             account_id,
             capabilities: capability_names,
+            mutations,
             folders,
         })
     }
@@ -672,6 +692,594 @@ impl ImapAccountEngine {
         .await
         .map_err(|_| BackendError::Imap("TLS handshake timed out".into()))?
         .map_err(|error| BackendError::Imap(format!("TLS handshake failed: {error}")))
+    }
+
+    async fn process_mutations(
+        &self,
+        session: &mut Session<ImapTransport>,
+        account_id: AccountId,
+        capabilities: &Capabilities,
+    ) -> Result<ImapMutationSyncReport> {
+        let mutations_api = self.backend.imap_mutations();
+        if mutations_api.has_blocking_conflict(account_id).await? {
+            return Err(BackendError::Conflict(
+                "account synchronization is paused because a COPY or MOVE has an ambiguous server outcome"
+                    .into(),
+            ));
+        }
+        let due = mutations_api
+            .due(account_id, self.config.mutation_batch_size)
+            .await?;
+        let mut report = ImapMutationSyncReport::default();
+        for mutation in due {
+            report.attempted += 1;
+            if mutation.status == ImapMutationStatus::InFlight
+                && matches!(
+                    mutation.operation,
+                    ImapMutationOperation::Copy { .. } | ImapMutationOperation::Move { .. }
+                )
+            {
+                mutations_api
+                    .conflict(
+                        &mutation,
+                        ImapMutationConflictKind::AmbiguousOutcome,
+                        json_mutation_source(&mutation),
+                        serde_json::json!({"status": "outcome_unknown_after_interruption"}),
+                        "the client was interrupted after sending a non-idempotent COPY or MOVE; automatic retry could duplicate mail",
+                    )
+                    .await?;
+                return Err(BackendError::Conflict(
+                    "account synchronization paused after an interrupted COPY or MOVE".into(),
+                ));
+            }
+            match self
+                .process_mutation(session, capabilities, &mutation)
+                .await?
+            {
+                MutationOutcome::Applied => report.applied += 1,
+                MutationOutcome::Conflict => report.conflicts += 1,
+            }
+        }
+        Ok(report)
+    }
+
+    async fn process_mutation(
+        &self,
+        session: &mut Session<ImapTransport>,
+        capabilities: &Capabilities,
+        queued: &ImapMutation,
+    ) -> Result<MutationOutcome> {
+        let mutations_api = self.backend.imap_mutations();
+        let Some(source_mailbox) = self
+            .remote_mailbox_name(queued.account_id, queued.source.folder_id)
+            .await?
+        else {
+            mutations_api
+                .conflict(
+                    queued,
+                    ImapMutationConflictKind::SourceMissing,
+                    json_mutation_source(queued),
+                    serde_json::json!({"mailbox": "unavailable"}),
+                    "the source mailbox is no longer present and selectable",
+                )
+                .await?;
+            return Ok(MutationOutcome::Conflict);
+        };
+        let selected = if capabilities.has_str("CONDSTORE") {
+            command_timeout(
+                self.config.command_timeout,
+                "mutation source SELECT CONDSTORE",
+                session.select_condstore(&source_mailbox),
+            )
+            .await?
+        } else {
+            command_timeout(
+                self.config.command_timeout,
+                "mutation source SELECT",
+                session.select(&source_mailbox),
+            )
+            .await?
+        };
+        if selected.uid_validity != Some(queued.source.uid_validity) {
+            mutations_api
+                .conflict(
+                    queued,
+                    ImapMutationConflictKind::UidValidityChanged,
+                    json_mutation_source(queued),
+                    serde_json::json!({"uid_validity": selected.uid_validity}),
+                    "the source mailbox UIDVALIDITY epoch changed before the mutation was applied",
+                )
+                .await?;
+            return Ok(MutationOutcome::Conflict);
+        }
+        let current = self
+            .fetch_mutation_source(session, queued, "mutation precondition FETCH")
+            .await?;
+        let Some(current) = current else {
+            if queued.status == ImapMutationStatus::InFlight
+                && matches!(queued.operation, ImapMutationOperation::Delete)
+            {
+                mutations_api.applied(queued, None, None).await?;
+                return Ok(MutationOutcome::Applied);
+            }
+            mutations_api
+                .conflict(
+                    queued,
+                    ImapMutationConflictKind::SourceMissing,
+                    json_mutation_source(queued),
+                    serde_json::json!({"source_uid": "absent"}),
+                    "the source UID disappeared before the mutation could be applied",
+                )
+                .await?;
+            return Ok(MutationOutcome::Conflict);
+        };
+
+        match &queued.operation {
+            ImapMutationOperation::SetFlags { flags } => {
+                if same_flags(&current.flags, flags) {
+                    let active = self.begin_if_needed(queued).await?;
+                    mutations_api.applied(&active, Some(&current), None).await?;
+                    return Ok(MutationOutcome::Applied);
+                }
+                if !same_flags(&current.flags, &queued.source.flags) {
+                    mutations_api
+                        .conflict(
+                            queued,
+                            ImapMutationConflictKind::ServerStateChanged,
+                            serde_json::json!({
+                                "flags": queued.source.flags,
+                                "mod_sequence": queued.source.mod_sequence,
+                            }),
+                            serde_json::json!({
+                                "flags": current.flags,
+                                "mod_sequence": current.mod_sequence,
+                            }),
+                            "server flags changed after the local edit; the backend refused to overwrite them",
+                        )
+                        .await?;
+                    return Ok(MutationOutcome::Conflict);
+                }
+                let active = self.begin_for_send(queued).await?;
+                let flags_argument = format_flag_list(flags);
+                let result = if let (true, Some(mod_sequence)) =
+                    (capabilities.has_str("CONDSTORE"), current.mod_sequence)
+                {
+                    let query =
+                        format!("(UNCHANGEDSINCE {mod_sequence}) FLAGS.SILENT {flags_argument}");
+                    command_timeout(
+                        self.config.command_timeout,
+                        "conditional UID STORE",
+                        async {
+                            session
+                                .uid_store(active.source.uid.to_string(), query)
+                                .await?
+                                .try_collect::<Vec<_>>()
+                                .await?;
+                            Ok::<(), async_imap::error::Error>(())
+                        },
+                    )
+                    .await
+                } else {
+                    // Without CONDSTORE there is no atomic compare-and-set.
+                    // Apply only the intended delta so a concurrently-added
+                    // unrelated keyword is never erased by a full replacement.
+                    let current_flags = normalize_mutable_flags(current.flags.clone())?;
+                    let additions = flag_difference(flags, &current_flags);
+                    let removals = flag_difference(&current_flags, flags);
+                    command_timeout(self.config.command_timeout, "delta UID STORE", async {
+                        if !additions.is_empty() {
+                            session
+                                .uid_store(
+                                    active.source.uid.to_string(),
+                                    format!("+FLAGS.SILENT {}", format_flag_list(&additions)),
+                                )
+                                .await?
+                                .try_collect::<Vec<_>>()
+                                .await?;
+                        }
+                        if !removals.is_empty() {
+                            session
+                                .uid_store(
+                                    active.source.uid.to_string(),
+                                    format!("-FLAGS.SILENT {}", format_flag_list(&removals)),
+                                )
+                                .await?
+                                .try_collect::<Vec<_>>()
+                                .await?;
+                        }
+                        Ok::<(), async_imap::error::Error>(())
+                    })
+                    .await
+                };
+                if let Err(error) = result {
+                    mutations_api
+                        .note_in_flight_error(&active, &error.to_string())
+                        .await?;
+                    return Err(error);
+                }
+                let observed = self
+                    .fetch_mutation_source(session, &active, "mutation verification FETCH")
+                    .await?;
+                let Some(observed) = observed else {
+                    mutations_api
+                        .conflict(
+                            &active,
+                            ImapMutationConflictKind::SourceMissing,
+                            serde_json::json!({"flags": flags}),
+                            serde_json::json!({"source_uid": "absent_after_store"}),
+                            "the source UID disappeared while its flags were being changed",
+                        )
+                        .await?;
+                    return Ok(MutationOutcome::Conflict);
+                };
+                if same_flags(&observed.flags, flags) {
+                    mutations_api
+                        .applied(&active, Some(&observed), None)
+                        .await?;
+                    Ok(MutationOutcome::Applied)
+                } else {
+                    mutations_api
+                        .conflict(
+                            &active,
+                            ImapMutationConflictKind::ServerStateChanged,
+                            serde_json::json!({"flags": flags}),
+                            serde_json::json!({
+                                "flags": observed.flags,
+                                "mod_sequence": observed.mod_sequence,
+                            }),
+                            "the conditional flag update was not applied because the server state changed",
+                        )
+                        .await?;
+                    Ok(MutationOutcome::Conflict)
+                }
+            }
+            ImapMutationOperation::Copy {
+                destination_folder_id,
+            } => {
+                if !self
+                    .require_uidplus_or_conflict(queued, capabilities)
+                    .await?
+                {
+                    return Ok(MutationOutcome::Conflict);
+                }
+                let Some(destination_name) = self
+                    .remote_mailbox_name(queued.account_id, *destination_folder_id)
+                    .await?
+                else {
+                    mutations_api
+                        .conflict(
+                            queued,
+                            ImapMutationConflictKind::DestinationUnavailable,
+                            serde_json::json!({"destination_folder_id": destination_folder_id}),
+                            serde_json::json!({"mailbox": "unavailable"}),
+                            "the destination mailbox is no longer present and selectable",
+                        )
+                        .await?;
+                    return Ok(MutationOutcome::Conflict);
+                };
+                let active = self.begin_for_send(queued).await?;
+                let mapping = command_timeout(
+                    self.config.command_timeout,
+                    "UID COPY",
+                    session.uid_copy_with_mapping(active.source.uid.to_string(), destination_name),
+                )
+                .await;
+                let mapping = match mapping {
+                    Ok(Some(mapping)) => mapping,
+                    Ok(None) => {
+                        mutations_api
+                            .conflict(
+                                &active,
+                                ImapMutationConflictKind::MissingServerMapping,
+                                serde_json::json!({"capability": "UIDPLUS"}),
+                                serde_json::json!({"copy_uid": null}),
+                                "the server accepted COPY without returning the required UID mapping",
+                            )
+                            .await?;
+                        return Err(BackendError::Conflict(
+                            "account synchronization paused because COPY returned no UID mapping"
+                                .into(),
+                        ));
+                    }
+                    Err(error) => {
+                        mutations_api
+                            .conflict(
+                                &active,
+                                ImapMutationConflictKind::AmbiguousOutcome,
+                                json_mutation_source(&active),
+                                serde_json::json!({"error": error.to_string()}),
+                                "COPY did not complete observably; automatic retry could create a duplicate",
+                            )
+                            .await?;
+                        return Err(error);
+                    }
+                };
+                let Some(destination_uid) = mapping_for_single_uid(&mapping, active.source.uid)
+                else {
+                    mutations_api
+                        .conflict(
+                            &active,
+                            ImapMutationConflictKind::MissingServerMapping,
+                            serde_json::json!({"source_uid": active.source.uid}),
+                            serde_json::json!({"copy_uid": format!("{mapping:?}")}),
+                            "COPYUID did not contain a one-to-one mapping for the requested UID",
+                        )
+                        .await?;
+                    return Err(BackendError::Conflict(
+                        "account synchronization paused because COPYUID was not one-to-one".into(),
+                    ));
+                };
+                mutations_api
+                    .applied(
+                        &active,
+                        None,
+                        Some((
+                            *destination_folder_id,
+                            mapping.uid_validity,
+                            destination_uid,
+                            current.flags,
+                        )),
+                    )
+                    .await?;
+                Ok(MutationOutcome::Applied)
+            }
+            ImapMutationOperation::Move {
+                destination_folder_id,
+            } => {
+                if !self
+                    .require_uidplus_or_conflict(queued, capabilities)
+                    .await?
+                {
+                    return Ok(MutationOutcome::Conflict);
+                }
+                let Some(destination_name) = self
+                    .remote_mailbox_name(queued.account_id, *destination_folder_id)
+                    .await?
+                else {
+                    mutations_api
+                        .conflict(
+                            queued,
+                            ImapMutationConflictKind::DestinationUnavailable,
+                            serde_json::json!({"destination_folder_id": destination_folder_id}),
+                            serde_json::json!({"mailbox": "unavailable"}),
+                            "the destination mailbox is no longer present and selectable",
+                        )
+                        .await?;
+                    return Ok(MutationOutcome::Conflict);
+                };
+                let active = self.begin_for_send(queued).await?;
+                let result = if capabilities.has_str("MOVE") {
+                    command_timeout(
+                        self.config.command_timeout,
+                        "UID MOVE",
+                        session
+                            .uid_move_with_mapping(active.source.uid.to_string(), destination_name),
+                    )
+                    .await
+                } else {
+                    self.fallback_move(session, active.source.uid, &destination_name)
+                        .await
+                };
+                let mapping = match result {
+                    Ok(Some(mapping)) => mapping,
+                    Ok(None) => {
+                        mutations_api
+                            .conflict(
+                                &active,
+                                ImapMutationConflictKind::MissingServerMapping,
+                                serde_json::json!({"capability": "UIDPLUS"}),
+                                serde_json::json!({"copy_uid": null}),
+                                "the server moved mail without returning a destination UID mapping",
+                            )
+                            .await?;
+                        return Err(BackendError::Conflict(
+                            "account synchronization paused because MOVE returned no UID mapping"
+                                .into(),
+                        ));
+                    }
+                    Err(error) => {
+                        mutations_api
+                            .conflict(
+                                &active,
+                                ImapMutationConflictKind::AmbiguousOutcome,
+                                json_mutation_source(&active),
+                                serde_json::json!({"error": error.to_string()}),
+                                "MOVE may have completed partially; automatic retry could duplicate or misplace mail",
+                            )
+                            .await?;
+                        return Err(error);
+                    }
+                };
+                let Some(destination_uid) = mapping_for_single_uid(&mapping, active.source.uid)
+                else {
+                    mutations_api
+                        .conflict(
+                            &active,
+                            ImapMutationConflictKind::MissingServerMapping,
+                            serde_json::json!({"source_uid": active.source.uid}),
+                            serde_json::json!({"copy_uid": format!("{mapping:?}")}),
+                            "COPYUID did not contain a one-to-one mapping for the moved UID",
+                        )
+                        .await?;
+                    return Err(BackendError::Conflict(
+                        "account synchronization paused because MOVE COPYUID was not one-to-one"
+                            .into(),
+                    ));
+                };
+                mutations_api
+                    .applied(
+                        &active,
+                        None,
+                        Some((
+                            *destination_folder_id,
+                            mapping.uid_validity,
+                            destination_uid,
+                            current.flags,
+                        )),
+                    )
+                    .await?;
+                Ok(MutationOutcome::Applied)
+            }
+            ImapMutationOperation::Delete => {
+                if !self
+                    .require_uidplus_or_conflict(queued, capabilities)
+                    .await?
+                {
+                    return Ok(MutationOutcome::Conflict);
+                }
+                let active = self.begin_for_send(queued).await?;
+                let result =
+                    command_timeout(self.config.command_timeout, "UID delete STORE", async {
+                        session
+                            .uid_store(active.source.uid.to_string(), "+FLAGS.SILENT (\\Deleted)")
+                            .await?
+                            .try_collect::<Vec<_>>()
+                            .await?;
+                        session
+                            .uid_expunge(active.source.uid.to_string())
+                            .await?
+                            .try_collect::<Vec<_>>()
+                            .await
+                    })
+                    .await;
+                if let Err(error) = result {
+                    mutations_api
+                        .note_in_flight_error(&active, &error.to_string())
+                        .await?;
+                    return Err(error);
+                }
+                mutations_api.applied(&active, None, None).await?;
+                Ok(MutationOutcome::Applied)
+            }
+        }
+    }
+
+    async fn begin_if_needed(&self, mutation: &ImapMutation) -> Result<ImapMutation> {
+        if mutation.status == ImapMutationStatus::InFlight {
+            Ok(mutation.clone())
+        } else {
+            self.backend.imap_mutations().begin(mutation.id).await
+        }
+    }
+
+    async fn begin_for_send(&self, mutation: &ImapMutation) -> Result<ImapMutation> {
+        if mutation.status == ImapMutationStatus::InFlight {
+            self.backend
+                .imap_mutations()
+                .resume_attempt(mutation.id)
+                .await
+        } else {
+            self.backend.imap_mutations().begin(mutation.id).await
+        }
+    }
+
+    async fn require_uidplus_or_conflict(
+        &self,
+        mutation: &ImapMutation,
+        capabilities: &Capabilities,
+    ) -> Result<bool> {
+        if capabilities.has_str("UIDPLUS") {
+            return Ok(true);
+        }
+        self.backend
+            .imap_mutations()
+            .conflict(
+                mutation,
+                ImapMutationConflictKind::CapabilityUnavailable,
+                serde_json::json!({"required": "UIDPLUS"}),
+                serde_json::json!({"capabilities": capability_names(capabilities)}),
+                "safe copy, move, and exact expunge require UIDPLUS",
+            )
+            .await?;
+        Ok(false)
+    }
+
+    async fn fetch_mutation_source(
+        &self,
+        session: &mut Session<ImapTransport>,
+        mutation: &ImapMutation,
+        operation: &str,
+    ) -> Result<Option<RemoteMessageIdentity>> {
+        let fetches = command_timeout(self.config.command_timeout, operation, async {
+            session
+                .uid_fetch(mutation.source.uid.to_string(), "(UID FLAGS MODSEQ)")
+                .await?
+                .try_collect::<Vec<_>>()
+                .await
+        })
+        .await?;
+        for fetch in &fetches {
+            let (uid, mod_sequence, flags) = imap_fetch_state(fetch)?;
+            if uid == mutation.source.uid {
+                return Ok(Some(RemoteMessageIdentity {
+                    account_id: mutation.account_id,
+                    folder_id: mutation.source.folder_id,
+                    uid_validity: mutation.source.uid_validity,
+                    uid,
+                    mod_sequence,
+                    flags,
+                }));
+            }
+        }
+        Ok(None)
+    }
+
+    async fn remote_mailbox_name(
+        &self,
+        account_id: AccountId,
+        folder_id: FolderId,
+    ) -> Result<Option<String>> {
+        let connection = self.backend.inner.connection.lock().await;
+        let mut rows = connection
+            .query(
+                "SELECT f.remote_name, s.selectable, s.remote_present FROM folders f JOIN imap_mailbox_state s ON s.folder_id = f.id WHERE f.id = ?1 AND f.account_id = ?2 AND f.kind = 'remote'",
+                (folder_id.to_string(), account_id.to_string()),
+            )
+            .await?;
+        let Some(row) = rows.next().await? else {
+            return Ok(None);
+        };
+        let selectable: bool = row.get(1)?;
+        let present: bool = row.get(2)?;
+        if !selectable || !present {
+            return Ok(None);
+        }
+        row.get(0).map_err(Into::into)
+    }
+
+    async fn fallback_move(
+        &self,
+        session: &mut Session<ImapTransport>,
+        uid: u32,
+        destination_name: &str,
+    ) -> Result<Option<CopyUid>> {
+        let mapping = command_timeout(
+            self.config.command_timeout,
+            "fallback UID COPY",
+            session.uid_copy_with_mapping(uid.to_string(), destination_name),
+        )
+        .await?;
+        command_timeout(self.config.command_timeout, "fallback move STORE", async {
+            session
+                .uid_store(uid.to_string(), "+FLAGS.SILENT (\\Deleted)")
+                .await?
+                .try_collect::<Vec<_>>()
+                .await
+        })
+        .await?;
+        command_timeout(
+            self.config.command_timeout,
+            "fallback move UID EXPUNGE",
+            async {
+                session
+                    .uid_expunge(uid.to_string())
+                    .await?
+                    .try_collect::<Vec<_>>()
+                    .await
+            },
+        )
+        .await?;
+        Ok(mapping)
     }
 
     async fn discover_mailboxes(
@@ -1398,6 +2006,67 @@ struct MailboxTarget {
     highest_mod_sequence: Option<u64>,
 }
 
+enum MutationOutcome {
+    Applied,
+    Conflict,
+}
+
+fn same_flags(left: &[String], right: &[String]) -> bool {
+    let normalize = |flags: &[String]| {
+        let mut values = flags
+            .iter()
+            .filter(|flag| !flag.eq_ignore_ascii_case("\\Recent"))
+            .map(|flag| flag.to_ascii_lowercase())
+            .collect::<Vec<_>>();
+        values.sort_unstable();
+        values.dedup();
+        values
+    };
+    normalize(left) == normalize(right)
+}
+
+fn format_flag_list(flags: &[String]) -> String {
+    format!("({})", flags.join(" "))
+}
+
+fn flag_difference(left: &[String], right: &[String]) -> Vec<String> {
+    left.iter()
+        .filter(|candidate| {
+            !right
+                .iter()
+                .any(|other| candidate.eq_ignore_ascii_case(other))
+        })
+        .cloned()
+        .collect()
+}
+
+fn mapping_for_single_uid(mapping: &CopyUid, source_uid: u32) -> Option<u32> {
+    if mapping.source.len() != 1 || mapping.destination.len() != 1 {
+        return None;
+    }
+    let source = &mapping.source[0];
+    let destination = &mapping.destination[0];
+    if source.start() != source.end()
+        || destination.start() != destination.end()
+        || *source.start() != source_uid
+    {
+        return None;
+    }
+    Some(*destination.start())
+}
+
+fn json_mutation_source(mutation: &ImapMutation) -> serde_json::Value {
+    serde_json::json!({
+        "message_id": mutation.message_id,
+        "account_id": mutation.account_id,
+        "folder_id": mutation.source.folder_id,
+        "uid_validity": mutation.source.uid_validity,
+        "uid": mutation.source.uid,
+        "mod_sequence": mutation.source.mod_sequence,
+        "flags": mutation.source.flags,
+    })
+}
+
 enum ImapTransport {
     Plain(TcpStream),
     Tls(Box<TlsStream<TcpStream>>),
@@ -1701,5 +2370,9 @@ mod tests {
         let secret = SecretValue::new("correct horse battery staple");
         assert_eq!(format!("{secret:?}"), "SecretValue([REDACTED])");
         assert_eq!(compact_uid_set([7, 2, 3, 4, 9, 7]), Some("2:4,7,9".into()));
+        assert_eq!(
+            flag_difference(&["\\Seen".into(), "$Label".into()], &["\\seen".into()]),
+            vec!["$Label"]
+        );
     }
 }

@@ -1076,6 +1076,29 @@ impl<T: Read + Write + Unpin + fmt::Debug + Send> Session<T> {
         Ok(())
     }
 
+    /// Copy UIDs and retain the source-to-destination UIDPLUS mapping.
+    pub async fn uid_copy_with_mapping<S1: AsRef<str>, S2: AsRef<str>>(
+        &mut self,
+        uid_set: S1,
+        mailbox_name: S2,
+    ) -> Result<Option<CopyUid>> {
+        let uid_set = validate_uid_set(uid_set.as_ref())?;
+        let id = self
+            .run_command(&format!(
+                "UID COPY {} {}",
+                uid_set,
+                validate_str(mailbox_name.as_ref())?
+            ))
+            .await?;
+        parse_copy_uid(
+            &mut self.conn.stream,
+            &mut self.conn.pending_command,
+            self.unsolicited_responses_tx.clone(),
+            id,
+        )
+        .await
+    }
+
     /// The [`MOVE` command](https://tools.ietf.org/html/rfc6851#section-3.1) takes two
     /// arguments: a sequence set and a named mailbox. Each message included in the set is moved,
     /// rather than copied, from the selected (source) mailbox to the named (target) mailbox.
@@ -1138,6 +1161,29 @@ impl<T: Read + Write + Unpin + fmt::Debug + Send> Session<T> {
         .await?;
 
         Ok(())
+    }
+
+    /// Move UIDs and retain the source-to-destination UIDPLUS mapping.
+    pub async fn uid_move_with_mapping<S1: AsRef<str>, S2: AsRef<str>>(
+        &mut self,
+        uid_set: S1,
+        mailbox_name: S2,
+    ) -> Result<Option<CopyUid>> {
+        let uid_set = validate_uid_set(uid_set.as_ref())?;
+        let id = self
+            .run_command(&format!(
+                "UID MOVE {} {}",
+                uid_set,
+                validate_str(mailbox_name.as_ref())?
+            ))
+            .await?;
+        parse_copy_uid(
+            &mut self.conn.stream,
+            &mut self.conn.pending_command,
+            self.unsolicited_responses_tx.clone(),
+            id,
+        )
+        .await
     }
 
     /// The [`LIST` command](https://tools.ietf.org/html/rfc3501#section-6.3.8) returns a subset of
@@ -2555,6 +2601,27 @@ mod tests {
             session.stream.inner.written_buf == command.as_bytes().to_vec(),
             "Invalid uid move command"
         );
+    }
+
+    #[cfg_attr(feature = "runtime-tokio", tokio::test)]
+    #[cfg_attr(feature = "runtime-async-std", async_std::test)]
+    async fn uid_copy_with_mapping_preserves_tagged_copyuid() {
+        let response = b"A0001 OK [COPYUID 1511554416 41 92] Copy completed\r\n".to_vec();
+        let mailbox_name = "Archive";
+        let command = format!("A0001 UID COPY 41 {}\r\n", quote!(mailbox_name));
+        let mock_stream = MockStream::new(response);
+        let mut session = mock_session!(mock_stream);
+
+        let mapping = session
+            .uid_copy_with_mapping("41", mailbox_name)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(mapping.uid_validity, 1_511_554_416);
+        assert_eq!(mapping.source, vec![41..=41]);
+        assert_eq!(mapping.destination, vec![92..=92]);
+        assert_eq!(session.stream.inner.written_buf, command.as_bytes());
     }
 
     #[cfg_attr(feature = "runtime-tokio", tokio::test)]

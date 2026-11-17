@@ -486,6 +486,77 @@ pub(crate) async fn parse_qresync_select<T: Stream<Item = io::Result<ResponseDat
     })
 }
 
+pub(crate) async fn parse_copy_uid<T: Stream<Item = io::Result<ResponseData>> + Unpin>(
+    stream: &mut T,
+    pending_command: &mut Option<RequestId>,
+    unsolicited: UnsolicitedSender,
+    command_tag: RequestId,
+) -> Result<Option<CopyUid>> {
+    let mut mapping = None;
+    loop {
+        let response = match stream.try_next().await {
+            Ok(Some(response)) => response,
+            Ok(None) => {
+                *pending_command = None;
+                return Err(Error::ConnectionLost);
+            }
+            Err(error) => {
+                *pending_command = None;
+                return Err(error.into());
+            }
+        };
+        match response.parsed() {
+            Response::Done {
+                tag,
+                status,
+                outcome,
+            } if tag == &command_tag => {
+                *pending_command = None;
+                if let Some(value) = copy_uid_from_code(outcome.code.as_ref()) {
+                    mapping = Some(value);
+                }
+                use imap_proto::Status;
+                return match status {
+                    Status::Ok => Ok(mapping),
+                    Status::Bad => Err(Error::Bad(format!("outcome: {outcome:?}"))),
+                    Status::No => Err(Error::No(format!("outcome: {outcome:?}"))),
+                    _ => Err(Error::Io(io::Error::other(format!(
+                        "status: {status:?}, outcome: {outcome:?}"
+                    )))),
+                };
+            }
+            Response::Data { outcome, .. } => {
+                if let Some(value) = copy_uid_from_code(outcome.code.as_ref()) {
+                    mapping = Some(value);
+                } else {
+                    handle_unilateral(response, unsolicited.clone());
+                }
+            }
+            _ => handle_unilateral(response, unsolicited.clone()),
+        }
+    }
+}
+
+fn copy_uid_from_code(code: Option<&imap_proto::ResponseCode<'_>>) -> Option<CopyUid> {
+    let Some(imap_proto::ResponseCode::CopyUid(uid_validity, source, destination)) = code else {
+        return None;
+    };
+    Some(CopyUid {
+        uid_validity: *uid_validity,
+        source: source.iter().map(uid_set_member_range).collect(),
+        destination: destination.iter().map(uid_set_member_range).collect(),
+    })
+}
+
+fn uid_set_member_range(
+    member: &imap_proto::rfc4315::UidSetMember,
+) -> std::ops::RangeInclusive<Uid> {
+    match member {
+        imap_proto::rfc4315::UidSetMember::Uid(uid) => *uid..=*uid,
+        imap_proto::rfc4315::UidSetMember::UidRange(range) => range.clone(),
+    }
+}
+
 pub(crate) async fn parse_ids<T: Stream<Item = io::Result<ResponseData>> + Unpin>(
     stream: &mut T,
     pending_command: &mut Option<RequestId>,
@@ -681,6 +752,26 @@ mod tests {
         assert_eq!(selected.changed[0].uid, Some(4));
         assert_eq!(selected.changed[0].modseq, Some(99));
         assert!(selected.changed[0].flags().any(|flag| flag == Flag::Seen));
+    }
+
+    #[cfg_attr(feature = "runtime-tokio", tokio::test)]
+    #[cfg_attr(feature = "runtime-async-std", async_std::test)]
+    async fn parse_copy_uid_preserves_uidplus_mapping() {
+        let responses = input_stream(&["* OK [COPYUID 1511554416 142,399 41:42] Copied UIDs\r\n"]);
+        let mut stream = async_std::stream::from_iter(responses);
+        let (send, recv) = bounded(10);
+        let id = RequestId("A0001".into());
+        let mut pending = Some(id.clone());
+
+        let mapping = parse_copy_uid(&mut stream, &mut pending, send, id)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert!(recv.is_empty());
+        assert_eq!(mapping.uid_validity, 1_511_554_416);
+        assert_eq!(mapping.source, vec![142..=142, 399..=399]);
+        assert_eq!(mapping.destination, vec![41..=42]);
     }
 
     #[cfg_attr(feature = "runtime-tokio", tokio::test)]

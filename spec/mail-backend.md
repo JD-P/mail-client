@@ -12,10 +12,9 @@ and routes bounded body streams through the same idempotent ingestion path as
 local imports.
 
 The current slice does **not** yet run OpenPGP verification, extract every
-security heuristic, synchronize locally requested mutations back to a server,
-send mail, or expose inter-process transport. Those are tracked here as the
-next layers; the presence of their data-model requirements below is not a claim
-that they are implemented.
+security heuristic, send mail, or expose inter-process transport. Those are
+tracked here as the next layers; the presence of their data-model requirements
+below is not a claim that they are implemented.
 
 Related frontend requirements: [security-ui.md](security-ui.md).
 
@@ -313,10 +312,11 @@ The current read-only-IMAP slice supports:
 - move between local folders; and
 - stop later ordered filters.
 
-Server-side move/copy/trash actions belong behind the later IMAP mutation
-outbox. Filters cannot modify contacts or trust, train classification, create
-folders or rules, send mail, invoke external services, or mutate other
-messages. Raw message content is immutable.
+Server-side move/copy/trash actions use the explicit IMAP mutation outbox; the
+current filter action vocabulary remains local-only until its UI and conflict
+semantics are specified. Filters cannot modify contacts or trust, train
+classification, create folders or rules, send mail, invoke external services,
+or mutate other messages. Raw message content is immutable.
 
 Actions must be idempotent. Each application records message, rule ID, rule
 version, matched condition, actions and timestamp. This supports "why is this
@@ -445,9 +445,30 @@ state. A `CredentialProvider` is the platform boundary for an OS keychain or
 OAuth broker; secrets are debug-redacted, zeroized on drop and never written to
 the account database. TLS certificate exceptions are not an account setting.
 
-Locally requested flag/move/copy/trash mutations, their durable outbox and
-server/local conflict records remain the separate mutation workstream described
-below.
+Locally requested flag/copy/move/trash/delete mutations are represented by a
+durable outbox. Every row captures the exact source UIDVALIDITY epoch, UID,
+MODSEQ and flags plus its operation, attempts and terminal state. Flag edits are
+optimistic in local state and coalesce while pending, but execution first checks
+the server snapshot, uses `UNCHANGEDSINCE` when CONDSTORE is available, and
+verifies the resulting flags. Without CONDSTORE it applies only the requested
+add/remove delta rather than replacing the full flag set, preserving unrelated
+concurrent keywords. A mismatch becomes durable conflict evidence; the backend
+never silently chooses local or server last-writer-wins state.
+
+COPY and MOVE require UIDPLUS. Their returned COPYUID mapping is persisted as a
+new instance of the existing logical message before ordinary folder
+reconciliation, preventing the copied bytes from becoming a duplicate logical
+message. MOVE uses the atomic extension when advertised and otherwise uses the
+safe UIDPLUS COPY/STORE/UID EXPUNGE sequence. Permanent delete always uses UID
+EXPUNGE and never broad EXPUNGE. Trash is a move to the uniquely advertised
+`\\Trash` mailbox.
+
+An interrupted flag update or exact delete is recoverable by inspecting the
+source UID and desired end state. COPY and MOVE are not generally idempotent: if
+their outcome is unknown, or a UIDPLUS server omits the mapping, the account's
+folder reconciliation pauses behind an explicit ambiguity conflict. Automatic
+retry is forbidden because it could duplicate mail. Cancelling the conflict is
+an explicit client acknowledgement that releases synchronization.
 
 POP3 later requires UIDL-based identity, duplicate handling, retention/deletion
 policy and clear acknowledgement that POP3 has no server folder model.
@@ -677,7 +698,7 @@ would vary by client.
 5. Backend address book plus Warm/Cold query predicates.
 6. OpenPGP evidence and the remaining built-in heuristic feature pipeline.
 7. Change-stream API and official CLI/GUI integration.
-8. IMAP mutations, drafts and SMTP submission.
+8. Drafts and SMTP submission (IMAP mutations are implemented).
 9. POP3 and import/export adapters.
 
 ## Research references

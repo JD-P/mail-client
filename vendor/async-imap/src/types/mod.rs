@@ -192,7 +192,7 @@ impl<'a> From<&'a str> for Flag<'a> {
 }
 
 mod mailbox;
-pub use self::mailbox::{Mailbox, QresyncSelect};
+pub use self::mailbox::{CopyUid, Mailbox, QresyncSelect};
 
 mod fetch;
 pub use self::fetch::Fetch;

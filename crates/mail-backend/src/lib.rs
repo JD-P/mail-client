@@ -3,8 +3,9 @@
 //! This crate deliberately owns no renderer. Protocol adapters feed exact RFC
 //! 5322 bytes through [`Backend::ingest`] or the bounded
 //! [`Backend::ingest_batch`] path, which are also used by fixture importers and
-//! future POP3 support. The IMAP adapter accepts an authenticated session whose
-//! TLS transport and credentials remain the embedding application's concern.
+//! future POP3 support. The IMAP account engine owns verified transport,
+//! credential-provider authentication, receive synchronization and a durable
+//! outbound mutation queue; it still shares the same ingestion path.
 
 mod authentication;
 mod automation;
@@ -16,6 +17,7 @@ mod heuristic;
 mod id;
 mod imap;
 mod imap_engine;
+mod imap_mutation;
 mod mime;
 mod query;
 mod schema;
@@ -27,12 +29,16 @@ pub use backend::{Accounts, Backend, Contacts, Events, Folders, Messages, Search
 pub use error::{BackendError, ErrorCode, Result};
 pub use event::{ChangeCursor, EventRecvError, EventSubscription};
 pub use heuristic::compile_heuristic;
-pub use id::{AccountId, ContactId, FilterRuleId, FindingId, FolderId, HeuristicId, MessageId};
+pub use id::{
+    AccountId, ContactId, FilterRuleId, FindingId, FolderId, HeuristicId, ImapMutationConflictId,
+    ImapMutationId, MessageId,
+};
 pub use imap::imap_fetch_message;
 pub use imap_engine::{
     CredentialProvider, ImapAccountEngine, ImapAccountEngineConfig, ImapAccountSyncReport,
     ImapAccountSyncState, ImapAccountSyncStatus, ImapCredential, ImapFolderSyncReport,
-    ImapMailboxCompleteness, ImapMailboxSyncState, SecretValue,
+    ImapMailboxCompleteness, ImapMailboxSyncState, ImapMutationSyncReport, SecretValue,
 };
+pub use imap_mutation::ImapMutations;
 pub use query::{parse_query, QueryExpr, QueryParseError, QueryTerm};
 pub use types::*;

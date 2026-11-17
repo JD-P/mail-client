@@ -58,6 +58,17 @@ pub struct QresyncSelect {
     pub changed: Vec<Fetch>,
 }
 
+/// UID mapping returned by servers supporting UIDPLUS after COPY or MOVE.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CopyUid {
+    /// UIDVALIDITY of the destination mailbox.
+    pub uid_validity: u32,
+    /// Source UID set, in server response order.
+    pub source: Vec<std::ops::RangeInclusive<Uid>>,
+    /// Destination UID set corresponding positionally to `source`.
+    pub destination: Vec<std::ops::RangeInclusive<Uid>>,
+}
+
 impl fmt::Display for Mailbox {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(

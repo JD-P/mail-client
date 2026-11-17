@@ -39,6 +39,9 @@ code; Lizard's changes are also distributed under Apache-2.0.
   changed-message evidence without relying on unstable sequence numbers;
   caller-supplied QRESYNC UID sets are restricted to sequence-set characters
   before they are interpolated into a command.
+- UIDPLUS COPY and MOVE variants preserve COPYUID source/destination mappings
+  (from tagged or untagged response codes) so callers can maintain logical
+  message identity across server-side mutations.
 - Deprecated unsafe pin-projection macros were replaced with safe projection of
   the library's explicitly `Unpin` connection types.
 

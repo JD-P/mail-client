@@ -25,7 +25,9 @@ cargo test -p lizard-mail-backend --test dovecot_security -- --ignored --nocaptu
 the same server: verified STARTTLS and implicit TLS with a private test root,
 credential-provider authentication, capability and mailbox discovery, body
 ingestion, flag refresh, QRESYNC/CONDSTORE state, expunge reconciliation, and
-an IDLE-driven continuous worker with prompt cancellation:
+an IDLE-driven continuous worker with prompt cancellation. It also exercises
+conditional flag edits, UIDPLUS copy/move identity mapping, exact deletion and
+durable concurrent-flag conflicts:
 
 ```sh
 cargo test -p lizard-mail-backend --test imap_account_engine -- --ignored --nocapture

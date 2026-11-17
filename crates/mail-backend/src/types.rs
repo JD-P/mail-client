@@ -1,4 +1,7 @@
-use crate::{AccountId, ContactId, FilterRuleId, FindingId, FolderId, HeuristicId, MessageId};
+use crate::{
+    AccountId, ContactId, FilterRuleId, FindingId, FolderId, HeuristicId, ImapMutationConflictId,
+    ImapMutationId, MessageId,
+};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -326,6 +329,70 @@ pub struct MessageInstance {
     pub uid: u32,
     pub mod_sequence: Option<u64>,
     pub flags: Vec<String>,
+}
+
+/// A durable, user-requested change to one exact IMAP message instance.
+///
+/// Operations are always anchored to the UIDVALIDITY epoch and UID captured in
+/// `source`. This prevents a delayed offline action from being applied to an
+/// unrelated message after a server regenerates mailbox UIDs.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ImapMutationOperation {
+    SetFlags { flags: Vec<String> },
+    Copy { destination_folder_id: FolderId },
+    Move { destination_folder_id: FolderId },
+    Delete,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImapMutationStatus {
+    Pending,
+    InFlight,
+    Applied,
+    Conflict,
+    Cancelled,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ImapMutation {
+    pub id: ImapMutationId,
+    pub account_id: AccountId,
+    pub message_id: MessageId,
+    pub source: RemoteMessageIdentity,
+    pub operation: ImapMutationOperation,
+    pub status: ImapMutationStatus,
+    pub attempts: u32,
+    pub last_error: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub completed_at: Option<i64>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImapMutationConflictKind {
+    UidValidityChanged,
+    SourceMissing,
+    ServerStateChanged,
+    DestinationUnavailable,
+    CapabilityUnavailable,
+    AmbiguousOutcome,
+    MissingServerMapping,
+}
+
+/// A durable explanation of why a queued mutation was not silently applied.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ImapMutationConflict {
+    pub id: ImapMutationConflictId,
+    pub mutation_id: ImapMutationId,
+    pub kind: ImapMutationConflictKind,
+    pub expected: serde_json::Value,
+    pub observed: serde_json::Value,
+    pub detail: String,
+    pub created_at: i64,
+    pub resolved_at: Option<i64>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

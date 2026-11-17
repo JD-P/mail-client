@@ -191,6 +191,10 @@ impl Backend {
         Sync(self.clone())
     }
 
+    pub fn imap_mutations(&self) -> crate::ImapMutations {
+        crate::ImapMutations::new(self.clone())
+    }
+
     pub fn imap_account_engine(
         &self,
         credentials: Arc<dyn crate::CredentialProvider>,
@@ -2300,7 +2304,7 @@ fn classification_text(classification: UserClassification) -> &'static str {
     }
 }
 
-fn canonical_flags(flags: &[String]) -> Vec<String> {
+pub(crate) fn canonical_flags(flags: &[String]) -> Vec<String> {
     let mut flags = flags.to_vec();
     flags.sort_unstable();
     flags.dedup();

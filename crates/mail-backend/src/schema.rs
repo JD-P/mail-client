@@ -10,7 +10,7 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 version INTEGER NOT NULL
             );
             INSERT INTO schema_meta(version)
-                SELECT 6 WHERE NOT EXISTS (SELECT 1 FROM schema_meta);
+                SELECT 7 WHERE NOT EXISTS (SELECT 1 FROM schema_meta);
 
             CREATE TABLE IF NOT EXISTS accounts (
                 id TEXT PRIMARY KEY,
@@ -164,6 +164,35 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 last_error TEXT
             );
 
+            CREATE TABLE IF NOT EXISTS imap_mutations (
+                id TEXT PRIMARY KEY,
+                account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+                message_id TEXT NOT NULL,
+                source_folder_id TEXT NOT NULL REFERENCES folders(id) ON DELETE CASCADE,
+                source_uid_validity INTEGER NOT NULL,
+                source_uid INTEGER NOT NULL,
+                source_modseq INTEGER,
+                source_flags_json TEXT NOT NULL,
+                operation_json TEXT NOT NULL,
+                status TEXT NOT NULL,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                completed_at INTEGER
+            );
+
+            CREATE TABLE IF NOT EXISTS imap_mutation_conflicts (
+                id TEXT PRIMARY KEY,
+                mutation_id TEXT NOT NULL REFERENCES imap_mutations(id) ON DELETE CASCADE,
+                kind TEXT NOT NULL,
+                expected_json TEXT NOT NULL,
+                observed_json TEXT NOT NULL,
+                detail TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                resolved_at INTEGER
+            );
+
             CREATE TABLE IF NOT EXISTS filter_rules (
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
@@ -274,6 +303,10 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 ON heuristic_findings(message_id, presentation, severity, id);
             CREATE INDEX IF NOT EXISTS heuristics_execution
                 ON heuristics(enabled, id);
+            CREATE INDEX IF NOT EXISTS imap_mutations_due
+                ON imap_mutations(account_id, status, created_at, id);
+            CREATE INDEX IF NOT EXISTS imap_mutation_conflicts_active
+                ON imap_mutation_conflicts(mutation_id, resolved_at, created_at);
             "#,
         )
         .await?;
@@ -366,7 +399,15 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
             .await?;
         version = 6;
     }
-    if version != 6 {
+    if version == 6 {
+        // Version-seven tables and indexes are created idempotently by the
+        // common schema batch above.
+        connection
+            .execute("UPDATE schema_meta SET version = 7", ())
+            .await?;
+        version = 7;
+    }
+    if version != 7 {
         return Err(crate::BackendError::InvalidInput(format!(
             "unsupported database schema version {version}"
         )));
@@ -484,7 +525,7 @@ mod tests {
             .await
             .unwrap();
         let row = rows.next().await.unwrap().unwrap();
-        assert_eq!(row.get::<i64>(0).unwrap(), 6);
+        assert_eq!(row.get::<i64>(0).unwrap(), 7);
         assert_eq!(row.get::<String>(1).unwrap(), r#"{"received_at":123}"#);
         drop(rows);
 
@@ -527,7 +568,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap(),
-            6
+            7
         );
     }
 }
