@@ -501,6 +501,10 @@ impl Backend {
         crate::Storage::new(self.clone())
     }
 
+    pub fn openpgp(&self) -> crate::OpenPgp {
+        crate::OpenPgp::new(self.clone())
+    }
+
     pub fn credentials(&self) -> crate::Credentials {
         crate::Credentials::new(Arc::clone(&self.inner.credentials))
     }
@@ -787,6 +791,7 @@ impl Backend {
         if !batch.is_empty() {
             message_ids.extend(self.commit_prepared_batch(batch).await?);
         }
+        self.openpgp().refresh_messages(&message_ids).await?;
         self.evaluate_automation(&message_ids).await?;
         Ok(message_ids)
     }
@@ -1452,6 +1457,7 @@ impl Backend {
         .await?;
         transaction.commit().await?;
         drop(connection);
+        self.openpgp().refresh_message(message_id).await?;
         self.flush_search_projection().await?;
         let _ = self.inner.events.send(event);
         self.evaluate_automation(&[message_id]).await?;
@@ -2426,7 +2432,11 @@ impl Accounts {
         let transaction = connection.transaction().await?;
         let mut rows = transaction
             .query(
-                "SELECT credential_ref FROM accounts WHERE id = ?1 AND credential_ref IS NOT NULL UNION SELECT credential_ref FROM smtp_accounts WHERE account_id = ?1",
+                r#"SELECT credential_ref FROM accounts
+                    WHERE id = ?1 AND credential_ref IS NOT NULL
+                    UNION SELECT credential_ref FROM smtp_accounts WHERE account_id = ?1
+                    UNION SELECT credential_ref FROM openpgp_secret_key_providers
+                    WHERE account_id = ?1 AND credential_ref IS NOT NULL"#,
                 (id.to_string(),),
             )
             .await?;
@@ -3010,7 +3020,7 @@ impl Messages {
         let delivered_to_addresses = json_addresses(row.get(SUMMARY_COLUMN_COUNT + 5)?)?;
         let list_id = row.get(SUMMARY_COLUMN_COUNT + 6)?;
         let body_text = row.get(SUMMARY_COLUMN_COUNT + 7)?;
-        let body_html = row.get(SUMMARY_COLUMN_COUNT + 8)?;
+        let mut body_html = row.get(SUMMARY_COLUMN_COUNT + 8)?;
         let dkim = serde_json::from_str(&row.get::<String>(SUMMARY_COLUMN_COUNT + 9)?)?;
         let mut delivery_authentication =
             serde_json::from_str(&row.get::<String>(SUMMARY_COLUMN_COUNT + 10)?)?;
@@ -3146,6 +3156,18 @@ impl Messages {
                 dismissed_at: row.get(13)?,
             });
         }
+        drop(rows);
+        let openpgp = crate::openpgp::load_evidence_on(&connection, id)
+            .await?
+            .unwrap_or_default();
+        if openpgp.encryption != crate::OpenPgpEncryptionStatus::NotEncrypted
+            || !openpgp.signatures.is_empty()
+        {
+            // OpenPGP mail is deliberately text-only at the backend boundary.
+            // This prevents every frontend from having to independently
+            // remember the EFAIL remote-content/HTML rendering rule.
+            body_html = None;
+        }
         let thread_id = summary.thread_id;
         Ok(Message {
             summary,
@@ -3176,6 +3198,7 @@ impl Messages {
             local_spam,
             dkim,
             delivery_authentication,
+            openpgp,
             findings,
         })
     }
@@ -3509,7 +3532,17 @@ impl Search {
         let content_results_complete = if requires_complete_content {
             let mut rows = connection
                 .query(
-                    "SELECT 1 FROM messages WHERE content_availability IN ('headers_only', 'downloading', 'failed') LIMIT 1",
+                    r#"SELECT 1 FROM messages m
+                    WHERE m.content_availability IN ('headers_only', 'downloading', 'failed')
+                       OR (EXISTS (
+                            SELECT 1 FROM openpgp_message_evidence e
+                            WHERE e.message_id = m.id
+                              AND json_extract(e.evidence_json, '$.encryption') != 'not_encrypted'
+                        ) AND NOT EXISTS (
+                            SELECT 1 FROM openpgp_decrypted_messages d
+                            WHERE d.message_id = m.id
+                        ))
+                    LIMIT 1"#,
                     (),
                 )
                 .await?;
@@ -4600,10 +4633,14 @@ async fn load_queued_search_documents(
 ) -> Result<Vec<QueuedSearchDocument>> {
     let mut rows = connection
         .query(
-            r#"SELECT q.revision, m.id, m.subject, m.body_text, m.from_address,
+            r#"SELECT q.revision, m.id,
+                COALESCE(d.subject, m.subject), COALESCE(d.body_text, m.body_text),
+                COALESCE(d.from_address, m.from_address),
                 m.to_addresses, m.cc_addresses, m.bcc_addresses,
-                m.delivered_to_addresses, m.list_id, m.attachment_names,
-                m.rfc_message_id, m.received_at, m.size_bytes, m.has_attachment,
+                m.delivered_to_addresses, m.list_id,
+                COALESCE(d.attachment_names, m.attachment_names),
+                m.rfc_message_id, m.received_at, m.size_bytes,
+                CASE WHEN d.message_id IS NOT NULL THEN d.has_attachment ELSE m.has_attachment END,
                 m.is_read, m.is_starred,
                 CASE
                     WHEN (m.user_classification = 'spam' OR (
@@ -4630,6 +4667,7 @@ async fn load_queued_search_documents(
                 END
             FROM search_index_queue q
             JOIN messages m ON m.id = q.message_id
+            LEFT JOIN openpgp_decrypted_messages d ON d.message_id = m.id
             ORDER BY q.message_id
             LIMIT ?1"#,
             (limit as i64,),

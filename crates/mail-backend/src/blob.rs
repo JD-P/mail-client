@@ -90,6 +90,21 @@ impl BlobStore {
         Ok(bytes)
     }
 
+    /// Remove a blob only after its caller has established that no durable
+    /// database row references it. The per-hash writer lock prevents racing a
+    /// concurrent content-addressed insertion of the same bytes.
+    pub(crate) async fn remove_unreferenced(&self, hash: &str) -> Result<bool> {
+        validate_hash(hash)?;
+        let write_lock = self.write_lock(hash).await;
+        let _write_guard = write_lock.lock().await;
+        let path = self.path(hash);
+        match fs::remove_file(&path).await {
+            Ok(()) => Ok(true),
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(source) => Err(BackendError::Io { path, source }),
+        }
+    }
+
     pub(crate) async fn put_reader<R: AsyncRead + Unpin>(
         &self,
         reader: &mut R,

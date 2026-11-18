@@ -232,6 +232,9 @@ authentication results are returned with message reads. A mandatory native
 security-evidence pass covers identity contradictions, DKIM alignment, hostile
 navigation, UTS #39 domain confusables, remote resources, credential forms,
 attachment magic/filenames and bounded ZIP directory metadata. It performs no
-network loads, script execution or archive expansion. OpenPGP and
-independent ARC-chain verification remain future work. See
+network loads, script execution or archive expansion. OpenPGP/MIME is backed by
+rPGP with software, existing-GnuPG and YubiKey/gpg-agent secret-key providers,
+many-certificate recipient encryption, protected headers, durable
+no-downgrade threads and opt-in decrypted search. Independent ARC-chain
+verification remains future work. See
 `../../spec/mail-backend.md` for the authority and presentation model.

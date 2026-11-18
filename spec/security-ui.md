@@ -203,9 +203,21 @@ the user can dismiss.
 - If ciphertext integrity cannot be established, display no decrypted content,
   do not index it and do not offer a click-through plaintext view.
 
-This rule applies to encrypted content. A signed-but-unencrypted OpenPGP
-message follows the ordinary HTML/resource policy; a signature alone creates
-no plaintext-exfiltration boundary.
+This product applies the same text-only/no-remote-resource invariant to
+signed-but-unencrypted OpenPGP mail. A signature alone creates no
+plaintext-exfiltration boundary; the broader rule exists to keep the OpenPGP
+mode simple, predictable and uniformly strict.
+
+Encrypted-mail search is opt-in during OpenPGP setup:
+
+```text
+Enable search for encrypted mail?
+
+This stores decrypted copies on disk.
+```
+
+Declining still permits in-memory decryption and reading. It does not persist a
+plaintext body or place it in the search index.
 
 ## Navigation and URL rules
 

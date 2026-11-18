@@ -582,6 +582,10 @@ pub struct Message {
     /// receiving account and never inferred from the header alone.
     #[serde(default)]
     pub delivery_authentication: DeliveryAuthentication,
+    /// OpenPGP/MIME evidence derived from the immutable RFC 5322 bytes. This
+    /// is independent of DKIM and of the contact/address trust decision.
+    #[serde(default)]
+    pub openpgp: OpenPgpMessageSecurity,
     /// Active, materialized heuristic results. Clients render these through
     /// the finite [`FindingPresentation`] vocabulary; they never execute code.
     pub findings: Vec<HeuristicFinding>,
@@ -632,6 +636,11 @@ pub struct ThreadSummary {
     /// Unknown senders cannot enter a known-origin conversation; known/self
     /// senders may continue an older cold conversation without upgrading it.
     pub sender_trust: ThreadSenderTrust,
+    /// Once true, replies in this conversation must be OpenPGP encrypted.
+    /// Missing keys or unavailable hardware block submission rather than
+    /// silently downgrading the conversation to plaintext.
+    #[serde(default)]
+    pub openpgp_encryption_required: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -783,6 +792,191 @@ pub struct Draft {
     pub attachments: Vec<DraftAttachment>,
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OpenPgpSearchPolicy {
+    /// The setup question has not yet been answered. No decrypted derivative
+    /// may be persisted while the policy is unset.
+    #[default]
+    Unset,
+    Enabled,
+    Disabled,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct OpenPgpSearchStatus {
+    pub policy: OpenPgpSearchPolicy,
+    pub encrypted_messages: u64,
+    pub indexed_messages: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OpenPgpCertificateSource {
+    Manual,
+    AttachedKey,
+    Autocrypt,
+    Wkd,
+    SignedMessage,
+    GnuPg,
+    YubiKey,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OpenPgpBindingState {
+    Candidate,
+    Accepted,
+    Retired,
+    Rejected,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct OpenPgpCertificateBinding {
+    pub address: String,
+    pub fingerprint: String,
+    pub state: OpenPgpBindingState,
+    pub source: OpenPgpCertificateSource,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct OpenPgpCertificate {
+    /// Uppercase hexadecimal primary-key fingerprint without separators.
+    pub fingerprint: String,
+    pub user_ids: Vec<String>,
+    pub signing_capable: bool,
+    pub encryption_capable: bool,
+    pub revoked: bool,
+    /// Absolute Unix time derived from the newest applicable self-signature.
+    /// `None` means the certificate declares no expiration.
+    pub expires_at: Option<i64>,
+    pub created_at: i64,
+    pub imported_at: i64,
+    pub source: OpenPgpCertificateSource,
+    pub bindings: Vec<OpenPgpCertificateBinding>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OpenPgpSecretKeyProviderKind {
+    /// An explicitly imported transferable secret key encrypted in Lizard's
+    /// managed credential store.
+    Software,
+    /// An existing key owned by a GnuPG home. Lizard stores only a reference.
+    GnuPg,
+    /// An OpenPGP Card key whose private operations are performed by a
+    /// YubiKey through gpg-agent/scdaemon.
+    YubiKey,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct OpenPgpSecretKeyProvider {
+    pub account_id: AccountId,
+    pub fingerprint: String,
+    pub kind: OpenPgpSecretKeyProviderKind,
+    /// GnuPG home for external providers. `None` means GnuPG's default home.
+    pub gnu_pg_home: Option<PathBuf>,
+    /// OpenPGP card serial for display and replacement detection. Private key
+    /// bytes and PINs are never stored here.
+    pub card_serial: Option<String>,
+    pub is_default: bool,
+    pub created_at: i64,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OpenPgpSignatureStatus {
+    #[default]
+    None,
+    Valid,
+    Invalid,
+    MissingCertificate,
+    Unsupported,
+    Obsolete,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct OpenPgpSignatureEvidence {
+    pub status: OpenPgpSignatureStatus,
+    /// Primary certificate fingerprint when known.
+    pub certificate_fingerprint: Option<String>,
+    /// Exact signing primary/subkey fingerprint when known.
+    pub signing_key_fingerprint: Option<String>,
+    pub binding_state: Option<OpenPgpBindingState>,
+    #[serde(default)]
+    pub certificate_revoked: bool,
+    #[serde(default)]
+    pub certificate_expired: bool,
+    pub created_at: Option<i64>,
+    pub detail: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OpenPgpEncryptionStatus {
+    #[default]
+    NotEncrypted,
+    Encrypted,
+    Decrypted,
+    MissingSecretKey,
+    ProviderUnavailable,
+    InteractionRequired,
+    FailedIntegrity,
+    Unsupported,
+    Malformed,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct OpenPgpMessageSecurity {
+    pub encryption: OpenPgpEncryptionStatus,
+    pub signatures: Vec<OpenPgpSignatureEvidence>,
+    pub encrypted_to_fingerprint: Option<String>,
+    pub protected_headers: bool,
+    pub protected_header_mismatch: bool,
+    pub decrypted_derivative_stored: bool,
+    pub evaluated_at: Option<i64>,
+    pub detail: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct OpenPgpDecryptedMessage {
+    pub message_id: MessageId,
+    /// Encrypted mail is exposed as plain text only. Sender-authored HTML is
+    /// never returned through this API and remote resources cannot be loaded.
+    pub body_text: String,
+    pub subject: Option<String>,
+    pub from_address: Option<String>,
+    pub to_addresses: Vec<String>,
+    pub cc_addresses: Vec<String>,
+    pub attachments: Vec<Attachment>,
+    pub security: OpenPgpMessageSecurity,
+    pub persisted_for_search: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OpenPgpDraftMode {
+    /// Follow the conversation requirement. New conversations remain
+    /// plaintext until the user explicitly selects encryption.
+    #[default]
+    Automatic,
+    SignOnly,
+    EncryptAndSign,
+    Plaintext,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct OpenPgpDraftSecurity {
+    pub draft_id: DraftId,
+    pub requested: OpenPgpDraftMode,
+    pub effective: OpenPgpDraftMode,
+    pub recipient_fingerprints: Vec<String>,
+    pub missing_recipient_addresses: Vec<String>,
+    pub conversation_requires_encryption: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

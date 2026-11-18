@@ -11,7 +11,7 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 version INTEGER NOT NULL
             );
             INSERT INTO schema_meta(version)
-                SELECT 17 WHERE NOT EXISTS (SELECT 1 FROM schema_meta);
+                SELECT 18 WHERE NOT EXISTS (SELECT 1 FROM schema_meta);
 
             CREATE TABLE IF NOT EXISTS accounts (
                 id TEXT PRIMARY KEY,
@@ -53,6 +53,7 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 subject TEXT,
                 normalized_subject TEXT,
                 sender_trust TEXT NOT NULL,
+                openpgp_encryption_required INTEGER NOT NULL DEFAULT 0,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL
             );
@@ -263,6 +264,82 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 contact_id TEXT NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
                 address TEXT PRIMARY KEY COLLATE NOCASE,
                 accepted_name TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS openpgp_settings (
+                singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+                encrypted_search_policy TEXT NOT NULL DEFAULT 'unset'
+                    CHECK(encrypted_search_policy IN ('unset', 'enabled', 'disabled')),
+                updated_at INTEGER NOT NULL
+            );
+            INSERT OR IGNORE INTO openpgp_settings(singleton, updated_at)
+                VALUES (1, 0);
+
+            CREATE TABLE IF NOT EXISTS openpgp_certificates (
+                fingerprint TEXT PRIMARY KEY,
+                certificate_bytes BLOB NOT NULL,
+                user_ids_json TEXT NOT NULL,
+                signing_capable INTEGER NOT NULL,
+                encryption_capable INTEGER NOT NULL,
+                revoked INTEGER NOT NULL,
+                key_created_at INTEGER NOT NULL,
+                key_expires_at INTEGER,
+                source TEXT NOT NULL,
+                imported_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS openpgp_certificate_bindings (
+                address TEXT NOT NULL COLLATE NOCASE,
+                fingerprint TEXT NOT NULL REFERENCES openpgp_certificates(fingerprint)
+                    ON DELETE CASCADE,
+                state TEXT NOT NULL CHECK(state IN ('candidate', 'accepted', 'retired', 'rejected')),
+                source TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY(address, fingerprint)
+            );
+
+            CREATE TABLE IF NOT EXISTS openpgp_secret_key_providers (
+                account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+                fingerprint TEXT NOT NULL REFERENCES openpgp_certificates(fingerprint)
+                    ON DELETE CASCADE,
+                kind TEXT NOT NULL CHECK(kind IN ('software', 'gnu_pg', 'yubi_key')),
+                credential_ref TEXT,
+                gnu_pg_home TEXT,
+                card_serial TEXT,
+                is_default INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                PRIMARY KEY(account_id, fingerprint)
+            );
+
+            CREATE TABLE IF NOT EXISTS openpgp_message_evidence (
+                message_id TEXT PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+                evidence_json TEXT NOT NULL,
+                evaluated_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS openpgp_decrypted_messages (
+                message_id TEXT PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+                decrypted_blob_hash TEXT NOT NULL,
+                decrypted_size_bytes INTEGER NOT NULL,
+                body_text TEXT NOT NULL,
+                subject TEXT,
+                from_address TEXT,
+                to_addresses_json TEXT NOT NULL,
+                cc_addresses_json TEXT NOT NULL,
+                attachments_json TEXT NOT NULL,
+                attachment_names TEXT NOT NULL,
+                has_attachment INTEGER NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS openpgp_draft_security (
+                draft_id TEXT PRIMARY KEY REFERENCES drafts(id) ON DELETE CASCADE,
+                requested_mode TEXT NOT NULL CHECK(requested_mode IN (
+                    'automatic', 'sign_only', 'encrypt_and_sign', 'plaintext'
+                )),
+                updated_at INTEGER NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS changes (
@@ -1014,7 +1091,95 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
             .await?;
         version = 17;
     }
-    if version != 17 {
+    if version == 17 {
+        let mut rows = connection.query("PRAGMA table_info(threads)", ()).await?;
+        let mut has_openpgp_requirement = false;
+        while let Some(row) = rows.next().await? {
+            has_openpgp_requirement |= row.get::<String>(1)? == "openpgp_encryption_required";
+        }
+        drop(rows);
+        if !has_openpgp_requirement {
+            connection
+                .execute(
+                    "ALTER TABLE threads ADD COLUMN openpgp_encryption_required INTEGER NOT NULL DEFAULT 0",
+                    (),
+                )
+                .await?;
+        }
+        connection
+            .execute_batch(
+                r#"
+                CREATE TABLE IF NOT EXISTS openpgp_settings (
+                    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+                    encrypted_search_policy TEXT NOT NULL DEFAULT 'unset'
+                        CHECK(encrypted_search_policy IN ('unset', 'enabled', 'disabled')),
+                    updated_at INTEGER NOT NULL
+                );
+                INSERT OR IGNORE INTO openpgp_settings(singleton, updated_at) VALUES (1, 0);
+                CREATE TABLE IF NOT EXISTS openpgp_certificates (
+                    fingerprint TEXT PRIMARY KEY,
+                    certificate_bytes BLOB NOT NULL,
+                    user_ids_json TEXT NOT NULL,
+                    signing_capable INTEGER NOT NULL,
+                    encryption_capable INTEGER NOT NULL,
+                    revoked INTEGER NOT NULL,
+                    key_created_at INTEGER NOT NULL,
+                    key_expires_at INTEGER,
+                    source TEXT NOT NULL,
+                    imported_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS openpgp_certificate_bindings (
+                    address TEXT NOT NULL COLLATE NOCASE,
+                    fingerprint TEXT NOT NULL REFERENCES openpgp_certificates(fingerprint) ON DELETE CASCADE,
+                    state TEXT NOT NULL CHECK(state IN ('candidate', 'accepted', 'retired', 'rejected')),
+                    source TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    PRIMARY KEY(address, fingerprint)
+                );
+                CREATE TABLE IF NOT EXISTS openpgp_secret_key_providers (
+                    account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+                    fingerprint TEXT NOT NULL REFERENCES openpgp_certificates(fingerprint) ON DELETE CASCADE,
+                    kind TEXT NOT NULL CHECK(kind IN ('software', 'gnu_pg', 'yubi_key')),
+                    credential_ref TEXT,
+                    gnu_pg_home TEXT,
+                    card_serial TEXT,
+                    is_default INTEGER NOT NULL DEFAULT 0,
+                    created_at INTEGER NOT NULL,
+                    PRIMARY KEY(account_id, fingerprint)
+                );
+                CREATE TABLE IF NOT EXISTS openpgp_message_evidence (
+                    message_id TEXT PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+                    evidence_json TEXT NOT NULL,
+                    evaluated_at INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS openpgp_decrypted_messages (
+                    message_id TEXT PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+                    decrypted_blob_hash TEXT NOT NULL,
+                    decrypted_size_bytes INTEGER NOT NULL,
+                    body_text TEXT NOT NULL,
+                    subject TEXT,
+                    from_address TEXT,
+                    to_addresses_json TEXT NOT NULL,
+                    cc_addresses_json TEXT NOT NULL,
+                    attachments_json TEXT NOT NULL,
+                    attachment_names TEXT NOT NULL,
+                    has_attachment INTEGER NOT NULL,
+                    created_at INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS openpgp_draft_security (
+                    draft_id TEXT PRIMARY KEY REFERENCES drafts(id) ON DELETE CASCADE,
+                    requested_mode TEXT NOT NULL CHECK(requested_mode IN ('automatic', 'sign_only', 'encrypt_and_sign', 'plaintext')),
+                    updated_at INTEGER NOT NULL
+                );
+                UPDATE schema_meta SET version = 18;
+                "#,
+            )
+            .await?;
+        version = 18;
+    }
+    if version != 18 {
         return Err(crate::BackendError::InvalidInput(format!(
             "unsupported database schema version {version}"
         )));
@@ -1032,6 +1197,10 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 ON thread_participants(address, thread_id, message_id);
             CREATE INDEX IF NOT EXISTS messages_content_availability
                 ON messages(content_availability);
+            CREATE INDEX IF NOT EXISTS openpgp_bindings_address
+                ON openpgp_certificate_bindings(address COLLATE NOCASE, state, fingerprint);
+            CREATE INDEX IF NOT EXISTS openpgp_providers_account
+                ON openpgp_secret_key_providers(account_id, kind, fingerprint);
             "#,
         )
         .await?;
@@ -1157,7 +1326,7 @@ mod tests {
             .await
             .unwrap();
         let row = rows.next().await.unwrap().unwrap();
-        assert_eq!(row.get::<i64>(0).unwrap(), 17);
+        assert_eq!(row.get::<i64>(0).unwrap(), 18);
         assert_eq!(row.get::<String>(1).unwrap(), r#"{"received_at":123}"#);
         drop(rows);
 
@@ -1200,7 +1369,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap(),
-            17
+            18
         );
         drop(rows);
 

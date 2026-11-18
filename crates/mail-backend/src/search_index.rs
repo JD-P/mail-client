@@ -214,6 +214,33 @@ impl SearchIndex {
         result
     }
 
+    /// Rewrite every segment containing deleted documents, then unlink the
+    /// obsolete segment files. Tantivy normally reclaims these lazily, but
+    /// callers use this synchronous path when a user disables encrypted-mail
+    /// search and asks us to discard the decrypted search projection now.
+    pub(crate) fn expunge_deleted_documents(&self) -> Result<()> {
+        let mut writer = self.writer.lock().map_err(|_| {
+            BackendError::SearchIndex("search index writer lock was poisoned".into())
+        })?;
+        let segment_ids = self
+            .index
+            .searchable_segment_metas()
+            .map_err(search_error)?
+            .into_iter()
+            .filter(|segment| segment.num_deleted_docs() > 0)
+            .map(|segment| segment.id())
+            .collect::<Vec<_>>();
+        if !segment_ids.is_empty() {
+            writer.merge(&segment_ids).wait().map_err(search_error)?;
+            self.reader.reload().map_err(search_error)?;
+        }
+        writer
+            .garbage_collect_files()
+            .wait()
+            .map_err(search_error)?;
+        Ok(())
+    }
+
     pub(crate) fn num_docs(&self) -> u64 {
         self.reader.searcher().num_docs()
     }

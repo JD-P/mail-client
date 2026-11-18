@@ -17,6 +17,7 @@ pub enum ErrorCode {
     Query,
     Imap,
     CredentialStore,
+    OpenPgp,
     SearchIndex,
     NotFound,
     Conflict,
@@ -59,6 +60,8 @@ pub enum BackendError {
     Imap(String),
     #[error("credential store error: {0}")]
     CredentialStore(String),
+    #[error("OpenPGP error: {0}")]
+    OpenPgp(String),
     #[error("search index error: {0}")]
     SearchIndex(String),
     #[error("{entity} not found: {id}")]
@@ -86,6 +89,7 @@ impl BackendError {
             Self::Query(_) => ErrorCode::Query,
             Self::Imap(_) => ErrorCode::Imap,
             Self::CredentialStore(_) => ErrorCode::CredentialStore,
+            Self::OpenPgp(_) => ErrorCode::OpenPgp,
             Self::SearchIndex(_) => ErrorCode::SearchIndex,
             Self::NotFound { .. } => ErrorCode::NotFound,
             Self::Conflict(_) => ErrorCode::Conflict,

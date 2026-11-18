@@ -2,8 +2,8 @@ use crate::backend::insert_event;
 use crate::{
     AccountId, Backend, BackendError, Draft, DraftAttachment, DraftAttachmentDisposition,
     DraftAttachmentId, DraftContent, DraftId, DraftStatus, IngestMessage, MessageComposition,
-    MessageId, NewDraftAttachment, ReplyAudience, Result, SendingLimits, SmtpAccount, SmtpSettings,
-    Submission, SubmissionId, SubmissionStatus,
+    MessageId, NewDraftAttachment, OpenPgpDraftMode, OpenPgpDraftSecurity, ReplyAudience, Result,
+    SendingLimits, SmtpAccount, SmtpSettings, Submission, SubmissionId, SubmissionStatus,
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
 use chrono::Utc;
@@ -567,8 +567,25 @@ impl Outbox {
             .sending()
             .smtp_account(draft.content.account_id)
             .await?;
+        let openpgp = self.0.openpgp().draft_security(draft_id).await?;
+        if openpgp.conversation_requires_encryption
+            && openpgp.effective != OpenPgpDraftMode::EncryptAndSign
+        {
+            return Err(BackendError::Conflict(
+                "this conversation requires OpenPGP encryption; plaintext and sign-only submission are blocked"
+                    .into(),
+            ));
+        }
+        if openpgp.effective == OpenPgpDraftMode::EncryptAndSign
+            && !openpgp.missing_recipient_addresses.is_empty()
+        {
+            return Err(BackendError::Conflict(format!(
+                "OpenPGP encryption is missing accepted keys for: {}",
+                openpgp.missing_recipient_addresses.join(", ")
+            )));
+        }
         let rfc_message_id = make_message_id(&smtp.settings.username)?;
-        let raw = build_message(&self.0, &draft, &smtp, &rfc_message_id).await?;
+        let raw = build_message(&self.0, &draft, &smtp, &rfc_message_id, &openpgp).await?;
         if raw.len() as u64 > limits.max_message_bytes {
             return Err(BackendError::MessageTooLarge {
                 actual: raw.len(),
@@ -623,12 +640,25 @@ impl Outbox {
                 ],
             )
             .await?;
+        if openpgp.effective == OpenPgpDraftMode::EncryptAndSign {
+            transaction
+                .execute(
+                    "UPDATE threads SET openpgp_encryption_required = 1 WHERE id = ?1",
+                    (draft.content.thread_id.to_string(),),
+                )
+                .await?;
+        }
         let event = insert_event(
             &transaction,
             now,
             "submission_enqueued",
             submission.id.to_string(),
-            json!({"submission_id": submission.id, "draft_id": draft_id}),
+            json!({
+                "submission_id": submission.id,
+                "draft_id": draft_id,
+                "openpgp_mode": openpgp.effective,
+                "openpgp_recipient_fingerprints": openpgp.recipient_fingerprints,
+            }),
         )
         .await?;
         transaction.commit().await?;
@@ -990,28 +1020,97 @@ async fn build_message(
     draft: &Draft,
     smtp: &SmtpAccount,
     rfc_message_id: &str,
+    openpgp: &OpenPgpDraftSecurity,
 ) -> Result<Vec<u8>> {
+    let date = Utc::now().to_rfc2822();
+    let mut protected_headers = Vec::new();
+    write_message_headers(
+        &mut protected_headers,
+        draft,
+        smtp,
+        rfc_message_id,
+        &draft.content.subject,
+        &date,
+    )?;
+    let body_entity = build_body_entity(
+        backend,
+        draft,
+        !matches!(
+            openpgp.effective,
+            OpenPgpDraftMode::SignOnly | OpenPgpDraftMode::EncryptAndSign
+        ),
+    )
+    .await?;
+
     let mut output = Vec::new();
-    header(&mut output, "From", &smtp.settings.username)?;
+    let outer_subject = if openpgp.effective == OpenPgpDraftMode::EncryptAndSign {
+        "Encrypted message"
+    } else {
+        &draft.content.subject
+    };
+    write_message_headers(
+        &mut output,
+        draft,
+        smtp,
+        rfc_message_id,
+        outer_subject,
+        &date,
+    )?;
+    header(&mut output, "MIME-Version", "1.0")?;
+
+    match openpgp.effective {
+        OpenPgpDraftMode::Automatic | OpenPgpDraftMode::Plaintext => {
+            output.extend_from_slice(&body_entity);
+        }
+        OpenPgpDraftMode::SignOnly | OpenPgpDraftMode::EncryptAndSign => {
+            let entity = protected_headers_entity(&protected_headers, &body_entity);
+            let visible = draft
+                .content
+                .to_addresses
+                .iter()
+                .chain(draft.content.cc_addresses.iter())
+                .cloned()
+                .collect::<Vec<_>>();
+            let protected = backend
+                .openpgp()
+                .protect_mime_entity(
+                    draft.content.account_id,
+                    &visible,
+                    &draft.content.bcc_addresses,
+                    &entity,
+                    openpgp.effective,
+                )
+                .await?;
+            output.extend_from_slice(&protected.bytes);
+        }
+    }
+    Ok(output)
+}
+
+fn write_message_headers(
+    output: &mut Vec<u8>,
+    draft: &Draft,
+    smtp: &SmtpAccount,
+    rfc_message_id: &str,
+    subject: &str,
+    date: &str,
+) -> Result<()> {
+    header(output, "From", &smtp.settings.username)?;
     if !draft.content.to_addresses.is_empty() {
-        header(&mut output, "To", &draft.content.to_addresses.join(", "))?;
+        header(output, "To", &draft.content.to_addresses.join(", "))?;
     }
     if !draft.content.cc_addresses.is_empty() {
-        header(&mut output, "Cc", &draft.content.cc_addresses.join(", "))?;
+        header(output, "Cc", &draft.content.cc_addresses.join(", "))?;
     }
-    header(
-        &mut output,
-        "Subject",
-        &encode_unstructured(&draft.content.subject),
-    )?;
-    header(&mut output, "Date", &Utc::now().to_rfc2822())?;
-    header(&mut output, "Message-ID", &format!("<{rfc_message_id}>"))?;
+    header(output, "Subject", &encode_unstructured(subject))?;
+    header(output, "Date", date)?;
+    header(output, "Message-ID", &format!("<{rfc_message_id}>"))?;
     if let Some(parent) = draft.content.in_reply_to.as_deref() {
-        header(&mut output, "In-Reply-To", &format!("<{parent}>"))?;
+        header(output, "In-Reply-To", &format!("<{parent}>"))?;
     }
     if !draft.content.references.is_empty() {
         header(
-            &mut output,
+            output,
             "References",
             &draft
                 .content
@@ -1022,8 +1121,11 @@ async fn build_message(
                 .join(" "),
         )?;
     }
-    header(&mut output, "MIME-Version", "1.0")?;
+    Ok(())
+}
 
+async fn build_body_entity(backend: &Backend, draft: &Draft, allow_html: bool) -> Result<Vec<u8>> {
+    let mut output = Vec::new();
     let inline = draft
         .attachments
         .iter()
@@ -1057,7 +1159,9 @@ async fn build_message(
     write_body(
         &mut output,
         &draft.content.body_text,
-        draft.content.body_html.as_deref(),
+        allow_html
+            .then_some(draft.content.body_html.as_deref())
+            .flatten(),
     )?;
     for attachment in inline {
         boundary(&mut output, &related_boundary, false);
@@ -1084,6 +1188,25 @@ async fn build_message(
         boundary(&mut output, &mixed_boundary, true);
     }
     Ok(output)
+}
+
+fn protected_headers_entity(headers: &[u8], body_entity: &[u8]) -> Vec<u8> {
+    let boundary_value = format!("lizard-protected-headers-{}", Uuid::new_v4());
+    let mut output = format!(
+        "Content-Type: multipart/mixed; boundary=\"{boundary_value}\"; protected-headers=\"v1\"\r\n\r\n--{boundary_value}\r\nContent-Type: text/rfc822-headers; protected-headers=\"v1\"; charset=utf-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\n"
+    )
+    .into_bytes();
+    output.extend_from_slice(headers);
+    if !output.ends_with(b"\r\n") {
+        output.extend_from_slice(b"\r\n");
+    }
+    output.extend_from_slice(format!("--{boundary_value}\r\n").as_bytes());
+    output.extend_from_slice(body_entity);
+    if !output.ends_with(b"\r\n") {
+        output.extend_from_slice(b"\r\n");
+    }
+    output.extend_from_slice(format!("--{boundary_value}--\r\n").as_bytes());
+    output
 }
 
 fn write_body(output: &mut Vec<u8>, text: &str, html: Option<&str>) -> Result<()> {
@@ -1595,8 +1718,113 @@ mod tests {
     use super::*;
     use crate::{
         AccountKind, FolderKind, ImapSecurity, ImapSettings, MessageFilter, NewAccount, NewFolder,
-        RemoteMessageIdentity, SmtpAuthMethod, SmtpSecurity, ThreadId,
+        OpenPgpDraftMode, RemoteMessageIdentity, SmtpAuthMethod, SmtpSecurity, ThreadId,
     };
+
+    #[test]
+    fn protected_header_entity_separates_headers_from_the_mime_body() {
+        let headers = b"From: sender@example.test\r\nSubject: private subject\r\n";
+        let body = b"Content-Type: text/plain; charset=utf-8\r\n\r\nprivate body\r\n";
+        let entity = protected_headers_entity(headers, body);
+        let parsed = mail_parser::MessageParser::new().parse(&entity).unwrap();
+        let root = parsed.root_part();
+        assert!(root.content_type().is_some_and(|value| {
+            value
+                .attribute("protected-headers")
+                .is_some_and(|value| value == "v1")
+        }));
+        let children = root.children().collect::<Vec<_>>();
+        assert_eq!(children.len(), 2);
+        assert!(String::from_utf8_lossy(&children[0].decoded_checked().0)
+            .contains("Subject: private subject"));
+        assert!(String::from_utf8_lossy(children[1].raw()).contains("private body"));
+    }
+
+    #[tokio::test]
+    async fn encrypted_thread_cannot_be_explicitly_downgraded() {
+        let profile = tempfile::tempdir().unwrap();
+        let backend = Backend::open(crate::BackendConfig::new(profile.path()))
+            .await
+            .unwrap();
+        let account = backend
+            .accounts()
+            .add(NewAccount {
+                name: "No downgrade".into(),
+                kind: AccountKind::Local,
+                credential_ref: None,
+                imap: None,
+            })
+            .await
+            .unwrap();
+        backend
+            .sending()
+            .configure_smtp(
+                account.id,
+                crate::SmtpSettings {
+                    host: "smtp.example.test".into(),
+                    port: 465,
+                    username: "sender@example.test".into(),
+                    security: SmtpSecurity::ImplicitTls,
+                    auth: SmtpAuthMethod::Password,
+                },
+                "test-only:smtp".into(),
+            )
+            .await
+            .unwrap();
+        let message_id = backend
+            .messages()
+            .ingest(IngestMessage::local(
+                b"From: reader@example.test\r\nTo: sender@example.test\r\nSubject: protected thread\r\n\r\nbody\r\n"
+                    .to_vec(),
+            ))
+            .await
+            .unwrap();
+        let thread_id = backend
+            .messages()
+            .get(message_id)
+            .await
+            .unwrap()
+            .threading
+            .thread_id;
+        {
+            let connection = backend.inner.connection.lock().await;
+            connection
+                .execute(
+                    "UPDATE threads SET openpgp_encryption_required = 1 WHERE id = ?1",
+                    (thread_id.to_string(),),
+                )
+                .await
+                .unwrap();
+        }
+        let draft = backend
+            .drafts()
+            .create(DraftContent {
+                account_id: account.id,
+                thread_id,
+                parent_message_id: Some(message_id),
+                to_addresses: vec!["reader@example.test".into()],
+                cc_addresses: Vec::new(),
+                bcc_addresses: Vec::new(),
+                subject: "Re: protected thread".into(),
+                body_text: "reply".into(),
+                body_html: None,
+                in_reply_to: None,
+                references: Vec::new(),
+            })
+            .await
+            .unwrap();
+        backend
+            .openpgp()
+            .set_draft_mode(draft.id, OpenPgpDraftMode::Plaintext)
+            .await
+            .unwrap();
+        let error = backend
+            .outbox()
+            .enqueue(draft.id, draft.revision, SendingLimits::default())
+            .await
+            .unwrap_err();
+        assert!(matches!(error, BackendError::Conflict(_)));
+    }
 
     #[tokio::test]
     async fn reconciles_server_sent_copy_by_protected_message_id() {

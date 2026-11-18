@@ -505,7 +505,7 @@ async fn own_addresses_on(connection: &Connection) -> Result<HashSet<String>> {
 async fn load_summary_on(connection: &Connection, id: ThreadId) -> Result<ThreadSummary> {
     let mut rows = connection
         .query(
-            "SELECT t.subject, t.normalized_subject, t.sender_trust, COUNT(m.id), COALESCE(SUM(CASE WHEN m.is_read = 0 THEN 1 ELSE 0 END), 0), COALESCE(SUM(CASE WHEN m.is_starred = 1 THEN 1 ELSE 0 END), 0) FROM threads t JOIN messages m ON m.thread_id = t.id WHERE t.id = ?1 GROUP BY t.id",
+            "SELECT t.subject, t.normalized_subject, t.sender_trust, COUNT(m.id), COALESCE(SUM(CASE WHEN m.is_read = 0 THEN 1 ELSE 0 END), 0), COALESCE(SUM(CASE WHEN m.is_starred = 1 THEN 1 ELSE 0 END), 0), t.openpgp_encryption_required FROM threads t JOIN messages m ON m.thread_id = t.id WHERE t.id = ?1 GROUP BY t.id",
             (id.to_string(),),
         )
         .await?;
@@ -519,6 +519,7 @@ async fn load_summary_on(connection: &Connection, id: ThreadId) -> Result<Thread
     let message_count = row.get::<i64>(3)? as u64;
     let unread_count = row.get::<i64>(4)? as u64;
     let starred_count = row.get::<i64>(5)? as u64;
+    let openpgp_encryption_required = row.get::<bool>(6)?;
     drop(rows);
 
     let mut rows = connection
@@ -558,6 +559,7 @@ async fn load_summary_on(connection: &Connection, id: ThreadId) -> Result<Thread
         latest_received_at,
         latest_preview,
         sender_trust,
+        openpgp_encryption_required,
     })
 }
 

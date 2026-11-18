@@ -22,6 +22,7 @@ mod imap_engine;
 mod imap_mutation;
 mod mime;
 mod mime_api;
+mod openpgp;
 mod organization;
 mod query;
 mod schema;
@@ -53,6 +54,7 @@ pub use imap_engine::{
 };
 pub use imap_mutation::ImapMutations;
 pub use mime_api::{Mime, SandboxedDocumentExtractor};
+pub use openpgp::OpenPgp;
 pub use organization::SavedSearches;
 pub use query::{parse_query, QueryExpr, QueryParseError, QueryTerm};
 pub use sending::{Drafts, Outbox, Sending};

@@ -15,8 +15,9 @@ boundary, discovers mailboxes, negotiates capabilities, reconciles UID state
 and routes bounded body streams through the same idempotent ingestion path as
 local imports.
 
-The current slice does **not** yet run OpenPGP verification, independently
-verify ARC chains, or expose inter-process transport. It does ingest bounded
+The current slice runs OpenPGP/MIME signing, verification, encryption and
+decryption, but does **not** yet independently verify ARC chains or expose
+inter-process transport. It does ingest bounded
 provider `Authentication-Results` under an explicit per-account trust policy
 and runs a mandatory bounded native security-evidence pass; later requirements
 are not a claim that every possible heuristic is implemented.
@@ -663,7 +664,7 @@ observe the same signature result, contact/key binding, encryption state and
 trust decision. Frontends must not independently parse or verify cryptographic
 message bodies.
 
-The backend should support OpenPGP/MIME signing, verification, encryption and
+The backend supports OpenPGP/MIME signing, verification, encryption and
 decryption. Compatibility with legacy inline OpenPGP can follow, but it must
 not distort the primary MIME model. Decrypted bytes remain hostile input and
 must pass through the same bounded MIME and attachment validation as ordinary
@@ -688,7 +689,11 @@ Decryption has stricter release rules than ordinary MIME ingestion:
 This is defense in depth even for modern integrity-protected OpenPGP. EFAIL
 demonstrated that composing decryption, MIME/HTML interpretation and external
 resource loading can turn a mail client into a plaintext exfiltration channel.
-Signed-but-unencrypted OpenPGP mail remains on the ordinary MIME/rendering path.
+Signed-but-unencrypted OpenPGP mail is also exposed as text-only and without
+remote-resource capability. A signature does not create an EFAIL
+confidentiality boundary, but applying one invariant to all OpenPGP mail avoids
+an ambiguous presentation mode and matches the product's deliberately strict
+OpenPGP policy.
 
 The backend data/API must distinguish:
 
@@ -706,42 +711,68 @@ locally bound the key to that contact. An Autocrypt header, Web Key Directory
 result or attached key may supply a candidate key but must not silently create
 that trust binding.
 
-Private keys and passphrases do not belong in ordinary database rows. Define an
-OS credential store, hardware token or agent boundary and a cancellable API
-challenge for required user presence. Do not log secret material.
+Private keys and passphrases do not belong in ordinary database rows. Generated
+or explicitly imported software keys use the typed credential-store boundary:
+the OS store when it accepts the payload, otherwise the profile's encrypted
+credential vault. Existing GnuPG keys are referenced rather than copied.
+YubiKey OpenPGP Card operations are delegated to gpg-agent/scdaemon; the
+backend neither receives nor maintains a PIN cache. Do not log secret material.
 
 #### OpenPGP implementation provider
 
-Do not couple the backend directly to the `gpg` command-line interface.
-GnuPG's supported application API is GPGME, but GPGME performs operations by
-IPC with separate GnuPG engines; GnuPG intentionally does not expose its
-internals as an in-process OpenPGP library. That design offers process and
-agent isolation, but adds an external executable/keyring dependency, IPC and
-packaging complexity.
+The implemented cryptographic core pins rPGP (`pgp`) 0.21.1 and keeps its types
+behind application-level API and evidence records. The repository's
+deterministic GnuPG differential harness and fuzz target exercise the supported
+RSA and modern elliptic-curve operations against an independent
+implementation.
 
-Evaluate at least these providers before implementation:
+Three secret-key providers share that public API:
 
-- **Sequoia OpenPGP:** a Rust library implementing RFC 9580 with higher-level
-  policy and tooling available; LGPL-2.0-or-later licensing and its selectable
-  crypto backend require distribution review.
-- **rPGP (`pgp` crate):** a pure-Rust RFC 9580 library under MIT OR Apache-2.0;
-  its API is deliberately lower-level and requires the application to supply
-  more OpenPGP semantics and safe policy.
-- **GPGME adapter:** optional interoperability for users whose existing keys,
-  smartcards or agent workflows already live in GnuPG, not the mandatory core
-  provider.
+- **software:** rPGP operates on an explicitly generated/imported transferable
+  key retrieved through the credential boundary;
+- **GnuPG:** an optional bounded subprocess adapter references an existing
+  GnuPG-owned private key without copying it; and
+- **YubiKey:** the same adapter requires a card-backed GnuPG secret-key stub and
+  records the OpenPGP Card serial, while gpg-agent/scdaemon owns PIN and touch
+  interaction.
 
-Provider acceptance requires RFC 9580 and legacy-message interoperability,
+External-provider processes run off the asynchronous executor, have bounded
+input/output, receive no secret on command-line arguments and are killed after
+a bounded provider-interaction window. Lizard never implements a second PIN
+cache.
+
+Certificates are many-to-one with email addresses. Discovery and imports create
+candidate bindings; accepting one certificate never replaces another accepted
+certificate. Encryption targets every accepted active certificate for every
+recipient, plus the sender's current key for Sent-mail access. Bcc public-key
+session packets use anonymous recipients. A changed or additional key remains
+a candidate until a user action accepts, rejects or retires it. No public
+keyserver is queried automatically.
+
+OpenPGP/MIME output uses integrity-protected headers. The visible outer Subject
+is the fixed `Encrypted message` placeholder; the real From/To/Cc/Subject,
+Message-ID and reply headers live in the signed, encrypted protected-headers
+entity. Once an encrypted message enters a backend thread, that thread's
+durable `openpgp_encryption_required` bit blocks plaintext and sign-only
+submissions rather than silently downgrading.
+
+Provider maintenance requires RFC 9580 and legacy-message interoperability,
 fail-closed integrity behavior, streaming and resource-limit tests,
 OpenPGP/MIME fixtures, malformed-input fuzzing, hardware/agent boundary tests,
 and differential tests against at least one independent implementation. The
 public backend API must expose application-level evidence and remain independent
 of provider-specific result types.
 
-Indexing decrypted content is an explicit at-rest privacy decision. If enabled,
-the API must say that encrypted mail becomes searchable because plaintext
-derivatives are stored locally; disabling it must remove/rebuild those derived
-index entries without deleting the encrypted original.
+Indexing decrypted content is an explicit at-rest privacy decision. Its initial
+state is `unset`; setup asks: “Enable search for encrypted mail? This stores
+decrypted copies on disk.” If enabled, authenticated plaintext derivatives feed
+Tantivy, including protected subjects and decrypted attachment filenames.
+Disabling removes the derivative rows, rebuilds ciphertext-only index entries,
+forces a Tantivy segment rewrite and garbage collection, and deletes
+unreferenced decrypted blobs without deleting the encrypted original.
+Decrypted attachment bytes are available only through a bounded
+streaming call which authenticates the complete container before releasing its
+first byte.
 
 ### Spam evidence
 

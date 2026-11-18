@@ -467,6 +467,9 @@ async fn load_blob_references(
             UNION ALL
             SELECT blob_hash, NULL, 'sent_reconciliation:' || rfc_message_id
             FROM sent_reconciliation
+            UNION ALL
+            SELECT decrypted_blob_hash, decrypted_size_bytes, 'openpgp_decrypted:' || message_id
+            FROM openpgp_decrypted_messages
             "#,
             (),
         )

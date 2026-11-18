@@ -17,8 +17,11 @@ use zeroize::{Zeroize, Zeroizing};
 
 const REFERENCE_PREFIX: &str = "lizard-credential:v1";
 const KEYRING_SERVICE: &str = "net.extropian.lizard-mail";
-const MAX_CREDENTIAL_BYTES: usize = 64 * 1024;
-const MAX_FALLBACK_FILE_BYTES: u64 = 128 * 1024;
+// A transferable OpenPGP secret key is base64-encoded inside the typed
+// credential payload. Keep this above the public API's 4 MiB binary-key cap,
+// while still bounding hostile/corrupt native-store responses.
+const MAX_CREDENTIAL_BYTES: usize = 6 * 1024 * 1024;
+const MAX_FALLBACK_FILE_BYTES: u64 = 8 * 1024 * 1024;
 const FALLBACK_KEY_BYTES: usize = 32;
 const FALLBACK_NONCE_BYTES: usize = 24;
 
@@ -113,6 +116,40 @@ impl CredentialManager {
         Ok(parse_reference(reference)?.is_some())
     }
 
+    pub(crate) async fn store_openpgp_secret(
+        &self,
+        key: Zeroizing<Vec<u8>>,
+        passphrase: SecretValue,
+    ) -> Result<String> {
+        self.store(CredentialToStore::OpenPgpSecretKey { key, passphrase })
+            .await
+    }
+
+    pub(crate) async fn resolve_openpgp_secret(
+        &self,
+        reference: &str,
+    ) -> Result<OpenPgpStoredSecret> {
+        let (kind, id) = parse_reference(reference)?.ok_or_else(|| {
+            BackendError::CredentialStore(
+                "OpenPGP secret key reference belongs to an external provider".into(),
+            )
+        })?;
+        let payload = Zeroizing::new(match kind {
+            CredentialStorageKind::Native => load_native(id).await?,
+            CredentialStorageKind::ProfileFallback => self.load_fallback(&id, reference).await?,
+        });
+        if payload.len() > MAX_CREDENTIAL_BYTES {
+            return Err(BackendError::CredentialStore(
+                "stored OpenPGP key exceeds the configured size limit".into(),
+            ));
+        }
+        let mut decoded: StoredCredential =
+            serde_json::from_slice(payload.as_ref()).map_err(|_| {
+                BackendError::CredentialStore("stored OpenPGP key has an invalid format".into())
+            })?;
+        decoded.take_openpgp_secret()
+    }
+
     async fn store(&self, credential: CredentialToStore) -> Result<String> {
         let payload = serialize_credential(&credential)?;
         let id = Uuid::new_v4().to_string();
@@ -153,7 +190,7 @@ impl CredentialManager {
             serde_json::from_slice(payload.as_ref()).map_err(|_| {
                 BackendError::CredentialStore("stored credential has an invalid format".into())
             })?;
-        Ok(decoded.take())
+        decoded.take()
     }
 
     pub(crate) async fn delete_if_managed(&self, reference: &str) -> Result<bool> {
@@ -292,6 +329,10 @@ impl CredentialManager {
 enum CredentialToStore {
     Password(SecretValue),
     OAuth2AccessToken(SecretValue),
+    OpenPgpSecretKey {
+        key: Zeroizing<Vec<u8>>,
+        passphrase: SecretValue,
+    },
 }
 
 #[derive(Serialize)]
@@ -306,18 +347,43 @@ enum CredentialBorrowed<'a> {
 enum StoredCredential {
     Password { value: String },
     OAuth2AccessToken { value: String },
+    OpenPgpSecretKey { key: String, passphrase: String },
+}
+
+pub(crate) struct OpenPgpStoredSecret {
+    pub(crate) key: Zeroizing<Vec<u8>>,
+    pub(crate) passphrase: SecretValue,
 }
 
 impl StoredCredential {
-    fn take(&mut self) -> ImapCredential {
+    fn take(&mut self) -> Result<ImapCredential> {
         match self {
-            Self::Password { value } => {
-                ImapCredential::Password(SecretValue::new(std::mem::take(value)))
-            }
-            Self::OAuth2AccessToken { value } => ImapCredential::OAuth2 {
+            Self::Password { value } => Ok(ImapCredential::Password(SecretValue::new(
+                std::mem::take(value),
+            ))),
+            Self::OAuth2AccessToken { value } => Ok(ImapCredential::OAuth2 {
                 access_token: SecretValue::new(std::mem::take(value)),
-            },
+            }),
+            Self::OpenPgpSecretKey { .. } => Err(BackendError::CredentialStore(
+                "credential reference contains an OpenPGP key, not an account credential".into(),
+            )),
         }
+    }
+
+    fn take_openpgp_secret(&mut self) -> Result<OpenPgpStoredSecret> {
+        let Self::OpenPgpSecretKey { key, passphrase } = self else {
+            return Err(BackendError::CredentialStore(
+                "credential reference does not contain an OpenPGP secret key".into(),
+            ));
+        };
+        let encoded = std::mem::take(key);
+        let decoded = URL_SAFE_NO_PAD
+            .decode(encoded.as_bytes())
+            .map_err(|_| BackendError::CredentialStore("stored OpenPGP key is corrupted".into()))?;
+        Ok(OpenPgpStoredSecret {
+            key: Zeroizing::new(decoded),
+            passphrase: SecretValue::new(std::mem::take(passphrase)),
+        })
     }
 }
 
@@ -325,6 +391,10 @@ impl Drop for StoredCredential {
     fn drop(&mut self) {
         match self {
             Self::Password { value } | Self::OAuth2AccessToken { value } => value.zeroize(),
+            Self::OpenPgpSecretKey { key, passphrase } => {
+                key.zeroize();
+                passphrase.zeroize();
+            }
         }
     }
 }
@@ -337,15 +407,31 @@ struct FallbackEnvelope {
 }
 
 fn serialize_credential(credential: &CredentialToStore) -> Result<Zeroizing<Vec<u8>>> {
-    let borrowed = match credential {
-        CredentialToStore::Password(value) => CredentialBorrowed::Password {
+    let encoded = match credential {
+        CredentialToStore::Password(value) => serde_json::to_vec(&CredentialBorrowed::Password {
             value: value.expose(),
-        },
-        CredentialToStore::OAuth2AccessToken(value) => CredentialBorrowed::OAuth2AccessToken {
-            value: value.expose(),
-        },
+        })?,
+        CredentialToStore::OAuth2AccessToken(value) => {
+            serde_json::to_vec(&CredentialBorrowed::OAuth2AccessToken {
+                value: value.expose(),
+            })?
+        }
+        CredentialToStore::OpenPgpSecretKey { key, passphrase } => {
+            #[derive(Serialize)]
+            struct OpenPgpSecretBorrowed<'a> {
+                kind: &'static str,
+                key: &'a str,
+                passphrase: &'a str,
+            }
+            let key = Zeroizing::new(URL_SAFE_NO_PAD.encode(key.as_slice()));
+            serde_json::to_vec(&OpenPgpSecretBorrowed {
+                kind: "open_pgp_secret_key",
+                key: key.as_str(),
+                passphrase: passphrase.expose(),
+            })?
+        }
     };
-    let encoded = Zeroizing::new(serde_json::to_vec(&borrowed)?);
+    let encoded = Zeroizing::new(encoded);
     if encoded.len() > MAX_CREDENTIAL_BYTES {
         return Err(BackendError::InvalidInput(format!(
             "credential exceeds the {MAX_CREDENTIAL_BYTES}-byte limit"
