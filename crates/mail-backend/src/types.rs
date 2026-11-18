@@ -1,6 +1,7 @@
 use crate::{
-    AccountId, ContactId, DraftAttachmentId, DraftId, FilterRuleId, FindingId, FolderId,
-    HeuristicId, ImapMutationConflictId, ImapMutationId, MessageId, SubmissionId, ThreadId,
+    AccountId, AccountIdentityId, ContactId, DraftAttachmentId, DraftId, FilterRuleId, FindingId,
+    FolderId, HeuristicId, ImapMutationConflictId, ImapMutationId, MessageId, SubmissionId,
+    ThreadId,
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -132,6 +133,33 @@ pub struct NewAccount {
     /// An opaque reference into a platform credential store. Never a password.
     pub credential_ref: Option<String>,
     pub imap: Option<ImapSettings>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AccountIdentity {
+    pub id: AccountIdentityId,
+    pub account_id: AccountId,
+    pub revision: u32,
+    pub email_address: String,
+    pub display_name: Option<String>,
+    pub reply_to: Option<String>,
+    /// A secret-key provider owned by the same account must exist for this
+    /// fingerprint before the identity can protect outgoing mail.
+    pub openpgp_fingerprint: Option<String>,
+    pub is_default: bool,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct NewAccountIdentity {
+    pub account_id: AccountId,
+    pub email_address: String,
+    pub display_name: Option<String>,
+    pub reply_to: Option<String>,
+    pub openpgp_fingerprint: Option<String>,
+    #[serde(default)]
+    pub is_default: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -752,6 +780,10 @@ pub enum DraftStatus {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DraftContent {
     pub account_id: AccountId,
+    /// `None` resolves to the account's default identity when saved. Loaded
+    /// drafts always contain the resolved identity.
+    #[serde(default)]
+    pub identity_id: Option<AccountIdentityId>,
     pub thread_id: ThreadId,
     pub parent_message_id: Option<MessageId>,
     pub to_addresses: Vec<String>,
@@ -976,7 +1008,127 @@ pub struct OpenPgpDraftSecurity {
     pub effective: OpenPgpDraftMode,
     pub recipient_fingerprints: Vec<String>,
     pub missing_recipient_addresses: Vec<String>,
+    pub sender_fingerprint: Option<String>,
     pub conversation_requires_encryption: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MailExportFormat {
+    EmlDirectory,
+    Maildir,
+    Mbox,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MailSelection {
+    All,
+    Account(AccountId),
+    Folder(FolderId),
+    Messages(Vec<MessageId>),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct MailTransferLimits {
+    pub max_messages: usize,
+    pub max_message_bytes: u64,
+    pub max_total_bytes: u64,
+}
+
+impl Default for MailTransferLimits {
+    fn default() -> Self {
+        Self {
+            max_messages: 1_000_000,
+            max_message_bytes: 128 * 1024 * 1024,
+            max_total_bytes: 1024 * 1024 * 1024 * 1024,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct MailExportReport {
+    pub format: MailExportFormat,
+    pub destination: PathBuf,
+    pub messages: u64,
+    pub raw_bytes: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct MailImportReport {
+    pub format: MailExportFormat,
+    pub messages: Vec<MessageId>,
+    pub raw_bytes: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OfflineDownloadPolicy {
+    OnDemand,
+    All,
+    RecentDays { days: u32 },
+    SelectedFolders { folder_ids: Vec<FolderId> },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BodyRetentionPolicy {
+    KeepAll,
+    /// Only remotely recoverable, unpinned messages are eligible.
+    EvictRemoteAfterDays {
+        days: u32,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AccountBodyPolicy {
+    pub account_id: AccountId,
+    pub offline: OfflineDownloadPolicy,
+    pub retention: BodyRetentionPolicy,
+    #[serde(default = "default_true")]
+    pub retain_starred: bool,
+    pub updated_at: i64,
+}
+
+impl AccountBodyPolicy {
+    pub fn on_demand(account_id: AccountId) -> Self {
+        Self {
+            account_id,
+            offline: OfflineDownloadPolicy::OnDemand,
+            retention: BodyRetentionPolicy::KeepAll,
+            retain_starred: true,
+            updated_at: 0,
+        }
+    }
+}
+
+const fn default_true() -> bool {
+    true
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct BodyRetentionReport {
+    pub examined: u64,
+    pub evicted: Vec<MessageId>,
+    pub reclaimed_bytes: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ProfileBackupReport {
+    pub destination: PathBuf,
+    pub files: u64,
+    pub bytes: u64,
+    /// Native keychain contents are deliberately never exported. References
+    /// remain useful when restoring on the same OS profile.
+    pub native_credential_references: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ProfileRestoreReport {
+    pub destination: PathBuf,
+    pub files: u64,
+    pub bytes: u64,
+    pub native_credential_references: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

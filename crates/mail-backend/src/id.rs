@@ -47,6 +47,7 @@ macro_rules! id_type {
 }
 
 id_type!(AccountId);
+id_type!(AccountIdentityId);
 id_type!(ContactId);
 id_type!(FolderId);
 id_type!(FilterRuleId);

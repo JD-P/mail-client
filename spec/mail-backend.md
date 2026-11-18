@@ -846,6 +846,13 @@ automatically. DKIM signing is deliberately absent because the submission
 server owns it. A local accepted copy is reconciled with later `\\Sent` IMAP
 copies using the protected Message-ID, account and sender identity.
 
+Account sending identities are separate from transport credentials. Each
+revisioned identity has an address, optional locally chosen display name,
+optional Reply-To, default status and optional account-owned OpenPGP secret-key
+provider. Drafts persist the selected identity. Reply construction prefers the
+identity matching `Delivered-To`, then visible recipients, so an alias receives
+and answers mail consistently; SMTP usernames are used only to authenticate.
+
 ### Contacts
 
 - a backend-owned address book exposed through the same API and change stream
@@ -930,6 +937,24 @@ implementations are required to run disposable sandbox workers.
 - typed disk-full failures, a configurable emergency free-space reserve,
   whole-profile quota and durable per-account downloaded-mail quotas are
   implemented.
+
+Implemented portability exports and imports exact RFC bytes as EML directories,
+Maildir or mboxrd. Bounded streaming imports avoid retaining an entire archive
+in memory; Lizard-generated manifests add hashes, timestamps and read/star state
+while the mail data remains readable by standard tools. Profile backups are
+owner-private, checksum every authoritative file, exclude rebuildable Tantivy
+and transient partial downloads, and restore into a no-clobber destination
+that is removed on validation failure. Native OS-keychain secrets are
+intentionally not exportable and the backup report calls out their surviving
+opaque references.
+
+Body-cache policy is per account: on-demand, all messages, a recent-day window,
+or selected remote folders. Header-first IMAP sync automatically hydrates a
+bounded policy-selected batch. Retention can discard only complete bodies with
+a live selectable remote instance; local-folder membership, an explicit pin,
+star retention and every owning account's offline requirement are hard stops.
+Eviction keeps the header projection and marks MIME, search and DKIM body
+evidence incomplete until the resumable downloader restores the exact message.
 
 The profile quota is evaluated against every file in the profile, including
 Turso, content blobs, partial downloads, credentials and rebuildable Tantivy

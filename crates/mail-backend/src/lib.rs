@@ -17,9 +17,11 @@ mod error;
 mod event;
 mod heuristic;
 mod id;
+mod identity;
 mod imap;
 mod imap_engine;
 mod imap_mutation;
+mod lifecycle;
 mod mime;
 mod mime_api;
 mod openpgp;
@@ -42,10 +44,11 @@ pub use error::{BackendError, ErrorCode, Result};
 pub use event::{ChangeCursor, EventRecvError, EventSubscription};
 pub use heuristic::compile_heuristic;
 pub use id::{
-    AccountId, ContactId, DraftAttachmentId, DraftId, FilterRuleId, FindingId, FolderId,
-    HeuristicId, ImapMutationConflictId, ImapMutationId, MessageId, SavedSearchId, SubmissionId,
-    ThreadId,
+    AccountId, AccountIdentityId, ContactId, DraftAttachmentId, DraftId, FilterRuleId, FindingId,
+    FolderId, HeuristicId, ImapMutationConflictId, ImapMutationId, MessageId, SavedSearchId,
+    SubmissionId, ThreadId,
 };
+pub use identity::AccountIdentities;
 pub use imap::imap_fetch_message;
 pub use imap_engine::{
     CredentialProvider, ImapAccountEngine, ImapAccountEngineConfig, ImapAccountSyncReport,
@@ -53,6 +56,7 @@ pub use imap_engine::{
     ImapMailboxCompleteness, ImapMailboxSyncState, ImapMutationSyncReport, SecretValue,
 };
 pub use imap_mutation::ImapMutations;
+pub use lifecycle::{restore_profile_backup, DataLifecycle};
 pub use mime_api::{Mime, SandboxedDocumentExtractor};
 pub use openpgp::OpenPgp;
 pub use organization::SavedSearches;

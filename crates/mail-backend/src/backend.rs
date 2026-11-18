@@ -188,6 +188,11 @@ pub(crate) struct Inner {
     pub(crate) connection: Mutex<Connection>,
     pub(crate) search_index: Arc<SearchIndex>,
     pub(crate) search_sync: RwLock<()>,
+    /// Serializes physical blob collection against the interval between
+    /// publishing a content-addressed file and committing its database
+    /// reference. Readers are blob publishers; writers may delete or take a
+    /// coherent profile snapshot.
+    pub(crate) blob_references: RwLock<()>,
     pub(crate) blobs: BlobStore,
     pub(crate) storage: Arc<crate::storage::StorageBudget>,
     pub(crate) credentials: Arc<crate::credential::CredentialManager>,
@@ -248,6 +253,7 @@ impl Backend {
                 connection: Mutex::new(connection),
                 search_index,
                 search_sync: RwLock::new(()),
+                blob_references: RwLock::new(()),
                 blobs,
                 storage,
                 credentials,
@@ -421,6 +427,27 @@ impl Backend {
         Ok(crate::delivery_auth::parse(raw, &sources))
     }
 
+    pub(crate) async fn blob_is_referenced(&self, hash: &str) -> Result<bool> {
+        let connection = self.inner.connection.lock().await;
+        let mut rows = connection
+            .query(
+                r#"SELECT
+                    EXISTS(SELECT 1 FROM messages WHERE blob_hash = ?1) OR
+                    EXISTS(SELECT 1 FROM mime_part_blobs WHERE blob_hash = ?1) OR
+                    EXISTS(SELECT 1 FROM attachments WHERE blob_hash = ?1) OR
+                    EXISTS(SELECT 1 FROM draft_attachments WHERE blob_hash = ?1) OR
+                    EXISTS(SELECT 1 FROM submissions WHERE raw_blob_hash = ?1) OR
+                    EXISTS(SELECT 1 FROM sent_reconciliation WHERE blob_hash = ?1) OR
+                    EXISTS(SELECT 1 FROM openpgp_decrypted_messages WHERE decrypted_blob_hash = ?1)"#,
+                (hash,),
+            )
+            .await?;
+        Ok(rows
+            .next()
+            .await?
+            .is_some_and(|row| row.get::<bool>(0).unwrap_or(true)))
+    }
+
     fn schedule_spam_reclassification(&self) {
         let backend = self.clone();
         tokio::spawn(async move {
@@ -495,6 +522,14 @@ impl Backend {
 
     pub fn accounts(&self) -> Accounts {
         Accounts(self.clone())
+    }
+
+    pub fn account_identities(&self) -> crate::AccountIdentities {
+        crate::AccountIdentities::new(self.clone())
+    }
+
+    pub fn data_lifecycle(&self) -> crate::DataLifecycle {
+        crate::DataLifecycle::new(self.clone())
     }
 
     pub fn storage(&self) -> crate::Storage {
@@ -763,6 +798,7 @@ impl Backend {
             }
         }
 
+        let blob_guard = self.inner.blob_references.read().await;
         let mut message_ids = Vec::with_capacity(requests.len());
         let mut batch = Vec::new();
         let mut staged_bytes = 0usize;
@@ -791,6 +827,7 @@ impl Backend {
         if !batch.is_empty() {
             message_ids.extend(self.commit_prepared_batch(batch).await?);
         }
+        drop(blob_guard);
         self.openpgp().refresh_messages(&message_ids).await?;
         self.evaluate_automation(&message_ids).await?;
         Ok(message_ids)
@@ -1226,19 +1263,20 @@ impl Backend {
                 raw.len()
             )));
         }
-        let (received_at, account_ids) = {
+        let (received_at, previous_blob_hash, account_ids) = {
             let connection = self.inner.connection.lock().await;
             let mut rows = connection
                 .query(
-                    "SELECT received_at FROM messages WHERE id = ?1",
+                    "SELECT received_at, blob_hash FROM messages WHERE id = ?1",
                     (message_id.to_string(),),
                 )
                 .await?;
-            let received_at = rows
+            let row = rows
                 .next()
                 .await?
-                .ok_or_else(|| not_found("message", message_id))?
-                .get::<i64>(0)?;
+                .ok_or_else(|| not_found("message", message_id))?;
+            let received_at = row.get::<i64>(0)?;
+            let previous_blob_hash = row.get::<String>(1)?;
             drop(rows);
             let mut rows = connection
                 .query(
@@ -1250,10 +1288,11 @@ impl Backend {
             while let Some(row) = rows.next().await? {
                 account_ids.push(parse_id::<AccountId>(row.get(0)?, "account")?);
             }
-            (received_at, account_ids)
+            (received_at, previous_blob_hash, account_ids)
         };
         let delivery_auth_json =
             serde_json::to_string(&self.delivery_authentication_for(&raw, &account_ids).await?)?;
+        let blob_guard = self.inner.blob_references.read().await;
         let mut prepared = self
             .prepare_ingest(IngestMessage {
                 raw,
@@ -1457,6 +1496,21 @@ impl Backend {
         .await?;
         transaction.commit().await?;
         drop(connection);
+        drop(blob_guard);
+        let removed_projection = {
+            let _blob_guard = self.inner.blob_references.write().await;
+            if self.blob_is_referenced(&previous_blob_hash).await? {
+                false
+            } else {
+                self.inner
+                    .blobs
+                    .remove_unreferenced(&previous_blob_hash)
+                    .await?
+            }
+        };
+        if removed_projection {
+            self.inner.storage.measure().await?;
+        }
         self.openpgp().refresh_message(message_id).await?;
         self.flush_search_projection().await?;
         let _ = self.inner.events.send(event);
@@ -1978,6 +2032,7 @@ impl Backend {
             if missing.is_empty() {
                 return Ok(());
             }
+            let _blob_guard = self.inner.blob_references.read().await;
             let mut projected = Vec::with_capacity(missing.len());
             for (message_id, blob_hash) in missing {
                 let raw = self.inner.blobs.get(&blob_hash).await?;
@@ -2275,6 +2330,16 @@ impl Accounts {
                 ],
             )
             .await?;
+        if let Some(settings) = &value.imap {
+            crate::identity::ensure_default_identity_on(
+                &transaction,
+                value.id,
+                &value.name,
+                &settings.username,
+                value.created_at,
+            )
+            .await?;
+        }
         let event = insert_event(
             &transaction,
             value.created_at,
@@ -4090,6 +4155,7 @@ impl Sync {
         uid_validity: u32,
         fetched: Vec<ImapFetchedHeaders>,
     ) -> Result<SyncBatchResult> {
+        let blob_guard = self.0.inner.blob_references.read().await;
         let mut prepared = Vec::with_capacity(fetched.len());
         for message in fetched {
             if message.uid == 0 {
@@ -4104,6 +4170,7 @@ impl Sync {
             );
         }
         let message_ids = self.0.commit_prepared_batch(prepared).await?;
+        drop(blob_guard);
         self.0.evaluate_automation(&message_ids).await?;
         Ok(SyncBatchResult { message_ids })
     }

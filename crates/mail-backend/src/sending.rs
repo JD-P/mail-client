@@ -1,9 +1,10 @@
 use crate::backend::insert_event;
 use crate::{
-    AccountId, Backend, BackendError, Draft, DraftAttachment, DraftAttachmentDisposition,
-    DraftAttachmentId, DraftContent, DraftId, DraftStatus, IngestMessage, MessageComposition,
-    MessageId, NewDraftAttachment, OpenPgpDraftMode, OpenPgpDraftSecurity, ReplyAudience, Result,
-    SendingLimits, SmtpAccount, SmtpSettings, Submission, SubmissionId, SubmissionStatus,
+    AccountId, AccountIdentity, Backend, BackendError, Draft, DraftAttachment,
+    DraftAttachmentDisposition, DraftAttachmentId, DraftContent, DraftId, DraftStatus,
+    IngestMessage, MessageComposition, MessageId, NewDraftAttachment, OpenPgpDraftMode,
+    OpenPgpDraftSecurity, ReplyAudience, Result, SendingLimits, SmtpAccount, SmtpSettings,
+    Submission, SubmissionId, SubmissionStatus,
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
 use chrono::Utc;
@@ -61,13 +62,14 @@ impl Sending {
         let mut connection = self.0.inner.connection.lock().await;
         let mut rows = connection
             .query(
-                "SELECT 1 FROM accounts WHERE id = ?1",
+                "SELECT name FROM accounts WHERE id = ?1",
                 (account_id.to_string(),),
             )
             .await?;
-        if rows.next().await?.is_none() {
+        let Some(row) = rows.next().await? else {
             return Err(not_found("account", account_id));
-        }
+        };
+        let account_name = row.get::<String>(0)?;
         drop(rows);
         let mut rows = connection
             .query(
@@ -93,6 +95,14 @@ impl Sending {
                 ),
             )
             .await?;
+        crate::identity::ensure_default_identity_on(
+            &transaction,
+            account_id,
+            &account_name,
+            &settings.username,
+            now,
+        )
+        .await?;
         if previous_reference.as_deref() != Some(credential_ref.as_str()) {
             if let Some(reference) = &previous_reference {
                 self.0
@@ -176,9 +186,15 @@ impl Drafts {
         Self(backend)
     }
 
-    pub async fn create(&self, content: DraftContent) -> Result<Draft> {
+    pub async fn create(&self, mut content: DraftContent) -> Result<Draft> {
         validate_draft_content(&content)?;
         self.0.accounts().get(content.account_id).await?;
+        let identity = self
+            .0
+            .account_identities()
+            .resolve(content.account_id, content.identity_id)
+            .await?;
+        content.identity_id = Some(identity.id);
         let now = Utc::now().timestamp();
         let draft = Draft {
             id: DraftId::new(),
@@ -213,7 +229,9 @@ impl Drafts {
         audience: ReplyAudience,
     ) -> Result<Draft> {
         let composition = self.0.threads().reply(message_id, audience).await?;
-        self.create_composition(account_id, composition).await
+        let identity_id = self.reply_identity(account_id, message_id).await?;
+        self.create_composition(account_id, identity_id, composition)
+            .await
     }
 
     pub async fn create_forward(
@@ -224,7 +242,9 @@ impl Drafts {
     ) -> Result<Draft> {
         let composition = self.0.threads().forward(message_id).await?;
         let attached = composition.attached_message_id;
-        let draft = self.create_composition(account_id, composition).await?;
+        let draft = self
+            .create_composition(account_id, None, composition)
+            .await?;
         if let Some(message_id) = attached {
             let raw = self.0.messages().raw(message_id).await?;
             let mut reader = std::io::Cursor::new(raw);
@@ -249,10 +269,12 @@ impl Drafts {
     async fn create_composition(
         &self,
         account_id: AccountId,
+        identity_id: Option<crate::AccountIdentityId>,
         composition: MessageComposition,
     ) -> Result<Draft> {
         self.create(DraftContent {
             account_id,
+            identity_id,
             thread_id: composition.thread_id,
             parent_message_id: composition.parent_message_id,
             to_addresses: composition.to_addresses,
@@ -265,6 +287,35 @@ impl Drafts {
             references: composition.references,
         })
         .await
+    }
+
+    /// Prefer the alias to which the original message was delivered. The
+    /// delivery projection is authoritative when present; visible recipients
+    /// and the sender address cover providers that omit Delivered-To and
+    /// replies to messages from Sent.
+    async fn reply_identity(
+        &self,
+        account_id: AccountId,
+        message_id: MessageId,
+    ) -> Result<Option<crate::AccountIdentityId>> {
+        let message = self.0.messages().get(message_id).await?;
+        let identities = self.0.account_identities().list(account_id).await?;
+        let candidates = message
+            .delivered_to_addresses
+            .iter()
+            .chain(message.to_addresses.iter())
+            .chain(message.cc_addresses.iter())
+            .chain(message.bcc_addresses.iter())
+            .chain(message.summary.from_address.iter());
+        for candidate in candidates {
+            if let Some(identity) = identities
+                .iter()
+                .find(|identity| identity.email_address.eq_ignore_ascii_case(candidate))
+            {
+                return Ok(Some(identity.id));
+            }
+        }
+        Ok(None)
     }
 
     pub async fn get(&self, id: DraftId) -> Result<Draft> {
@@ -297,18 +348,25 @@ impl Drafts {
         &self,
         id: DraftId,
         expected_revision: u32,
-        content: DraftContent,
+        mut content: DraftContent,
     ) -> Result<Draft> {
         validate_draft_content(&content)?;
         self.0.accounts().get(content.account_id).await?;
+        let identity = self
+            .0
+            .account_identities()
+            .resolve(content.account_id, content.identity_id)
+            .await?;
+        content.identity_id = Some(identity.id);
         let now = Utc::now().timestamp();
         let mut connection = self.0.inner.connection.lock().await;
         let transaction = connection.transaction().await?;
         let changed = transaction
             .execute(
-                "UPDATE drafts SET account_id = ?1, revision = revision + 1, thread_id = ?2, parent_message_id = ?3, to_addresses = ?4, cc_addresses = ?5, bcc_addresses = ?6, subject = ?7, body_text = ?8, body_html = ?9, in_reply_to = ?10, references_json = ?11, updated_at = ?12 WHERE id = ?13 AND revision = ?14 AND status = 'editing'",
+                "UPDATE drafts SET account_id = ?1, identity_id = ?2, revision = revision + 1, thread_id = ?3, parent_message_id = ?4, to_addresses = ?5, cc_addresses = ?6, bcc_addresses = ?7, subject = ?8, body_text = ?9, body_html = ?10, in_reply_to = ?11, references_json = ?12, updated_at = ?13 WHERE id = ?14 AND revision = ?15 AND status = 'editing'",
                 turso::params![
                     content.account_id.to_string(),
+                    content.identity_id.map(|value| value.to_string()),
                     content.thread_id.to_string(),
                     content.parent_message_id.map(|id| id.to_string()),
                     serde_json::to_string(&content.to_addresses)?,
@@ -361,6 +419,7 @@ impl Drafts {
         {
             attachment.content_id = Some(format!("{}@lizard.local", Uuid::new_v4()));
         }
+        let _blob_guard = self.0.inner.blob_references.read().await;
         let (blob_hash, size_bytes) = self
             .0
             .inner
@@ -562,10 +621,14 @@ impl Outbox {
                 "a submission requires at least one recipient".into(),
             ));
         }
-        let smtp = self
-            .0
+        self.0
             .sending()
             .smtp_account(draft.content.account_id)
+            .await?;
+        let identity = self
+            .0
+            .account_identities()
+            .resolve(draft.content.account_id, draft.content.identity_id)
             .await?;
         let openpgp = self.0.openpgp().draft_security(draft_id).await?;
         if openpgp.conversation_requires_encryption
@@ -584,14 +647,15 @@ impl Outbox {
                 openpgp.missing_recipient_addresses.join(", ")
             )));
         }
-        let rfc_message_id = make_message_id(&smtp.settings.username)?;
-        let raw = build_message(&self.0, &draft, &smtp, &rfc_message_id, &openpgp).await?;
+        let rfc_message_id = make_message_id(&identity.email_address)?;
+        let raw = build_message(&self.0, &draft, &identity, &rfc_message_id, &openpgp).await?;
         if raw.len() as u64 > limits.max_message_bytes {
             return Err(BackendError::MessageTooLarge {
                 actual: raw.len(),
                 limit: usize::try_from(limits.max_message_bytes).unwrap_or(usize::MAX),
             });
         }
+        let _blob_guard = self.0.inner.blob_references.read().await;
         let raw_blob_hash = self.0.inner.blobs.put(&raw).await?;
         let recipients = envelope_recipients(&draft.content);
         let now = Utc::now().timestamp();
@@ -632,7 +696,7 @@ impl Outbox {
                     draft_id.to_string(),
                     submission.account_id.to_string(),
                     submission.rfc_message_id.clone(),
-                    smtp.settings.username,
+                    identity.email_address,
                     serde_json::to_string(&recipients)?,
                     raw_blob_hash,
                     raw.len() as i64,
@@ -1018,7 +1082,7 @@ impl Outbox {
 async fn build_message(
     backend: &Backend,
     draft: &Draft,
-    smtp: &SmtpAccount,
+    identity: &AccountIdentity,
     rfc_message_id: &str,
     openpgp: &OpenPgpDraftSecurity,
 ) -> Result<Vec<u8>> {
@@ -1027,7 +1091,7 @@ async fn build_message(
     write_message_headers(
         &mut protected_headers,
         draft,
-        smtp,
+        identity,
         rfc_message_id,
         &draft.content.subject,
         &date,
@@ -1051,7 +1115,7 @@ async fn build_message(
     write_message_headers(
         &mut output,
         draft,
-        smtp,
+        identity,
         rfc_message_id,
         outer_subject,
         &date,
@@ -1075,6 +1139,7 @@ async fn build_message(
                 .openpgp()
                 .protect_mime_entity(
                     draft.content.account_id,
+                    openpgp.sender_fingerprint.as_deref(),
                     &visible,
                     &draft.content.bcc_addresses,
                     &entity,
@@ -1090,12 +1155,15 @@ async fn build_message(
 fn write_message_headers(
     output: &mut Vec<u8>,
     draft: &Draft,
-    smtp: &SmtpAccount,
+    identity: &AccountIdentity,
     rfc_message_id: &str,
     subject: &str,
     date: &str,
 ) -> Result<()> {
-    header(output, "From", &smtp.settings.username)?;
+    header(output, "From", &format_mailbox(identity))?;
+    if let Some(reply_to) = identity.reply_to.as_deref() {
+        header(output, "Reply-To", reply_to)?;
+    }
     if !draft.content.to_addresses.is_empty() {
         header(output, "To", &draft.content.to_addresses.join(", "))?;
     }
@@ -1325,6 +1393,21 @@ fn encode_unstructured(value: &str) -> String {
     }
 }
 
+fn format_mailbox(identity: &AccountIdentity) -> String {
+    let Some(display_name) = identity.display_name.as_deref() else {
+        return identity.email_address.clone();
+    };
+    let display = if display_name.is_ascii() {
+        format!(
+            "\"{}\"",
+            display_name.replace('\\', "\\\\").replace('"', "\\\"")
+        )
+    } else {
+        encode_unstructured(display_name)
+    };
+    format!("{display} <{}>", identity.email_address)
+}
+
 fn percent_encode(value: &str) -> String {
     let mut output = String::new();
     for byte in value.bytes() {
@@ -1510,10 +1593,11 @@ fn require_header_value(name: &str, value: &str) -> Result<()> {
 async fn insert_draft_on(connection: &Connection, draft: &Draft) -> Result<()> {
     connection
         .execute(
-            "INSERT INTO drafts(id, account_id, revision, status, thread_id, parent_message_id, to_addresses, cc_addresses, bcc_addresses, subject, body_text, body_html, in_reply_to, references_json, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+            "INSERT INTO drafts(id, account_id, identity_id, revision, status, thread_id, parent_message_id, to_addresses, cc_addresses, bcc_addresses, subject, body_text, body_html, in_reply_to, references_json, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
             turso::params![
                 draft.id.to_string(),
                 draft.content.account_id.to_string(),
+                draft.content.identity_id.map(|value| value.to_string()),
                 i64::from(draft.revision),
                 draft_status_text(draft.status),
                 draft.content.thread_id.to_string(),
@@ -1537,32 +1621,36 @@ async fn insert_draft_on(connection: &Connection, draft: &Draft) -> Result<()> {
 async fn load_draft_on(connection: &Connection, id: DraftId) -> Result<Draft> {
     let mut rows = connection
         .query(
-            "SELECT account_id, revision, status, thread_id, parent_message_id, to_addresses, cc_addresses, bcc_addresses, subject, body_text, body_html, in_reply_to, references_json, created_at, updated_at FROM drafts WHERE id = ?1",
+            "SELECT account_id, identity_id, revision, status, thread_id, parent_message_id, to_addresses, cc_addresses, bcc_addresses, subject, body_text, body_html, in_reply_to, references_json, created_at, updated_at FROM drafts WHERE id = ?1",
             (id.to_string(),),
         )
         .await?;
     let row = rows.next().await?.ok_or_else(|| not_found("draft", id))?;
     let content = DraftContent {
         account_id: parse_id(row.get::<String>(0)?, "account")?,
-        thread_id: parse_id(row.get::<String>(3)?, "thread")?,
+        identity_id: row
+            .get::<Option<String>>(1)?
+            .map(|value| parse_id(value, "account identity"))
+            .transpose()?,
+        thread_id: parse_id(row.get::<String>(4)?, "thread")?,
         parent_message_id: row
-            .get::<Option<String>>(4)?
+            .get::<Option<String>>(5)?
             .map(|value| parse_id(value, "message"))
             .transpose()?,
-        to_addresses: serde_json::from_str(&row.get::<String>(5)?)?,
-        cc_addresses: serde_json::from_str(&row.get::<String>(6)?)?,
-        bcc_addresses: serde_json::from_str(&row.get::<String>(7)?)?,
-        subject: row.get(8)?,
-        body_text: row.get(9)?,
-        body_html: row.get(10)?,
-        in_reply_to: row.get(11)?,
-        references: serde_json::from_str(&row.get::<String>(12)?)?,
+        to_addresses: serde_json::from_str(&row.get::<String>(6)?)?,
+        cc_addresses: serde_json::from_str(&row.get::<String>(7)?)?,
+        bcc_addresses: serde_json::from_str(&row.get::<String>(8)?)?,
+        subject: row.get(9)?,
+        body_text: row.get(10)?,
+        body_html: row.get(11)?,
+        in_reply_to: row.get(12)?,
+        references: serde_json::from_str(&row.get::<String>(13)?)?,
     };
-    let revision = u32::try_from(row.get::<i64>(1)?)
+    let revision = u32::try_from(row.get::<i64>(2)?)
         .map_err(|_| BackendError::InvalidInput("invalid draft revision".into()))?;
-    let status = parse_draft_status(&row.get::<String>(2)?)?;
-    let created_at = row.get(13)?;
-    let updated_at = row.get(14)?;
+    let status = parse_draft_status(&row.get::<String>(3)?)?;
+    let created_at = row.get(14)?;
+    let updated_at = row.get(15)?;
     drop(rows);
     let mut rows = connection
         .query(
@@ -1800,6 +1888,7 @@ mod tests {
             .drafts()
             .create(DraftContent {
                 account_id: account.id,
+                identity_id: None,
                 thread_id,
                 parent_message_id: Some(message_id),
                 to_addresses: vec!["reader@example.test".into()],
@@ -1886,6 +1975,7 @@ mod tests {
             .drafts()
             .create(DraftContent {
                 account_id: account.id,
+                identity_id: None,
                 thread_id: ThreadId::new(),
                 parent_message_id: None,
                 to_addresses: vec!["reader@example.test".into()],
@@ -1958,6 +2048,7 @@ mod tests {
             .drafts()
             .create(DraftContent {
                 account_id: account.id,
+                identity_id: None,
                 thread_id: ThreadId::new(),
                 parent_message_id: None,
                 to_addresses: vec!["reader@example.test".into()],

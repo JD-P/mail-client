@@ -139,6 +139,10 @@ Current invariants:
   the conflict evidence and explicitly cancel the operation to acknowledge it.
 - draft autosaves use optimistic revisions; attachment ingest is streamed into
   the content-addressed store under individual and aggregate limits;
+- accounts own revisioned sending identities (address, local display name,
+  Reply-To, default choice and optional OpenPGP provider). Drafts freeze an
+  identity choice, replies prefer the alias that received the original, and
+  the SMTP login is never treated as the message author or envelope sender;
 - enqueue freezes protected headers, envelope recipients and exact MIME bytes
   into a durable outbox entry. Bcc is envelope-only and the client never adds a
   DKIM signature;
@@ -148,7 +152,17 @@ Current invariants:
   durable states; ambiguous delivery is never retried automatically;
 - an accepted submission is ingested as the local Sent message, then a later
   server Sent-folder copy is reconciled by protected Message-ID, account,
-  sender identity and `\\Sent` mailbox role without creating a duplicate.
+  sender identity and `\\Sent` mailbox role without creating a duplicate;
+- EML directories, Maildir and mboxrd import/export preserve exact RFC bytes
+  under caller limits and stream imports in bounded batches. Lizard exports
+  include hashes and local read/star state without making the formats
+  nonstandard;
+- checksummed profile backups exclude rebuildable Tantivy and partial-download
+  state, retain encrypted profile-vault material, and explicitly report native
+  keychain references whose secrets cannot be exported;
+- per-account offline policy supports on-demand, all, recent and selected-folder
+  body hydration. Retention may evict only unpinned, non-local mail with a live
+  remote source, and never a body required offline by any owning account.
 
 `Backend::threads` lists and reads conversation objects rather than requiring
 frontends to group messages themselves. Membership exposes the selected parent,

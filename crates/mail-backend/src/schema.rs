@@ -11,7 +11,7 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 version INTEGER NOT NULL
             );
             INSERT INTO schema_meta(version)
-                SELECT 18 WHERE NOT EXISTS (SELECT 1 FROM schema_meta);
+                SELECT 19 WHERE NOT EXISTS (SELECT 1 FROM schema_meta);
 
             CREATE TABLE IF NOT EXISTS accounts (
                 id TEXT PRIMARY KEY,
@@ -33,6 +33,27 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
             CREATE TABLE IF NOT EXISTS account_storage_quotas (
                 account_id TEXT PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
                 max_bytes INTEGER NOT NULL CHECK(max_bytes >= 0),
+                updated_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS account_identities (
+                id TEXT PRIMARY KEY,
+                account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+                revision INTEGER NOT NULL DEFAULT 1 CHECK(revision > 0),
+                email_address TEXT NOT NULL COLLATE NOCASE,
+                display_name TEXT,
+                reply_to TEXT,
+                openpgp_fingerprint TEXT REFERENCES openpgp_certificates(fingerprint)
+                    ON DELETE SET NULL,
+                is_default INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                UNIQUE(account_id, email_address)
+            );
+
+            CREATE TABLE IF NOT EXISTS account_body_policies (
+                account_id TEXT PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+                policy_json TEXT NOT NULL,
                 updated_at INTEGER NOT NULL
             );
 
@@ -113,6 +134,11 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 download_error TEXT,
                 download_updated_at INTEGER NOT NULL DEFAULT 0,
                 created_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS message_body_pins (
+                message_id TEXT PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+                pinned_at INTEGER NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS message_instances (
@@ -431,6 +457,7 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
             CREATE TABLE IF NOT EXISTS drafts (
                 id TEXT PRIMARY KEY,
                 account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+                identity_id TEXT REFERENCES account_identities(id) ON DELETE SET NULL,
                 revision INTEGER NOT NULL CHECK(revision > 0),
                 status TEXT NOT NULL,
                 thread_id TEXT NOT NULL,
@@ -1179,7 +1206,34 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
             .await?;
         version = 18;
     }
-    if version != 18 {
+    if version == 18 {
+        let mut rows = connection.query("PRAGMA table_info(drafts)", ()).await?;
+        let mut has_identity_id = false;
+        while let Some(row) = rows.next().await? {
+            has_identity_id |= row.get::<String>(1)? == "identity_id";
+        }
+        drop(rows);
+        if !has_identity_id {
+            connection
+                .execute(
+                    "ALTER TABLE drafts ADD COLUMN identity_id TEXT REFERENCES account_identities(id) ON DELETE SET NULL",
+                    (),
+                )
+                .await?;
+        }
+        backfill_account_identities(connection).await?;
+        connection
+            .execute(
+                "UPDATE drafts SET identity_id = (SELECT ai.id FROM account_identities ai WHERE ai.account_id = drafts.account_id ORDER BY ai.is_default DESC, ai.created_at, ai.id LIMIT 1) WHERE identity_id IS NULL",
+                (),
+            )
+            .await?;
+        connection
+            .execute("UPDATE schema_meta SET version = 19", ())
+            .await?;
+        version = 19;
+    }
+    if version != 19 {
         return Err(crate::BackendError::InvalidInput(format!(
             "unsupported database schema version {version}"
         )));
@@ -1201,6 +1255,10 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 ON openpgp_certificate_bindings(address COLLATE NOCASE, state, fingerprint);
             CREATE INDEX IF NOT EXISTS openpgp_providers_account
                 ON openpgp_secret_key_providers(account_id, kind, fingerprint);
+            CREATE INDEX IF NOT EXISTS account_identities_account
+                ON account_identities(account_id, is_default DESC, created_at, id);
+            CREATE UNIQUE INDEX IF NOT EXISTS account_identities_one_default
+                ON account_identities(account_id) WHERE is_default = 1;
             "#,
         )
         .await?;
@@ -1253,6 +1311,70 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
             "#,
         )
         .await?;
+    Ok(())
+}
+
+async fn backfill_account_identities(connection: &turso::Connection) -> Result<()> {
+    let mut rows = connection
+        .query(
+            r#"SELECT a.id, a.name, a.settings_json, s.settings_json,
+                (SELECT p.fingerprint FROM openpgp_secret_key_providers p
+                 WHERE p.account_id = a.id
+                 ORDER BY p.is_default DESC, p.created_at, p.fingerprint LIMIT 1)
+            FROM accounts a
+            LEFT JOIN smtp_accounts s ON s.account_id = a.id
+            WHERE NOT EXISTS (
+                SELECT 1 FROM account_identities i WHERE i.account_id = a.id
+            )
+            ORDER BY a.id"#,
+            (),
+        )
+        .await?;
+    let mut identities = Vec::new();
+    while let Some(row) = rows.next().await? {
+        let account_id = row.get::<String>(0)?;
+        let display_name = row.get::<String>(1)?;
+        let imap = row
+            .get::<Option<String>>(2)?
+            .and_then(|value| serde_json::from_str::<crate::ImapSettings>(&value).ok())
+            .map(|settings| settings.username);
+        let smtp = row
+            .get::<Option<String>>(3)?
+            .and_then(|value| serde_json::from_str::<crate::SmtpSettings>(&value).ok())
+            .map(|settings| settings.username);
+        let Some(address) = smtp
+            .or(imap)
+            .and_then(|value| crate::identity::normalize_address(&value).ok())
+        else {
+            continue;
+        };
+        identities.push((
+            account_id,
+            display_name,
+            address,
+            row.get::<Option<String>>(4)?,
+        ));
+    }
+    drop(rows);
+    let now = chrono::Utc::now().timestamp();
+    for (account_id, display_name, address, fingerprint) in identities {
+        connection
+            .execute(
+                r#"INSERT OR IGNORE INTO account_identities(
+                    id, account_id, revision, email_address, display_name,
+                    reply_to, openpgp_fingerprint, is_default, created_at, updated_at
+                ) VALUES (?1, ?2, 1, ?3, ?4, NULL, ?5, 1, ?6, ?6)"#,
+                turso::params![
+                    uuid::Uuid::new_v4().to_string(),
+                    account_id,
+                    address,
+                    display_name,
+                    fingerprint,
+                    now,
+                ],
+            )
+            .await?;
+    }
     Ok(())
 }
 
@@ -1326,7 +1448,7 @@ mod tests {
             .await
             .unwrap();
         let row = rows.next().await.unwrap().unwrap();
-        assert_eq!(row.get::<i64>(0).unwrap(), 18);
+        assert_eq!(row.get::<i64>(0).unwrap(), 19);
         assert_eq!(row.get::<String>(1).unwrap(), r#"{"received_at":123}"#);
         drop(rows);
 
@@ -1369,7 +1491,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap(),
-            18
+            19
         );
         drop(rows);
 
@@ -1420,5 +1542,95 @@ mod tests {
                 ("imap_not_junk_keyword".into(), "not_spam".into()),
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn version_eighteen_backfills_identity_and_existing_draft() {
+        let profile = tempfile::tempdir().unwrap();
+        let path = profile.path().join("mail.db");
+        let database = turso::Builder::new_local(path.to_str().unwrap())
+            .experimental_index_method(true)
+            .build()
+            .await
+            .unwrap();
+        let connection = database.connect().unwrap();
+        connection
+            .execute_batch(
+                r#"
+                PRAGMA foreign_keys = ON;
+                CREATE TABLE schema_meta (version INTEGER NOT NULL);
+                INSERT INTO schema_meta VALUES (18);
+                CREATE TABLE accounts (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    credential_ref TEXT,
+                    settings_json TEXT,
+                    trusted_authserv_ids_json TEXT NOT NULL DEFAULT '[]',
+                    created_at INTEGER NOT NULL
+                );
+                CREATE TABLE smtp_accounts (
+                    account_id TEXT PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+                    settings_json TEXT NOT NULL,
+                    credential_ref TEXT NOT NULL,
+                    updated_at INTEGER NOT NULL
+                );
+                CREATE TABLE drafts (
+                    id TEXT PRIMARY KEY,
+                    account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+                    revision INTEGER NOT NULL CHECK(revision > 0),
+                    status TEXT NOT NULL,
+                    thread_id TEXT NOT NULL,
+                    parent_message_id TEXT,
+                    to_addresses TEXT NOT NULL,
+                    cc_addresses TEXT NOT NULL,
+                    bcc_addresses TEXT NOT NULL,
+                    subject TEXT NOT NULL,
+                    body_text TEXT NOT NULL,
+                    body_html TEXT,
+                    in_reply_to TEXT,
+                    references_json TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL
+                );
+                INSERT INTO accounts(id, name, kind, created_at)
+                    VALUES ('account-identity', 'Migration Identity', 'local', 1);
+                INSERT INTO smtp_accounts(account_id, settings_json, credential_ref, updated_at)
+                    VALUES (
+                        'account-identity',
+                        '{"host":"smtp.example.test","port":465,"username":"CaseSensitive@Example.Test","security":"implicit_tls","auth":"password"}',
+                        'external:migration', 1
+                    );
+                INSERT INTO drafts(
+                    id, account_id, revision, status, thread_id,
+                    to_addresses, cc_addresses, bcc_addresses, subject,
+                    body_text, references_json, created_at, updated_at
+                ) VALUES (
+                    'draft-identity', 'account-identity', 1, 'editing',
+                    'thread-identity', '[]', '[]', '[]', 'subject', 'body',
+                    '[]', 1, 1
+                );
+                "#,
+            )
+            .await
+            .unwrap();
+
+        migrate(&connection).await.unwrap();
+        let mut rows = connection
+            .query(
+                r#"SELECT schema_meta.version, i.email_address, i.is_default,
+                    d.identity_id = i.id
+                FROM schema_meta, account_identities i
+                JOIN drafts d ON d.account_id = i.account_id
+                WHERE i.account_id = 'account-identity'"#,
+                (),
+            )
+            .await
+            .unwrap();
+        let row = rows.next().await.unwrap().unwrap();
+        assert_eq!(row.get::<i64>(0).unwrap(), 19);
+        assert_eq!(row.get::<String>(1).unwrap(), "CaseSensitive@example.test");
+        assert!(row.get::<bool>(2).unwrap());
+        assert!(row.get::<bool>(3).unwrap());
     }
 }

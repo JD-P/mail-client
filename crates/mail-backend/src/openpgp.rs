@@ -107,6 +107,7 @@ impl OpenPgp {
     /// Record the explicit setup choice. Disabling search synchronously removes
     /// all persistent decrypted MIME blobs and rebuilds affected Tantivy rows.
     pub async fn set_encrypted_search(&self, enabled: bool) -> Result<OpenPgpSearchStatus> {
+        let _blob_guard = self.0.inner.blob_references.write().await;
         let _search_guard = self.0.inner.search_sync.write().await;
         let now = Utc::now().timestamp();
         let mut connection = self.0.inner.connection.lock().await;
@@ -168,7 +169,7 @@ impl OpenPgp {
         let _ = self.0.inner.events.send(event);
         let mut removed_any = false;
         for hash in removed_hashes {
-            if !self.blob_is_referenced(&hash).await? {
+            if !self.0.blob_is_referenced(&hash).await? {
                 removed_any |= self.0.inner.blobs.remove_unreferenced(&hash).await?;
             }
         }
@@ -592,6 +593,7 @@ impl OpenPgp {
         }
 
         if persist {
+            let _blob_guard = self.0.inner.blob_references.read().await;
             let _search_guard = self.0.inner.search_sync.write().await;
             let hash = self.0.inner.blobs.put(&protected_entity).await?;
             let attachment_names = parsed
@@ -737,14 +739,16 @@ impl OpenPgp {
     }
 
     pub async fn draft_security(&self, draft_id: DraftId) -> Result<OpenPgpDraftSecurity> {
-        let (account_id, recipients, requested, required) = {
+        let (account_id, preferred_sender, recipients, requested, required) = {
             let connection = self.0.inner.connection.lock().await;
             let mut rows = connection
                 .query(
-                    r#"SELECT d.account_id, d.to_addresses, d.cc_addresses,
+                    r#"SELECT d.account_id, i.openpgp_fingerprint,
+                        d.to_addresses, d.cc_addresses,
                         d.bcc_addresses, COALESCE(s.requested_mode, 'automatic'),
                         COALESCE(t.openpgp_encryption_required, 0)
                     FROM drafts d
+                    LEFT JOIN account_identities i ON i.id = d.identity_id
                     LEFT JOIN openpgp_draft_security s ON s.draft_id = d.id
                     LEFT JOIN threads t ON t.id = d.thread_id
                     WHERE d.id = ?1"#,
@@ -755,16 +759,17 @@ impl OpenPgp {
                 .next()
                 .await?
                 .ok_or_else(|| not_found("draft", draft_id))?;
-            let mut recipients = serde_json::from_str::<Vec<String>>(&row.get::<String>(1)?)?;
-            recipients.extend(serde_json::from_str::<Vec<String>>(&row.get::<String>(2)?)?);
+            let mut recipients = serde_json::from_str::<Vec<String>>(&row.get::<String>(2)?)?;
             recipients.extend(serde_json::from_str::<Vec<String>>(&row.get::<String>(3)?)?);
+            recipients.extend(serde_json::from_str::<Vec<String>>(&row.get::<String>(4)?)?);
             (
                 row.get::<String>(0)?.parse::<AccountId>().map_err(|_| {
                     BackendError::OpenPgp("database contains invalid account identifier".into())
                 })?,
+                row.get::<Option<String>>(1)?,
                 recipients,
-                parse_draft_mode(&row.get::<String>(4)?)?,
-                row.get::<bool>(5)?,
+                parse_draft_mode(&row.get::<String>(5)?)?,
+                row.get::<bool>(6)?,
             )
         };
         let effective = match (requested, required) {
@@ -774,9 +779,21 @@ impl OpenPgp {
         };
         let mut recipient_fingerprints = Vec::new();
         let mut missing = Vec::new();
+        let sender_fingerprint = if matches!(
+            effective,
+            OpenPgpDraftMode::SignOnly | OpenPgpDraftMode::EncryptAndSign
+        ) {
+            Some(
+                self.sender_provider(account_id, preferred_sender.as_deref())
+                    .await?
+                    .fingerprint,
+            )
+        } else {
+            preferred_sender
+        };
         if effective == OpenPgpDraftMode::EncryptAndSign {
             let (certificates, missing_addresses) = self
-                .recipient_certificates(&recipients, &[], account_id)
+                .recipient_certificates(&recipients, &[], account_id, sender_fingerprint.as_deref())
                 .await?;
             recipient_fingerprints.extend(certificates.into_iter().map(|value| value.fingerprint));
             missing = missing_addresses;
@@ -789,6 +806,7 @@ impl OpenPgp {
             effective,
             recipient_fingerprints,
             missing_recipient_addresses: missing,
+            sender_fingerprint,
             conversation_requires_encryption: required,
         })
     }
@@ -796,12 +814,13 @@ impl OpenPgp {
     pub(crate) async fn protect_mime_entity(
         &self,
         account_id: AccountId,
+        sender_fingerprint: Option<&str>,
         visible_recipients: &[String],
         bcc_recipients: &[String],
         entity: &[u8],
         mode: OpenPgpDraftMode,
     ) -> Result<ProtectedMimeEntity> {
-        let provider = self.default_provider(account_id).await?;
+        let provider = self.sender_provider(account_id, sender_fingerprint).await?;
         let signed = self.sign_entity(&provider, entity).await?;
         if mode == OpenPgpDraftMode::SignOnly {
             return Ok(ProtectedMimeEntity { bytes: signed });
@@ -812,7 +831,12 @@ impl OpenPgp {
             ));
         }
         let (recipients, missing) = self
-            .recipient_certificates(visible_recipients, bcc_recipients, account_id)
+            .recipient_certificates(
+                visible_recipients,
+                bcc_recipients,
+                account_id,
+                Some(&provider.fingerprint),
+            )
             .await?;
         if !missing.is_empty() {
             return Err(BackendError::Conflict(format!(
@@ -1099,6 +1123,22 @@ impl OpenPgp {
             .into_iter()
             .find(|provider| provider.is_default)
             .ok_or_else(|| not_found("default OpenPGP key provider", account_id))
+    }
+
+    async fn sender_provider(
+        &self,
+        account_id: AccountId,
+        fingerprint: Option<&str>,
+    ) -> Result<OpenPgpSecretKeyProvider> {
+        let Some(fingerprint) = fingerprint else {
+            return self.default_provider(account_id).await;
+        };
+        let fingerprint = normalize_fingerprint(fingerprint)?;
+        self.providers(account_id)
+            .await?
+            .into_iter()
+            .find(|provider| provider.fingerprint == fingerprint)
+            .ok_or_else(|| not_found("OpenPGP key provider", fingerprint))
     }
 
     async fn load_certificate(&self, fingerprint_value: &str) -> Result<StoredCertificate> {
@@ -1477,6 +1517,7 @@ impl OpenPgp {
         visible: &[String],
         bcc: &[String],
         account_id: AccountId,
+        own_fingerprint: Option<&str>,
     ) -> Result<(Vec<RecipientCertificate>, Vec<String>)> {
         let visible_set = visible
             .iter()
@@ -1525,7 +1566,7 @@ impl OpenPgp {
                 missing.push(address.clone());
             }
         }
-        let own = self.default_provider(account_id).await?;
+        let own = self.sender_provider(account_id, own_fingerprint).await?;
         if seen.insert(own.fingerprint.clone()) {
             let stored = self.load_certificate(&own.fingerprint).await?;
             recipients.push(RecipientCertificate {
@@ -1583,27 +1624,6 @@ impl OpenPgp {
             security,
             persisted_for_search: true,
         }))
-    }
-
-    async fn blob_is_referenced(&self, hash: &str) -> Result<bool> {
-        let connection = self.0.inner.connection.lock().await;
-        let mut rows = connection
-            .query(
-                r#"SELECT
-                    EXISTS(SELECT 1 FROM messages WHERE blob_hash = ?1) OR
-                    EXISTS(SELECT 1 FROM mime_part_blobs WHERE blob_hash = ?1) OR
-                    EXISTS(SELECT 1 FROM attachments WHERE blob_hash = ?1) OR
-                    EXISTS(SELECT 1 FROM draft_attachments WHERE blob_hash = ?1) OR
-                    EXISTS(SELECT 1 FROM submissions WHERE raw_blob_hash = ?1) OR
-                    EXISTS(SELECT 1 FROM sent_reconciliation WHERE blob_hash = ?1) OR
-                    EXISTS(SELECT 1 FROM openpgp_decrypted_messages WHERE decrypted_blob_hash = ?1)"#,
-                (hash,),
-            )
-            .await?;
-        Ok(rows
-            .next()
-            .await?
-            .is_some_and(|row| row.get::<bool>(0).unwrap_or(true)))
     }
 
     async fn store_decryption_failure(
@@ -2721,6 +2741,7 @@ mod tests {
         let protected = openpgp
             .protect_mime_entity(
                 sender.id,
+                None,
                 &["reader@example.test".into()],
                 &[],
                 entity,

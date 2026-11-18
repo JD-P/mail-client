@@ -58,8 +58,16 @@ from the returned detail list.
 real STARTTLS upgrade. It covers revisioned autosave, streamed attachment
 ingest, protected MIME headers, envelope-only Bcc, definite and temporary SMTP
 failures, post-DATA ambiguity, cancellation, retry policy, durable/live events
-and decoded attachment recovery. An internal test additionally covers crash
+and decoded attachment recovery. It also proves aliases are independent of the
+SMTP login, replies select the receiving alias, and identity-associated OpenPGP
+keys override the account default. An internal test additionally covers crash
 recovery and Sent-folder reconciliation when the server adds transport headers.
+
+`lifecycle.rs` checks byte-exact EML/Maildir/mboxrd round trips (including mbox
+escaping and a missing final newline), bounded multi-batch import, checksummed
+profile restore without Tantivy, and safe retention: local, pinned or
+policy-required bodies cannot be evicted while a remotely recoverable on-demand
+body can.
 
 `mime_api.rs` covers materialized MIME parent/child and alternative-selection
 semantics, CID lookup, bounded decoded streams, create-new export, magic-byte

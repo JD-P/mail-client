@@ -73,10 +73,10 @@ persistent interactive IPC session is not implemented by the CLI yet.
 
 The Lizard renderer has no account/credential store, MIME reader, network
 fetcher, mailbox/application UI, OS link launcher or send-mail API. The
-separate backend crate now owns local account metadata, bounded MIME ingestion
-and mailbox state, but does not yet open IMAP network sessions, retrieve
-credential secrets or send mail. Resources must be explicitly supplied for the
-current render job, or be allowed literal raster data.
+separate backend crate owns those mail concerns: local state and search,
+credential-provider boundaries, IMAP synchronization, SMTP submission, MIME,
+security evidence and data lifecycle. Resources must still be explicitly
+supplied to each render job, or be allowed literal raster data.
 External/CID resource keys confer no fetching authority. Link fragments,
 logical readable text and scoped accessibility labels/roles are emitted for
 integration. Trusted focus indication, canonical destination display, validated

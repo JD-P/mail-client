@@ -477,27 +477,11 @@ async fn sender_trust_on(
 
 async fn own_addresses_on(connection: &Connection) -> Result<HashSet<String>> {
     let mut rows = connection
-        .query(
-            "SELECT settings_json FROM accounts WHERE settings_json IS NOT NULL",
-            (),
-        )
+        .query("SELECT email_address FROM account_identities", ())
         .await?;
     let mut addresses = HashSet::new();
     while let Some(row) = rows.next().await? {
-        let settings: crate::ImapSettings = serde_json::from_str(&row.get::<String>(0)?)?;
-        if settings.username.contains('@') {
-            addresses.insert(normalize_address(&settings.username));
-        }
-    }
-    drop(rows);
-    let mut rows = connection
-        .query("SELECT settings_json FROM smtp_accounts", ())
-        .await?;
-    while let Some(row) = rows.next().await? {
-        let settings: crate::SmtpSettings = serde_json::from_str(&row.get::<String>(0)?)?;
-        if settings.username.contains('@') {
-            addresses.insert(normalize_address(&settings.username));
-        }
+        addresses.insert(normalize_address(&row.get::<String>(0)?));
     }
     Ok(addresses)
 }

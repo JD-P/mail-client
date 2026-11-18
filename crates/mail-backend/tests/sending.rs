@@ -1,7 +1,8 @@
 use futures_util::future::BoxFuture;
 use lizard_mail_backend::{
     AccountKind, Backend, BackendConfig, CredentialProvider, DraftAttachmentDisposition,
-    DraftContent, ImapCredential, NewAccount, NewDraftAttachment, SecretValue, SendingLimits,
+    DraftContent, ImapCredential, IngestMessage, NewAccount, NewAccountIdentity,
+    NewDraftAttachment, OpenPgpDraftMode, ReplyAudience, SecretValue, SendingLimits,
     SmtpAuthMethod, SmtpEngine, SmtpEngineConfig, SmtpSecurity, SmtpSettings, SubmissionStatus,
     ThreadId, ThreadSenderTrust,
 };
@@ -40,6 +41,7 @@ enum ServerOutcome {
 }
 
 struct ServerTranscript {
+    mail_from: String,
     raw: Vec<u8>,
     recipients: Vec<String>,
 }
@@ -93,10 +95,17 @@ async fn smtp_server(
         assert!(auth.starts_with("AUTH PLAIN "));
         socket.write_all(b"235 authenticated\r\n").await.unwrap();
         let mail = read_line(&mut socket).await;
-        assert!(mail.starts_with("MAIL FROM:<sender@example.test> SIZE="));
+        assert!(mail.starts_with("MAIL FROM:<") && mail.contains("> SIZE="));
+        let mail_from = mail
+            .trim_start_matches("MAIL FROM:<")
+            .split_once('>')
+            .unwrap()
+            .0
+            .to_owned();
         if matches!(outcome, ServerOutcome::RejectMail) {
             socket.write_all(b"550 sender rejected\r\n").await.unwrap();
             return ServerTranscript {
+                mail_from,
                 raw: Vec::new(),
                 recipients: Vec::new(),
             };
@@ -104,6 +113,7 @@ async fn smtp_server(
         if matches!(outcome, ServerOutcome::TemporaryMailFailure) {
             socket.write_all(b"451 try later\r\n").await.unwrap();
             return ServerTranscript {
+                mail_from,
                 raw: Vec::new(),
                 recipients: Vec::new(),
             };
@@ -137,7 +147,11 @@ async fn smtp_server(
             }
         }
         if matches!(outcome, ServerOutcome::DisconnectAfterData) {
-            return ServerTranscript { raw, recipients };
+            return ServerTranscript {
+                mail_from,
+                raw,
+                recipients,
+            };
         }
         socket
             .write_all(b"250 queued as fixture-42\r\n")
@@ -146,7 +160,11 @@ async fn smtp_server(
         if read_line(&mut socket).await == "QUIT" {
             let _ = socket.write_all(b"221 goodbye\r\n").await;
         }
-        ServerTranscript { raw, recipients }
+        ServerTranscript {
+            mail_from,
+            raw,
+            recipients,
+        }
     });
     (port, root_der, task)
 }
@@ -232,6 +250,7 @@ async fn queued_submission(
         .drafts()
         .create(DraftContent {
             account_id,
+            identity_id: None,
             thread_id: ThreadId::new(),
             parent_message_id: None,
             to_addresses: vec!["reader@example.test".into()],
@@ -299,6 +318,7 @@ async fn drafts_autosave_build_protected_mime_and_submit_over_starttls() {
     }
     let sent_id = completed[0].sent_message_id.unwrap();
     let transcript = server.await.unwrap();
+    assert_eq!(transcript.mail_from, "sender@example.test");
     assert_eq!(
         transcript.recipients,
         [
@@ -312,7 +332,7 @@ async fn drafts_autosave_build_protected_mime_and_submit_over_starttls() {
         transcript.raw
     );
     let raw_text = String::from_utf8_lossy(&transcript.raw);
-    assert!(raw_text.contains("From: sender@example.test\r\n"));
+    assert!(raw_text.contains("From: \"Sending fixture\" <sender@example.test>\r\n"));
     assert!(raw_text.contains("To: reader@example.test\r\n"));
     assert!(raw_text.contains("Cc: copy@example.test\r\n"));
     assert!(!raw_text.contains("Bcc:"));
@@ -334,6 +354,135 @@ async fn drafts_autosave_build_protected_mime_and_submit_over_starttls() {
         .await
         .unwrap();
     assert_eq!(decoded, b"exact attachment bytes");
+}
+
+#[tokio::test]
+async fn explicit_identity_is_independent_of_the_smtp_login() {
+    let (_profile, backend, account_id, engine, server) =
+        configured_backend(ServerOutcome::Accept).await;
+    backend
+        .account_identities()
+        .add(NewAccountIdentity {
+            account_id,
+            email_address: "alias@example.test".into(),
+            display_name: Some("Abigail Marie".into()),
+            reply_to: Some("replies@example.test".into()),
+            openpgp_fingerprint: None,
+            is_default: true,
+        })
+        .await
+        .unwrap();
+    queued_submission(&backend, account_id).await;
+    engine.send_due(&CancellationToken::new()).await.unwrap();
+    let transcript = server.await.unwrap();
+    assert_eq!(transcript.mail_from, "alias@example.test");
+    let raw = String::from_utf8_lossy(&transcript.raw);
+    assert!(raw.contains("From: \"Abigail Marie\" <alias@example.test>\r\n"));
+    assert!(raw.contains("Reply-To: replies@example.test\r\n"));
+    assert!(!raw.contains("From: sender@example.test\r\n"));
+}
+
+#[tokio::test]
+async fn replies_reuse_the_alias_that_received_the_message() {
+    let (_profile, backend, account_id, _engine, server) =
+        configured_backend(ServerOutcome::Accept).await;
+    let alias = backend
+        .account_identities()
+        .add(NewAccountIdentity {
+            account_id,
+            email_address: "CaseSensitive@aliases.example.test".into(),
+            display_name: Some("Alias".into()),
+            reply_to: None,
+            openpgp_fingerprint: None,
+            is_default: false,
+        })
+        .await
+        .unwrap();
+    assert_eq!(alias.email_address, "CaseSensitive@aliases.example.test");
+    let message = backend
+        .messages()
+        .ingest(IngestMessage::local(
+            b"From: correspondent@example.test\r\nTo: CaseSensitive@aliases.example.test\r\nDelivered-To: CaseSensitive@aliases.example.test\r\nMessage-ID: <alias-reply@example.test>\r\nSubject: Alias reply\r\n\r\nhello\r\n"
+                .to_vec(),
+        ))
+        .await
+        .unwrap();
+
+    let reply = backend
+        .drafts()
+        .create_reply(account_id, message, ReplyAudience::All)
+        .await
+        .unwrap();
+    assert_eq!(reply.content.identity_id, Some(alias.id));
+    assert_eq!(
+        reply.content.to_addresses,
+        vec!["correspondent@example.test"]
+    );
+    assert!(!reply
+        .content
+        .cc_addresses
+        .iter()
+        .any(|address| address.eq_ignore_ascii_case(&alias.email_address)));
+    server.abort();
+}
+
+#[tokio::test]
+async fn identity_selects_its_own_openpgp_signing_key() {
+    let (_profile, backend, account_id, _engine, server) =
+        configured_backend(ServerOutcome::Accept).await;
+    let identity = backend.account_identities().list(account_id).await.unwrap()[0].clone();
+    let selected = backend
+        .openpgp()
+        .generate_software_key(account_id, "Selected Key <selected@example.test>")
+        .await
+        .unwrap();
+    backend
+        .account_identities()
+        .update(
+            identity.id,
+            identity.revision,
+            NewAccountIdentity {
+                account_id,
+                email_address: identity.email_address,
+                display_name: identity.display_name,
+                reply_to: identity.reply_to,
+                openpgp_fingerprint: Some(selected.fingerprint.clone()),
+                is_default: true,
+            },
+        )
+        .await
+        .unwrap();
+    let other_default = backend
+        .openpgp()
+        .generate_software_key(account_id, "Other Key <other@example.test>")
+        .await
+        .unwrap();
+    assert_ne!(selected.fingerprint, other_default.fingerprint);
+    let draft = backend
+        .drafts()
+        .create(DraftContent {
+            account_id,
+            identity_id: Some(identity.id),
+            thread_id: ThreadId::new(),
+            parent_message_id: None,
+            to_addresses: vec!["reader@example.test".into()],
+            cc_addresses: Vec::new(),
+            bcc_addresses: Vec::new(),
+            subject: "Identity key".into(),
+            body_text: "body".into(),
+            body_html: None,
+            in_reply_to: None,
+            references: Vec::new(),
+        })
+        .await
+        .unwrap();
+    let security = backend
+        .openpgp()
+        .set_draft_mode(draft.id, OpenPgpDraftMode::SignOnly)
+        .await
+        .unwrap();
+    assert_eq!(security.sender_fingerprint, Some(selected.fingerprint));
+    server.abort();
 }
 
 #[tokio::test]

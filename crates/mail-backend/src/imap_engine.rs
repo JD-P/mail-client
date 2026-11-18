@@ -100,6 +100,12 @@ pub struct ImapAccountEngineConfig {
     /// Maximum durable outbound mutations attempted on one synchronization
     /// connection before ordinary mailbox reconciliation resumes.
     pub mutation_batch_size: usize,
+    /// Maximum policy-selected bodies hydrated after one header/flag sync.
+    /// `0` disables automatic offline hydration without changing the policy.
+    pub offline_download_batch_size: usize,
+    /// Maximum policy-eligible cached bodies evicted after one sync. `0`
+    /// disables automatic retention without changing the stored policy.
+    pub body_retention_batch_size: usize,
     /// Whether the built-in Mozilla/WebPKI root set is accepted.
     pub use_webpki_roots: bool,
     /// Additional DER-encoded trust anchors, primarily for private mail
@@ -118,6 +124,8 @@ impl Default for ImapAccountEngineConfig {
             backoff_initial: Duration::from_secs(2),
             backoff_maximum: Duration::from_secs(15 * 60),
             mutation_batch_size: 100,
+            offline_download_batch_size: 32,
+            body_retention_batch_size: 32,
             use_webpki_roots: true,
             additional_root_certificates_der: Vec::new(),
         }
@@ -191,6 +199,9 @@ pub struct ImapAccountSyncReport {
     pub capabilities: Vec<String>,
     pub mutations: ImapMutationSyncReport,
     pub folders: Vec<ImapFolderSyncReport>,
+    pub offline_downloaded_messages: usize,
+    pub offline_download_failures: usize,
+    pub evicted_cached_bodies: usize,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -564,12 +575,59 @@ impl ImapAccountEngine {
                 }
             }
         }
+        let mut offline_downloaded_messages = 0usize;
+        let mut offline_download_failures = 0usize;
+        if self.config.offline_download_batch_size > 0 {
+            let candidates = self
+                .backend
+                .data_lifecycle()
+                .offline_download_candidates(
+                    account_id,
+                    self.config
+                        .offline_download_batch_size
+                        .min(crate::lifecycle::MAX_OFFLINE_BATCH),
+                )
+                .await?;
+            for message_id in candidates {
+                match timeout(
+                    self.config.folder_sync_timeout,
+                    self.backend.sync().fetch_imap_message_content(
+                        &mut session,
+                        account_id,
+                        message_id,
+                    ),
+                )
+                .await
+                {
+                    Ok(Ok(_)) => offline_downloaded_messages += 1,
+                    Ok(Err(_)) | Err(_) => offline_download_failures += 1,
+                }
+            }
+        }
+        let evicted_cached_bodies = if self.config.body_retention_batch_size == 0 {
+            0
+        } else {
+            self.backend
+                .data_lifecycle()
+                .apply_retention(
+                    account_id,
+                    self.config
+                        .body_retention_batch_size
+                        .min(crate::lifecycle::MAX_OFFLINE_BATCH),
+                )
+                .await?
+                .evicted
+                .len()
+        };
         let _ = timeout(self.config.command_timeout, session.logout()).await;
         Ok(ImapAccountSyncReport {
             account_id,
             capabilities: capability_names,
             mutations,
             folders,
+            offline_downloaded_messages,
+            offline_download_failures,
+            evicted_cached_bodies,
         })
     }
 
