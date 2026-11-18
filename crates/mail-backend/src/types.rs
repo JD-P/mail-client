@@ -500,12 +500,29 @@ pub struct MessageSummary {
     pub has_attachment: bool,
     pub is_read: bool,
     pub is_starred: bool,
+    /// Messages remain durable while snoozed; frontends decide whether the
+    /// current view hides timestamps in the future.
+    #[serde(default)]
+    pub snoozed_until: Option<i64>,
+    #[serde(default)]
+    pub muted: bool,
+    #[serde(default)]
+    pub priority: MessagePriority,
     pub inbox_class: InboxClass,
     pub content_state: ContentState,
     /// Header-only messages are safe to list and thread, but callers must
     /// hydrate them before presenting a body, MIME tree, DKIM result, or raw
     /// export.
     pub content_availability: MessageContentAvailability,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessagePriority {
+    Low,
+    #[default]
+    Normal,
+    High,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1088,6 +1105,12 @@ pub struct MessageFilter {
     pub account_id: Option<AccountId>,
     pub folder_id: Option<FolderId>,
     pub inbox_class: Option<InboxClass>,
+    #[serde(default)]
+    pub snoozed: Option<bool>,
+    #[serde(default)]
+    pub muted: Option<bool>,
+    #[serde(default)]
+    pub priority: Option<MessagePriority>,
     pub sort: MessageSort,
     pub page_size: usize,
     pub cursor: Option<String>,
@@ -1099,6 +1122,9 @@ impl Default for MessageFilter {
             account_id: None,
             folder_id: None,
             inbox_class: None,
+            snoozed: None,
+            muted: None,
+            priority: None,
             sort: MessageSort::ReceivedNewest,
             page_size: 50,
             cursor: None,
@@ -1147,13 +1173,48 @@ pub struct Contact {
     pub id: ContactId,
     pub display_name: String,
     pub addresses: Vec<ContactAddress>,
+    #[serde(default)]
+    pub provenance: ContactProvenance,
     pub created_at: i64,
+    #[serde(default)]
+    pub updated_at: i64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct NewContact {
     pub display_name: String,
     pub addresses: Vec<ContactAddress>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContactProvenanceKind {
+    #[default]
+    Manual,
+    VcardImport,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ContactProvenance {
+    pub kind: ContactProvenanceKind,
+    pub source_label: Option<String>,
+    pub imported_at: Option<i64>,
+}
+
+impl ContactProvenance {
+    pub fn manual() -> Self {
+        Self {
+            kind: ContactProvenanceKind::Manual,
+            source_label: None,
+            imported_at: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ContactImportResult {
+    pub imported: Vec<ContactId>,
+    pub skipped_duplicate_contacts: u64,
 }
 
 /// One pure check in a filter rule. A rule's checks are an implicit AND (with
@@ -1175,15 +1236,31 @@ pub enum FilterCondition {
     DeliveryFolder { id: FolderId },
 }
 
-/// Filter authority is intentionally confined to local organization of the
-/// message being evaluated. Server-side moves will be represented separately
-/// when the IMAP mutation outbox exists.
+/// Filter authority is confined to organization and deletion of the message
+/// being evaluated. Remote changes are queued through the same durable IMAP
+/// mutation outbox as explicit user actions.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum FilterAction {
-    AddToLocalFolder { folder_id: FolderId },
-    RemoveFromLocalFolder { folder_id: FolderId },
-    MoveToLocalFolder { folder_id: FolderId },
+    AddToLocalFolder {
+        folder_id: FolderId,
+    },
+    RemoveFromLocalFolder {
+        folder_id: FolderId,
+    },
+    MoveToLocalFolder {
+        folder_id: FolderId,
+    },
+    MoveToRemoteFolder {
+        source_folder_id: FolderId,
+        destination_folder_id: FolderId,
+    },
+    TrashRemote {
+        source_folder_id: FolderId,
+    },
+    DeleteRemote {
+        source_folder_id: FolderId,
+    },
     Stop,
 }
 
@@ -1217,6 +1294,46 @@ pub struct FilterRuleApplication {
     pub conditions: Vec<FilterCondition>,
     pub actions: Vec<FilterAction>,
     pub applied_at: i64,
+    #[serde(default)]
+    pub remote_mutation_ids: Vec<ImapMutationId>,
+    #[serde(default)]
+    pub undone_at: Option<i64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct FilterRulePreview {
+    pub matching_messages: u64,
+    pub affected_messages: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct FilterRuleReplay {
+    pub matching_messages: u64,
+    pub newly_applied_messages: u64,
+    pub already_applied_messages: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct FilterRuleUndo {
+    pub restored_local_folders: Vec<FolderId>,
+    pub cancelled_remote_mutations: Vec<ImapMutationId>,
+    pub queued_inverse_mutations: Vec<ImapMutationId>,
+    pub undone_at: i64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SavedSearch {
+    pub id: crate::SavedSearchId,
+    pub name: String,
+    pub query: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct NewSavedSearch {
+    pub name: String,
+    pub query: String,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]

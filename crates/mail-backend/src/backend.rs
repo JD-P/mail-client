@@ -525,6 +525,10 @@ impl Backend {
         Search(self.clone())
     }
 
+    pub fn saved_searches(&self) -> crate::SavedSearches {
+        crate::SavedSearches::new(self.clone())
+    }
+
     pub fn events(&self) -> Events {
         Events(self.clone())
     }
@@ -2035,6 +2039,164 @@ impl Accounts {
         })
     }
 
+    pub async fn update(&self, id: AccountId, account: NewAccount) -> Result<Account> {
+        require_nonempty("account name", &account.name)?;
+        if account
+            .credential_ref
+            .as_deref()
+            .is_some_and(|reference| reference.trim().is_empty())
+        {
+            return Err(BackendError::InvalidInput(
+                "credential reference cannot be empty".into(),
+            ));
+        }
+        let existing = self.get(id).await?;
+        if account.kind != existing.kind {
+            return Err(BackendError::InvalidInput(
+                "an account kind cannot be changed after creation".into(),
+            ));
+        }
+        match (account.kind, &account.imap) {
+            (AccountKind::Imap, Some(settings)) => validate_imap_settings(settings)?,
+            (AccountKind::Imap, None) => {
+                return Err(BackendError::InvalidInput(
+                    "IMAP accounts require connection settings".into(),
+                ))
+            }
+            (AccountKind::Local, Some(_)) => {
+                return Err(BackendError::InvalidInput(
+                    "local accounts cannot have IMAP settings".into(),
+                ))
+            }
+            (AccountKind::Local, None) => {}
+        }
+        let now = Utc::now().timestamp();
+        let mut connection = self.0.inner.connection.lock().await;
+        let transaction = connection.transaction().await?;
+        if transaction
+            .execute(
+                "UPDATE accounts SET name = ?1, credential_ref = ?2, settings_json = ?3 WHERE id = ?4",
+                turso::params![
+                    account.name,
+                    account.credential_ref,
+                    account.imap.as_ref().map(serde_json::to_string).transpose()?,
+                    id.to_string(),
+                ],
+            )
+            .await?
+            == 0
+        {
+            transaction.rollback().await?;
+            return Err(not_found("account", id));
+        }
+        let event = insert_event(
+            &transaction,
+            now,
+            "account_updated",
+            id.to_string(),
+            json!({"account_id": id}),
+        )
+        .await?;
+        transaction.commit().await?;
+        drop(connection);
+        let _ = self.0.inner.events.send(event);
+        self.get(id).await
+    }
+
+    pub async fn remove(&self, id: AccountId) -> Result<()> {
+        let _search_guard = self.0.inner.search_sync.write().await;
+        let now = Utc::now().timestamp();
+        let mut connection = self.0.inner.connection.lock().await;
+        let transaction = connection.transaction().await?;
+        let mut rows = transaction
+            .query(
+                "SELECT DISTINCT m.id, m.thread_id FROM messages m WHERE EXISTS (SELECT 1 FROM message_instances mi WHERE mi.message_id = m.id AND mi.account_id = ?1) OR EXISTS (SELECT 1 FROM local_folder_memberships lm JOIN folders f ON f.id = lm.folder_id WHERE lm.message_id = m.id AND f.account_id = ?1)",
+                (id.to_string(),),
+            )
+            .await?;
+        let mut affected = Vec::new();
+        while let Some(row) = rows.next().await? {
+            affected.push((
+                parse_id::<MessageId>(row.get(0)?, "message")?,
+                row.get::<Option<String>>(1)?,
+            ));
+        }
+        drop(rows);
+        if transaction
+            .execute("DELETE FROM accounts WHERE id = ?1", (id.to_string(),))
+            .await?
+            == 0
+        {
+            transaction.rollback().await?;
+            return Err(not_found("account", id));
+        }
+        let mut removed_messages = Vec::new();
+        let mut touched_threads = HashSet::new();
+        for (message_id, thread_id) in affected {
+            let mut rows = transaction
+                .query(
+                    "SELECT EXISTS(SELECT 1 FROM message_instances WHERE message_id = ?1), EXISTS(SELECT 1 FROM local_folder_memberships WHERE message_id = ?1)",
+                    (message_id.to_string(),),
+                )
+                .await?;
+            let row = rows.next().await?.ok_or_else(|| {
+                BackendError::InvalidInput("database failed to evaluate message ownership".into())
+            })?;
+            let retained = row.get::<bool>(0)? || row.get::<bool>(1)?;
+            drop(rows);
+            if retained {
+                enqueue_search_on(&transaction, message_id).await?;
+            } else {
+                transaction
+                    .execute(
+                        "INSERT OR IGNORE INTO search_index_delete_queue(message_id) VALUES (?1)",
+                        (message_id.to_string(),),
+                    )
+                    .await?;
+                transaction
+                    .execute(
+                        "DELETE FROM messages WHERE id = ?1",
+                        (message_id.to_string(),),
+                    )
+                    .await?;
+                removed_messages.push(message_id);
+            }
+            if let Some(thread_id) = thread_id {
+                touched_threads.insert(thread_id);
+            }
+        }
+        for thread_id in touched_threads {
+            transaction
+                .execute(
+                    "UPDATE threads SET updated_at = (SELECT MAX(received_at) FROM messages WHERE thread_id = ?1) WHERE id = ?1 AND EXISTS (SELECT 1 FROM messages WHERE thread_id = ?1)",
+                    (thread_id.clone(),),
+                )
+                .await?;
+            transaction
+                .execute(
+                    "DELETE FROM threads WHERE id = ?1 AND NOT EXISTS (SELECT 1 FROM messages WHERE thread_id = ?1)",
+                    (thread_id,),
+                )
+                .await?;
+        }
+        let event = insert_event(
+            &transaction,
+            now,
+            "account_removed",
+            id.to_string(),
+            json!({"account_id": id, "removed_message_count": removed_messages.len()}),
+        )
+        .await?;
+        transaction.commit().await?;
+        drop(connection);
+        for message_id in removed_messages {
+            let _ = tokio::fs::remove_file(self.0.partial_download_path(message_id)).await;
+        }
+        self.0.flush_search_projection().await?;
+        let _ = self.0.inner.events.send(event);
+        Ok(())
+    }
+
     /// Replaces the exact RFC 8601 authserv-id allowlist for one receiving
     /// account. Merely observing the same string in a message never adds it.
     pub async fn set_trusted_authserv_ids(
@@ -2083,10 +2245,21 @@ pub struct Folders(Backend);
 impl Folders {
     pub async fn add(&self, folder: NewFolder) -> Result<Folder> {
         require_nonempty("folder name", &folder.name)?;
-        if folder.kind == FolderKind::Remote && folder.account_id.is_none() {
-            return Err(BackendError::InvalidInput(
-                "remote folders require an account".into(),
-            ));
+        match folder.kind {
+            FolderKind::Remote => {
+                if folder.account_id.is_none() || folder.remote_name.as_deref().is_none() {
+                    return Err(BackendError::InvalidInput(
+                        "remote folders require an account and remote name".into(),
+                    ));
+                }
+                validate_mailbox_name(folder.remote_name.as_deref().unwrap())?;
+            }
+            FolderKind::Local if folder.remote_name.is_some() => {
+                return Err(BackendError::InvalidInput(
+                    "local folders cannot have a remote name".into(),
+                ));
+            }
+            FolderKind::Local => {}
         }
         let value = Folder {
             id: FolderId::new(),
@@ -2153,6 +2326,321 @@ impl Folders {
             });
         }
         Ok(values)
+    }
+
+    pub async fn get(&self, id: FolderId) -> Result<Folder> {
+        let connection = self.0.inner.connection.lock().await;
+        let mut rows = connection
+            .query(
+                "SELECT id, account_id, name, kind, remote_name, created_at FROM folders WHERE id = ?1",
+                (id.to_string(),),
+            )
+            .await?;
+        rows.next()
+            .await?
+            .map(|row| folder_from_row(&row))
+            .transpose()?
+            .ok_or_else(|| not_found("folder", id))
+    }
+
+    pub async fn update(&self, id: FolderId, folder: NewFolder) -> Result<Folder> {
+        require_nonempty("folder name", &folder.name)?;
+        let existing = self.get(id).await?;
+        if folder.kind != existing.kind || folder.account_id != existing.account_id {
+            return Err(BackendError::InvalidInput(
+                "folder kind and account cannot be changed".into(),
+            ));
+        }
+        match existing.kind {
+            FolderKind::Local if folder.remote_name.is_some() => {
+                return Err(BackendError::InvalidInput(
+                    "local folders cannot have a remote name".into(),
+                ));
+            }
+            FolderKind::Remote if folder.remote_name != existing.remote_name => {
+                return Err(BackendError::InvalidInput(
+                    "use rename_remote to change an IMAP mailbox name".into(),
+                ));
+            }
+            _ => {}
+        }
+        let now = Utc::now().timestamp();
+        let mut connection = self.0.inner.connection.lock().await;
+        let transaction = connection.transaction().await?;
+        if transaction
+            .execute(
+                "UPDATE folders SET name = ?1 WHERE id = ?2",
+                (folder.name, id.to_string()),
+            )
+            .await?
+            == 0
+        {
+            transaction.rollback().await?;
+            return Err(not_found("folder", id));
+        }
+        let event = insert_event(
+            &transaction,
+            now,
+            "folder_updated",
+            id.to_string(),
+            json!({"folder_id": id}),
+        )
+        .await?;
+        transaction.commit().await?;
+        drop(connection);
+        let _ = self.0.inner.events.send(event);
+        self.get(id).await
+    }
+
+    pub async fn remove(&self, id: FolderId) -> Result<()> {
+        let folder = self.get(id).await?;
+        if folder.kind == FolderKind::Remote {
+            return Err(BackendError::InvalidInput(
+                "use delete_remote with an authenticated IMAP session".into(),
+            ));
+        }
+        self.remove_local_state(id, "folder_removed").await
+    }
+
+    pub async fn create_remote<T>(
+        &self,
+        session: &mut async_imap::Session<T>,
+        account_id: AccountId,
+        remote_name: String,
+    ) -> Result<Folder>
+    where
+        T: AsyncRead + AsyncWrite + Unpin + std::fmt::Debug + Send,
+    {
+        validate_mailbox_name(&remote_name)?;
+        if self.0.accounts().get(account_id).await?.kind != AccountKind::Imap {
+            return Err(BackendError::InvalidInput(
+                "remote mailboxes require an IMAP account".into(),
+            ));
+        }
+        {
+            let connection = self.0.inner.connection.lock().await;
+            let mut rows = connection
+                .query(
+                    "SELECT 1 FROM folders WHERE account_id = ?1 AND remote_name = ?2 LIMIT 1",
+                    (account_id.to_string(), remote_name.clone()),
+                )
+                .await?;
+            if rows.next().await?.is_some() {
+                return Err(BackendError::Conflict(
+                    "the remote mailbox already exists in local account state".into(),
+                ));
+            }
+        }
+        session.create(&remote_name).await.map_err(imap_error)?;
+        let folder = self
+            .add(NewFolder {
+                account_id: Some(account_id),
+                name: remote_name.clone(),
+                kind: FolderKind::Remote,
+                remote_name: Some(remote_name),
+            })
+            .await?;
+        let connection = self.0.inner.connection.lock().await;
+        connection
+            .execute(
+                "INSERT OR IGNORE INTO imap_mailbox_state(folder_id, attributes_json, selectable, remote_present, sync_status, completeness) VALUES (?1, '[]', 1, 1, 'not_started', 'not_started')",
+                (folder.id.to_string(),),
+            )
+            .await?;
+        Ok(folder)
+    }
+
+    pub async fn rename_remote<T>(
+        &self,
+        session: &mut async_imap::Session<T>,
+        id: FolderId,
+        new_remote_name: String,
+    ) -> Result<Folder>
+    where
+        T: AsyncRead + AsyncWrite + Unpin + std::fmt::Debug + Send,
+    {
+        validate_mailbox_name(&new_remote_name)?;
+        let folder = self.get(id).await?;
+        if folder.kind != FolderKind::Remote {
+            return Err(BackendError::InvalidInput(
+                "only remote folders can be renamed through IMAP".into(),
+            ));
+        }
+        let old_name = folder.remote_name.ok_or_else(|| {
+            BackendError::InvalidInput("remote folder has no server mailbox name".into())
+        })?;
+        {
+            let connection = self.0.inner.connection.lock().await;
+            let mut rows = connection
+                .query(
+                    "SELECT 1 FROM folders WHERE account_id = ?1 AND remote_name = ?2 AND id != ?3 LIMIT 1",
+                    (
+                        folder.account_id.map(|value| value.to_string()),
+                        new_remote_name.clone(),
+                        id.to_string(),
+                    ),
+                )
+                .await?;
+            if rows.next().await?.is_some() {
+                return Err(BackendError::Conflict(
+                    "another local folder already uses the destination mailbox name".into(),
+                ));
+            }
+        }
+        session
+            .rename(&old_name, &new_remote_name)
+            .await
+            .map_err(imap_error)?;
+        let now = Utc::now().timestamp();
+        let mut connection = self.0.inner.connection.lock().await;
+        let transaction = connection.transaction().await?;
+        transaction
+            .execute(
+                "UPDATE folders SET name = ?1, remote_name = ?1 WHERE id = ?2",
+                (new_remote_name.clone(), id.to_string()),
+            )
+            .await?;
+        let event = insert_event(
+            &transaction,
+            now,
+            "remote_mailbox_renamed",
+            id.to_string(),
+            json!({"folder_id": id, "old_remote_name": old_name, "new_remote_name": new_remote_name}),
+        )
+        .await?;
+        transaction.commit().await?;
+        drop(connection);
+        let _ = self.0.inner.events.send(event);
+        self.get(id).await
+    }
+
+    pub async fn delete_remote<T>(
+        &self,
+        session: &mut async_imap::Session<T>,
+        id: FolderId,
+    ) -> Result<()>
+    where
+        T: AsyncRead + AsyncWrite + Unpin + std::fmt::Debug + Send,
+    {
+        let folder = self.get(id).await?;
+        if folder.kind != FolderKind::Remote {
+            return Err(BackendError::InvalidInput(
+                "only remote folders can be deleted through IMAP".into(),
+            ));
+        }
+        let remote_name = folder.remote_name.ok_or_else(|| {
+            BackendError::InvalidInput("remote folder has no server mailbox name".into())
+        })?;
+        {
+            let connection = self.0.inner.connection.lock().await;
+            let mut rows = connection
+                .query(
+                    "SELECT 1 FROM imap_mutations WHERE source_folder_id = ?1 AND status IN ('pending', 'in_flight', 'conflict') LIMIT 1",
+                    (id.to_string(),),
+                )
+                .await?;
+            if rows.next().await?.is_some() {
+                return Err(BackendError::Conflict(
+                    "remote mailbox has an unfinished message mutation".into(),
+                ));
+            }
+        }
+        session.delete(&remote_name).await.map_err(imap_error)?;
+        self.remove_local_state(id, "remote_mailbox_deleted").await
+    }
+
+    async fn remove_local_state(&self, id: FolderId, event_kind: &'static str) -> Result<()> {
+        let _search_guard = self.0.inner.search_sync.write().await;
+        let now = Utc::now().timestamp();
+        let mut connection = self.0.inner.connection.lock().await;
+        let transaction = connection.transaction().await?;
+        let mut rows = transaction
+            .query(
+                "SELECT DISTINCT m.id, m.thread_id FROM messages m LEFT JOIN message_instances mi ON mi.message_id = m.id LEFT JOIN local_folder_memberships lm ON lm.message_id = m.id WHERE mi.folder_id = ?1 OR lm.folder_id = ?1",
+                (id.to_string(),),
+            )
+            .await?;
+        let mut affected = Vec::new();
+        while let Some(row) = rows.next().await? {
+            affected.push((
+                parse_id::<MessageId>(row.get(0)?, "message")?,
+                row.get::<Option<String>>(1)?,
+            ));
+        }
+        drop(rows);
+        if transaction
+            .execute("DELETE FROM folders WHERE id = ?1", (id.to_string(),))
+            .await?
+            == 0
+        {
+            transaction.rollback().await?;
+            return Err(not_found("folder", id));
+        }
+        let mut removed = Vec::new();
+        let mut threads = HashSet::new();
+        for (message_id, thread_id) in affected {
+            let mut rows = transaction
+                .query(
+                    "SELECT EXISTS(SELECT 1 FROM message_instances WHERE message_id = ?1), EXISTS(SELECT 1 FROM local_folder_memberships WHERE message_id = ?1)",
+                    (message_id.to_string(),),
+                )
+                .await?;
+            let row = rows.next().await?.ok_or_else(|| {
+                BackendError::InvalidInput("database failed to evaluate message ownership".into())
+            })?;
+            let retained = row.get::<bool>(0)? || row.get::<bool>(1)?;
+            drop(rows);
+            if retained {
+                enqueue_search_on(&transaction, message_id).await?;
+            } else {
+                transaction
+                    .execute(
+                        "INSERT OR IGNORE INTO search_index_delete_queue(message_id) VALUES (?1)",
+                        (message_id.to_string(),),
+                    )
+                    .await?;
+                transaction
+                    .execute(
+                        "DELETE FROM messages WHERE id = ?1",
+                        (message_id.to_string(),),
+                    )
+                    .await?;
+                removed.push(message_id);
+            }
+            if let Some(thread_id) = thread_id {
+                threads.insert(thread_id);
+            }
+        }
+        for thread_id in threads {
+            transaction
+                .execute(
+                    "UPDATE threads SET updated_at = (SELECT MAX(received_at) FROM messages WHERE thread_id = ?1) WHERE id = ?1 AND EXISTS (SELECT 1 FROM messages WHERE thread_id = ?1)",
+                    (thread_id.clone(),),
+                )
+                .await?;
+            transaction
+                .execute(
+                    "DELETE FROM threads WHERE id = ?1 AND NOT EXISTS (SELECT 1 FROM messages WHERE thread_id = ?1)",
+                    (thread_id,),
+                )
+                .await?;
+        }
+        let event = insert_event(
+            &transaction,
+            now,
+            event_kind,
+            id.to_string(),
+            json!({"folder_id": id, "removed_message_count": removed.len()}),
+        )
+        .await?;
+        transaction.commit().await?;
+        drop(connection);
+        for message_id in removed {
+            let _ = tokio::fs::remove_file(self.0.partial_download_path(message_id)).await;
+        }
+        self.0.flush_search_projection().await?;
+        let _ = self.0.inner.events.send(event);
+        Ok(())
     }
 }
 
@@ -2405,6 +2893,22 @@ impl Messages {
                 .into(),
             );
         }
+        if let Some(snoozed) = filter.snoozed {
+            if snoozed {
+                clauses.push("m.snoozed_until > ?".into());
+            } else {
+                clauses.push("(m.snoozed_until IS NULL OR m.snoozed_until <= ?)".into());
+            }
+            parameters.push(Value::Integer(Utc::now().timestamp()));
+        }
+        if let Some(muted) = filter.muted {
+            clauses.push("m.muted = ?".into());
+            parameters.push(Value::Integer(i64::from(muted)));
+        }
+        if let Some(priority) = filter.priority {
+            clauses.push("m.priority = ?".into());
+            parameters.push(Value::Text(message_priority_text(priority).into()));
+        }
         apply_cursor(
             &mut clauses,
             &mut parameters,
@@ -2458,6 +2962,75 @@ impl Messages {
             self.0.spam_classifier().reclassify_pending(64).await?;
             self.0.schedule_spam_reclassification();
         }
+        Ok(())
+    }
+
+    pub async fn set_snoozed_until(&self, id: MessageId, until: Option<i64>) -> Result<()> {
+        if until.is_some_and(|value| value <= 0) {
+            return Err(BackendError::InvalidInput(
+                "snooze timestamps must be positive Unix seconds".into(),
+            ));
+        }
+        self.set_organization_state(
+            id,
+            "snoozed_until",
+            until.map(Value::Integer).unwrap_or(Value::Null),
+            "message_snooze_changed",
+            json!({"message_id": id, "snoozed_until": until}),
+        )
+        .await
+    }
+
+    pub async fn set_muted(&self, id: MessageId, muted: bool) -> Result<()> {
+        self.set_organization_state(
+            id,
+            "muted",
+            Value::Integer(i64::from(muted)),
+            "message_mute_changed",
+            json!({"message_id": id, "muted": muted}),
+        )
+        .await
+    }
+
+    pub async fn set_priority(
+        &self,
+        id: MessageId,
+        priority: crate::MessagePriority,
+    ) -> Result<()> {
+        self.set_organization_state(
+            id,
+            "priority",
+            Value::Text(message_priority_text(priority).into()),
+            "message_priority_changed",
+            json!({"message_id": id, "priority": priority}),
+        )
+        .await
+    }
+
+    async fn set_organization_state(
+        &self,
+        id: MessageId,
+        column: &'static str,
+        value: Value,
+        event_kind: &'static str,
+        payload: serde_json::Value,
+    ) -> Result<()> {
+        debug_assert!(matches!(column, "snoozed_until" | "muted" | "priority"));
+        let now = Utc::now().timestamp();
+        let mut connection = self.0.inner.connection.lock().await;
+        let transaction = connection.transaction().await?;
+        let sql = format!("UPDATE messages SET {column} = ?1 WHERE id = ?2");
+        if transaction
+            .execute(&sql, turso::params![value, id.to_string()])
+            .await?
+            == 0
+        {
+            transaction.rollback().await?;
+            return Err(not_found("message", id));
+        }
+        let event = insert_event(&transaction, now, event_kind, id.to_string(), payload).await?;
+        transaction.commit().await?;
+        let _ = self.0.inner.events.send(event);
         Ok(())
     }
 
@@ -2624,6 +3197,15 @@ pub struct Contacts(Backend);
 
 impl Contacts {
     pub async fn add(&self, contact: NewContact) -> Result<Contact> {
+        self.add_with_provenance(contact, crate::ContactProvenance::manual())
+            .await
+    }
+
+    async fn add_with_provenance(
+        &self,
+        contact: NewContact,
+        provenance: crate::ContactProvenance,
+    ) -> Result<Contact> {
         require_nonempty("contact name", &contact.display_name)?;
         if contact.addresses.is_empty() {
             return Err(BackendError::InvalidInput(
@@ -2640,23 +3222,37 @@ impl Contacts {
                 })
             })
             .collect::<Result<Vec<_>>>()?;
+        let mut unique = HashSet::new();
+        if addresses
+            .iter()
+            .any(|address| !unique.insert(address.address.clone()))
+        {
+            return Err(BackendError::InvalidInput(
+                "a contact cannot contain the same address more than once".into(),
+            ));
+        }
+        let now = Utc::now().timestamp();
         let value = Contact {
             id: ContactId::new(),
             display_name: contact.display_name,
             addresses,
-            created_at: Utc::now().timestamp(),
+            provenance,
+            created_at: now,
+            updated_at: now,
         };
         let _search_guard = self.0.inner.search_sync.write().await;
         let mut connection = self.0.inner.connection.lock().await;
         let transaction = connection.transaction().await?;
         transaction
             .execute(
-                "INSERT INTO contacts(id, display_name, created_at) VALUES (?1, ?2, ?3)",
-                (
+                "INSERT INTO contacts(id, display_name, provenance_json, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+                turso::params![
                     value.id.to_string(),
                     value.display_name.clone(),
+                    serde_json::to_string(&value.provenance)?,
                     value.created_at,
-                ),
+                    value.updated_at,
+                ],
             )
             .await?;
         for address in &value.addresses {
@@ -2705,7 +3301,7 @@ impl Contacts {
         let connection = self.0.inner.connection.lock().await;
         let mut rows = connection
             .query(
-                "SELECT id, display_name, created_at FROM contacts ORDER BY display_name, id",
+                "SELECT id, display_name, provenance_json, created_at, updated_at FROM contacts ORDER BY display_name, id",
                 (),
             )
             .await?;
@@ -2715,7 +3311,9 @@ impl Contacts {
                 id: parse_id(row.get::<String>(0)?, "contact")?,
                 display_name: row.get(1)?,
                 addresses: Vec::new(),
-                created_at: row.get(2)?,
+                provenance: serde_json::from_str(&row.get::<String>(2)?)?,
+                created_at: row.get(3)?,
+                updated_at: row.get(4)?,
             });
         }
         drop(rows);
@@ -2734,6 +3332,186 @@ impl Contacts {
             }
         }
         Ok(contacts)
+    }
+
+    pub async fn get(&self, id: ContactId) -> Result<Contact> {
+        self.list()
+            .await?
+            .into_iter()
+            .find(|contact| contact.id == id)
+            .ok_or_else(|| not_found("contact", id))
+    }
+
+    pub async fn update(&self, id: ContactId, contact: NewContact) -> Result<Contact> {
+        require_nonempty("contact name", &contact.display_name)?;
+        if contact.addresses.is_empty() {
+            return Err(BackendError::InvalidInput(
+                "a contact requires at least one address".into(),
+            ));
+        }
+        let addresses = contact
+            .addresses
+            .into_iter()
+            .map(|address| {
+                Ok(ContactAddress {
+                    address: normalize_address(&address.address)?,
+                    accepted_name: address.accepted_name,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let mut unique = HashSet::new();
+        if addresses
+            .iter()
+            .any(|address| !unique.insert(address.address.clone()))
+        {
+            return Err(BackendError::InvalidInput(
+                "a contact cannot contain the same address more than once".into(),
+            ));
+        }
+        let _search_guard = self.0.inner.search_sync.write().await;
+        let now = Utc::now().timestamp();
+        let mut connection = self.0.inner.connection.lock().await;
+        let transaction = connection.transaction().await?;
+        let mut affected = HashSet::new();
+        let mut rows = transaction
+            .query(
+                "SELECT m.id FROM messages m JOIN contact_addresses ca ON ca.address = m.from_address COLLATE NOCASE WHERE ca.contact_id = ?1",
+                (id.to_string(),),
+            )
+            .await?;
+        while let Some(row) = rows.next().await? {
+            affected.insert(parse_id::<MessageId>(row.get(0)?, "message")?);
+        }
+        drop(rows);
+        if transaction
+            .execute(
+                "UPDATE contacts SET display_name = ?1, updated_at = ?2 WHERE id = ?3",
+                (contact.display_name, now, id.to_string()),
+            )
+            .await?
+            == 0
+        {
+            transaction.rollback().await?;
+            return Err(not_found("contact", id));
+        }
+        transaction
+            .execute(
+                "DELETE FROM contact_addresses WHERE contact_id = ?1",
+                (id.to_string(),),
+            )
+            .await?;
+        for address in &addresses {
+            transaction
+                .execute(
+                    "INSERT INTO contact_addresses(contact_id, address, accepted_name) VALUES (?1, ?2, ?3)",
+                    (
+                        id.to_string(),
+                        address.address.clone(),
+                        address.accepted_name.clone(),
+                    ),
+                )
+                .await?;
+            let mut rows = transaction
+                .query(
+                    "SELECT id FROM messages WHERE from_address = ?1 COLLATE NOCASE",
+                    (address.address.clone(),),
+                )
+                .await?;
+            while let Some(row) = rows.next().await? {
+                affected.insert(parse_id::<MessageId>(row.get(0)?, "message")?);
+            }
+        }
+        for message_id in affected {
+            enqueue_search_on(&transaction, message_id).await?;
+        }
+        let event = insert_event(
+            &transaction,
+            now,
+            "contact_updated",
+            id.to_string(),
+            json!({"contact_id": id, "addresses": addresses}),
+        )
+        .await?;
+        transaction.commit().await?;
+        drop(connection);
+        self.0.flush_search_projection().await?;
+        let _ = self.0.inner.events.send(event);
+        self.get(id).await
+    }
+
+    pub async fn import_vcards(
+        &self,
+        bytes: &[u8],
+        source_label: Option<String>,
+    ) -> Result<crate::ContactImportResult> {
+        let contacts = parse_vcards(bytes)?;
+        let source_label = source_label
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty());
+        if source_label
+            .as_ref()
+            .is_some_and(|value| value.len() > 1024)
+        {
+            return Err(BackendError::InvalidInput(
+                "contact import source label is too long".into(),
+            ));
+        }
+        let mut result = crate::ContactImportResult::default();
+        for contact in contacts {
+            let duplicate = {
+                let connection = self.0.inner.connection.lock().await;
+                let mut duplicate = false;
+                for address in &contact.addresses {
+                    let normalized = normalize_address(&address.address)?;
+                    let mut rows = connection
+                        .query(
+                            "SELECT 1 FROM contact_addresses WHERE address = ?1 COLLATE NOCASE LIMIT 1",
+                            (normalized,),
+                        )
+                        .await?;
+                    duplicate |= rows.next().await?.is_some();
+                }
+                duplicate
+            };
+            if duplicate {
+                result.skipped_duplicate_contacts += 1;
+                continue;
+            }
+            let imported_at = Utc::now().timestamp();
+            let value = self
+                .add_with_provenance(
+                    contact,
+                    crate::ContactProvenance {
+                        kind: crate::ContactProvenanceKind::VcardImport,
+                        source_label: source_label.clone(),
+                        imported_at: Some(imported_at),
+                    },
+                )
+                .await?;
+            result.imported.push(value.id);
+        }
+        Ok(result)
+    }
+
+    pub async fn export_vcards(&self) -> Result<Vec<u8>> {
+        let mut output = String::new();
+        for contact in self.list().await? {
+            output.push_str("BEGIN:VCARD\r\nVERSION:4.0\r\nFN:");
+            output.push_str(&escape_vcard(&contact.display_name));
+            output.push_str("\r\n");
+            for address in contact.addresses {
+                output.push_str("EMAIL:");
+                output.push_str(&escape_vcard(&address.address));
+                output.push_str("\r\n");
+                if let Some(accepted_name) = address.accepted_name {
+                    output.push_str("X-LIZARD-ACCEPTED-NAME:");
+                    output.push_str(&escape_vcard(&accepted_name));
+                    output.push_str("\r\n");
+                }
+            }
+            output.push_str("END:VCARD\r\n");
+        }
+        Ok(output.into_bytes())
     }
 
     pub async fn remove(&self, id: ContactId) -> Result<()> {
@@ -3325,8 +4103,8 @@ fn optional_database_u32(value: Option<i64>, field: &str) -> Result<Option<u32>>
 pub(crate) const WARM_PREDICATE: &str = "NOT (COALESCE(m.user_classification = 'spam', 0) OR (m.user_classification IS NULL AND ((EXISTS (SELECT 1 FROM provider_spam_evidence pse WHERE pse.message_id = m.id AND pse.verdict = 'spam') AND NOT EXISTS (SELECT 1 FROM provider_spam_evidence pse WHERE pse.message_id = m.id AND pse.verdict = 'not_spam')) OR EXISTS (SELECT 1 FROM local_spam_assessments lsa WHERE lsa.message_id = m.id AND lsa.verdict = 'spam')))) AND m.from_address IS NOT NULL AND EXISTS (SELECT 1 FROM contact_addresses ca WHERE ca.address = m.from_address COLLATE NOCASE)";
 pub(crate) const COLD_PREDICATE: &str = "NOT (COALESCE(m.user_classification = 'spam', 0) OR (m.user_classification IS NULL AND ((EXISTS (SELECT 1 FROM provider_spam_evidence pse WHERE pse.message_id = m.id AND pse.verdict = 'spam') AND NOT EXISTS (SELECT 1 FROM provider_spam_evidence pse WHERE pse.message_id = m.id AND pse.verdict = 'not_spam')) OR EXISTS (SELECT 1 FROM local_spam_assessments lsa WHERE lsa.message_id = m.id AND lsa.verdict = 'spam')))) AND (m.from_address IS NULL OR NOT EXISTS (SELECT 1 FROM contact_addresses ca WHERE ca.address = m.from_address COLLATE NOCASE))";
 pub(crate) const SPAM_PREDICATE: &str = "(COALESCE(m.user_classification = 'spam', 0) OR (m.user_classification IS NULL AND ((EXISTS (SELECT 1 FROM provider_spam_evidence pse WHERE pse.message_id = m.id AND pse.verdict = 'spam') AND NOT EXISTS (SELECT 1 FROM provider_spam_evidence pse WHERE pse.message_id = m.id AND pse.verdict = 'not_spam')) OR EXISTS (SELECT 1 FROM local_spam_assessments lsa WHERE lsa.message_id = m.id AND lsa.verdict = 'spam'))))";
-const SUMMARY_COLUMNS: &str = "m.id, m.subject, m.from_address, m.from_name, m.preview, m.sent_at, m.received_at, m.size_bytes, m.has_attachment, m.is_read, m.is_starred, CASE WHEN (COALESCE(m.user_classification = 'spam', 0) OR (m.user_classification IS NULL AND ((EXISTS (SELECT 1 FROM provider_spam_evidence pse WHERE pse.message_id = m.id AND pse.verdict = 'spam') AND NOT EXISTS (SELECT 1 FROM provider_spam_evidence pse WHERE pse.message_id = m.id AND pse.verdict = 'not_spam')) OR EXISTS (SELECT 1 FROM local_spam_assessments lsa WHERE lsa.message_id = m.id AND lsa.verdict = 'spam')))) THEN 'spam' WHEN m.from_address IS NOT NULL AND EXISTS (SELECT 1 FROM contact_addresses ca WHERE ca.address = m.from_address COLLATE NOCASE) THEN 'warm' ELSE 'cold' END, m.content_state, m.thread_id, m.content_availability";
-const SUMMARY_COLUMN_COUNT: usize = 15;
+const SUMMARY_COLUMNS: &str = "m.id, m.subject, m.from_address, m.from_name, m.preview, m.sent_at, m.received_at, m.size_bytes, m.has_attachment, m.is_read, m.is_starred, m.snoozed_until, m.muted, m.priority, CASE WHEN (COALESCE(m.user_classification = 'spam', 0) OR (m.user_classification IS NULL AND ((EXISTS (SELECT 1 FROM provider_spam_evidence pse WHERE pse.message_id = m.id AND pse.verdict = 'spam') AND NOT EXISTS (SELECT 1 FROM provider_spam_evidence pse WHERE pse.message_id = m.id AND pse.verdict = 'not_spam')) OR EXISTS (SELECT 1 FROM local_spam_assessments lsa WHERE lsa.message_id = m.id AND lsa.verdict = 'spam')))) THEN 'spam' WHEN m.from_address IS NOT NULL AND EXISTS (SELECT 1 FROM contact_addresses ca WHERE ca.address = m.from_address COLLATE NOCASE) THEN 'warm' ELSE 'cold' END, m.content_state, m.thread_id, m.content_availability";
+const SUMMARY_COLUMN_COUNT: usize = 18;
 
 async fn query_page_on(
     backend: &Backend,
@@ -3660,7 +4438,7 @@ async fn message_count_on(connection: &Connection) -> Result<u64> {
 fn summary_from_row(row: &turso::Row) -> Result<MessageSummary> {
     Ok(MessageSummary {
         id: parse_id(row.get::<String>(0)?, "message")?,
-        thread_id: parse_id(row.get::<String>(13)?, "thread")?,
+        thread_id: parse_id(row.get::<String>(16)?, "thread")?,
         subject: row.get(1)?,
         from_address: row.get(2)?,
         from_name: row.get(3)?,
@@ -3671,9 +4449,12 @@ fn summary_from_row(row: &turso::Row) -> Result<MessageSummary> {
         has_attachment: row.get(8)?,
         is_read: row.get(9)?,
         is_starred: row.get(10)?,
-        inbox_class: parse_inbox_class(&row.get::<String>(11)?)?,
-        content_state: parse_content_state(&row.get::<String>(12)?)?,
-        content_availability: parse_content_availability(&row.get::<String>(14)?)?,
+        snoozed_until: row.get(11)?,
+        muted: row.get(12)?,
+        priority: parse_message_priority(&row.get::<String>(13)?)?,
+        inbox_class: parse_inbox_class(&row.get::<String>(14)?)?,
+        content_state: parse_content_state(&row.get::<String>(15)?)?,
+        content_availability: parse_content_availability(&row.get::<String>(17)?)?,
     })
 }
 
@@ -4109,6 +4890,154 @@ fn json_addresses(value: String) -> Result<Vec<String>> {
     serde_json::from_str(&value).map_err(Into::into)
 }
 
+const MAX_CONTACT_IMPORT_BYTES: usize = 10 * 1024 * 1024;
+const MAX_CONTACT_IMPORT_COUNT: usize = 10_000;
+
+fn parse_vcards(bytes: &[u8]) -> Result<Vec<NewContact>> {
+    if bytes.len() > MAX_CONTACT_IMPORT_BYTES {
+        return Err(BackendError::InvalidInput(format!(
+            "vCard import exceeds the {MAX_CONTACT_IMPORT_BYTES}-byte limit"
+        )));
+    }
+    let text = std::str::from_utf8(bytes)
+        .map_err(|_| BackendError::InvalidInput("vCard import is not UTF-8".into()))?;
+    if text.contains('\0') {
+        return Err(BackendError::InvalidInput(
+            "vCard import contains a NUL byte".into(),
+        ));
+    }
+    let mut unfolded = Vec::<String>::new();
+    for raw in text.replace("\r\n", "\n").replace('\r', "\n").lines() {
+        if raw.starts_with([' ', '\t']) {
+            let Some(previous) = unfolded.last_mut() else {
+                return Err(BackendError::InvalidInput(
+                    "vCard import begins with a folded line".into(),
+                ));
+            };
+            previous.push_str(&raw[1..]);
+        } else {
+            unfolded.push(raw.to_owned());
+        }
+    }
+    let mut contacts = Vec::new();
+    let mut current_name = None;
+    let mut current_addresses = Vec::new();
+    let mut inside = false;
+    for line in unfolded {
+        if line.eq_ignore_ascii_case("BEGIN:VCARD") {
+            if inside {
+                return Err(BackendError::InvalidInput(
+                    "nested vCard records are invalid".into(),
+                ));
+            }
+            inside = true;
+            current_name = None;
+            current_addresses.clear();
+            continue;
+        }
+        if line.eq_ignore_ascii_case("END:VCARD") {
+            if !inside {
+                return Err(BackendError::InvalidInput(
+                    "vCard END appears without BEGIN".into(),
+                ));
+            }
+            let display_name = current_name.take().ok_or_else(|| {
+                BackendError::InvalidInput("vCard contact has no FN field".into())
+            })?;
+            if current_addresses.is_empty() {
+                return Err(BackendError::InvalidInput(
+                    "vCard contact has no EMAIL field".into(),
+                ));
+            }
+            contacts.push(NewContact {
+                display_name,
+                addresses: mem::take(&mut current_addresses),
+            });
+            if contacts.len() > MAX_CONTACT_IMPORT_COUNT {
+                return Err(BackendError::InvalidInput(format!(
+                    "vCard import exceeds the {MAX_CONTACT_IMPORT_COUNT}-contact limit"
+                )));
+            }
+            inside = false;
+            continue;
+        }
+        if !inside {
+            if !line.trim().is_empty() {
+                return Err(BackendError::InvalidInput(
+                    "data outside a vCard record is invalid".into(),
+                ));
+            }
+            continue;
+        }
+        let Some((name_and_parameters, value)) = line.split_once(':') else {
+            continue;
+        };
+        let name = name_and_parameters
+            .split(';')
+            .next()
+            .unwrap_or_default()
+            .rsplit_once('.')
+            .map_or(
+                name_and_parameters.split(';').next().unwrap_or_default(),
+                |(_, name)| name,
+            );
+        if name.eq_ignore_ascii_case("FN") {
+            current_name = Some(unescape_vcard(value)?);
+        } else if name.eq_ignore_ascii_case("EMAIL") {
+            current_addresses.push(ContactAddress {
+                address: unescape_vcard(value)?,
+                accepted_name: None,
+            });
+        } else if name.eq_ignore_ascii_case("X-LIZARD-ACCEPTED-NAME") {
+            let Some(address) = current_addresses.last_mut() else {
+                return Err(BackendError::InvalidInput(
+                    "vCard accepted-name extension appears before EMAIL".into(),
+                ));
+            };
+            address.accepted_name = Some(unescape_vcard(value)?);
+        }
+    }
+    if inside {
+        return Err(BackendError::InvalidInput(
+            "vCard record is missing END:VCARD".into(),
+        ));
+    }
+    Ok(contacts)
+}
+
+fn unescape_vcard(value: &str) -> Result<String> {
+    let mut output = String::with_capacity(value.len());
+    let mut characters = value.chars();
+    while let Some(character) = characters.next() {
+        if character != '\\' {
+            output.push(character);
+            continue;
+        }
+        let escaped = characters
+            .next()
+            .ok_or_else(|| BackendError::InvalidInput("vCard value ends with an escape".into()))?;
+        match escaped {
+            'n' | 'N' => output.push('\n'),
+            '\\' | ',' | ';' => output.push(escaped),
+            _ => {
+                return Err(BackendError::InvalidInput(
+                    "vCard value contains an unsupported escape".into(),
+                ))
+            }
+        }
+    }
+    Ok(output)
+}
+
+fn escape_vcard(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('\n', "\\n")
+        .replace('\r', "")
+        .replace(',', "\\,")
+        .replace(';', "\\;")
+}
+
 fn require_nonempty(label: &str, value: &str) -> Result<()> {
     if value.trim().is_empty() {
         Err(BackendError::InvalidInput(format!(
@@ -4179,6 +5108,32 @@ fn folder_kind_text(kind: FolderKind) -> &'static str {
         FolderKind::Remote => "remote",
         FolderKind::Local => "local",
     }
+}
+
+fn folder_from_row(row: &turso::Row) -> Result<Folder> {
+    Ok(Folder {
+        id: parse_id(row.get::<String>(0)?, "folder")?,
+        account_id: row
+            .get::<Option<String>>(1)?
+            .map(|id| parse_id(id, "account"))
+            .transpose()?,
+        name: row.get(2)?,
+        kind: parse_folder_kind(&row.get::<String>(3)?)?,
+        remote_name: row.get(4)?,
+        created_at: row.get(5)?,
+    })
+}
+
+fn validate_mailbox_name(value: &str) -> Result<()> {
+    if value.trim().is_empty()
+        || value.len() > 4096
+        || value.chars().any(|character| character.is_control())
+    {
+        return Err(BackendError::InvalidInput(
+            "IMAP mailbox name is empty, too long, or contains a control character".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn parse_folder_kind(value: &str) -> Result<FolderKind> {
@@ -4353,6 +5308,25 @@ fn parse_inbox_class(value: &str) -> Result<InboxClass> {
         "spam" => Ok(InboxClass::Spam),
         _ => Err(BackendError::InvalidInput(
             "invalid inbox class in database".into(),
+        )),
+    }
+}
+
+fn message_priority_text(value: crate::MessagePriority) -> &'static str {
+    match value {
+        crate::MessagePriority::Low => "low",
+        crate::MessagePriority::Normal => "normal",
+        crate::MessagePriority::High => "high",
+    }
+}
+
+fn parse_message_priority(value: &str) -> Result<crate::MessagePriority> {
+    match value {
+        "low" => Ok(crate::MessagePriority::Low),
+        "normal" => Ok(crate::MessagePriority::Normal),
+        "high" => Ok(crate::MessagePriority::High),
+        _ => Err(BackendError::InvalidInput(
+            "invalid message priority in database".into(),
         )),
     }
 }

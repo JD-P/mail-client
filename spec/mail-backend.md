@@ -350,23 +350,37 @@ AND; evaluation stops on the first false check, and an empty series is an
 explicit catch-all. A UI may explicitly translate an unambiguous search into a
 filter, but the two do not share an AST.
 
-Filter authority is confined to organization of the message being evaluated.
-The current read-only-IMAP slice supports:
+Filter authority is confined to organization or deletion of the message being
+evaluated. The implemented action vocabulary supports:
 
 - add/remove a local folder;
-- move between local folders; and
+- move between local folders;
+- move an exact `(folder, UIDVALIDITY, UID)` remote instance;
+- move that instance to the account's uniquely advertised `\Trash` mailbox;
+- permanently delete that exact instance through UIDPLUS; and
 - stop later ordered filters.
 
-Server-side move/copy/trash actions use the explicit IMAP mutation outbox; the
-current filter action vocabulary remains local-only until its UI and conflict
-semantics are specified. Filters cannot modify contacts or trust, train
-classification, create folders or rules, send mail, invoke external services,
-or mutate other messages. Raw message content is immutable.
+Remote actions require a `DeliveryFolder` condition matching their explicit
+source mailbox and are inserted into the ordinary IMAP mutation outbox in the
+same transaction as the rule application. They therefore inherit UIDVALIDITY,
+UIDPLUS, conflict and ambiguous-outcome protections. Filters cannot modify
+contacts or trust, train classification, create folders or rules, send mail,
+invoke external services, or mutate other messages. Raw message content is
+immutable.
 
 Actions must be idempotent. Each application records message, rule ID, rule
-version, matched condition, actions and timestamp. This supports "why is this
-here?", undo, rule debugging and deterministic re-evaluation after a rule is
-edited.
+version, matched conditions, actions, exact prior local-folder membership,
+created remote mutation IDs, timestamp and eventual undo time. Preview compiles
+the same typed conditions to bounded SQL and returns both matching and actually
+affected counts without changing state. Replay applies one exact revision to
+existing messages and can safely resume after an error because the application
+key is `(rule, revision, message)`.
+
+Undo restores the captured local-folder set rather than guessing inverse
+actions. Pending/conflicted remote mutations are cancelled. A completed move
+queues an inverse move from the server-confirmed destination mapping. In-flight
+mutations and completed permanent deletions refuse undo because pretending
+otherwise would be unsafe.
 
 ### Filter representation
 
@@ -793,6 +807,28 @@ Contact membership is the source for Warm/Cold views, while signature evidence
 remains independent. No frontend may maintain a competing authoritative contact
 list: otherwise Warm/Cold membership, sender naming, rule results and key trust
 would vary by client.
+
+Implemented contacts can be created, edited, removed and exported/imported as
+bounded UTF-8 vCard 4.0. Provenance distinguishes manual entries from imports
+and retains the optional source label and import time. Import skips a contact
+when any of its normalized addresses already belongs to the address book,
+rather than silently merging identities. The private
+`X-LIZARD-ACCEPTED-NAME` vCard extension makes accepted per-address aliases
+round-trip without turning them into standard identity claims.
+
+### Saved views and lifecycle management
+
+Named saved searches persist a validated Gmail-shaped query and execute through
+the same Tantivy search API, including cursor and incomplete-content semantics.
+Snooze time, mute state and low/normal/high priority live on the backend message
+record and are returned in every summary; mailbox listing can filter them
+without a frontend-maintained shadow database.
+
+Accounts and folders have typed update/removal APIs with change events and
+search-index cleanup. Removing the final owning remote/local placement removes
+the logical message and its search document; shared or locally retained mail
+survives. Remote mailbox create/rename/delete requires an already authenticated
+IMAP session, mutates the server first, and only then updates local state.
 
 ### MIME and attachments
 

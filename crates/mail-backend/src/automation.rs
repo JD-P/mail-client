@@ -2,14 +2,25 @@ use crate::backend::{enqueue_search_on, insert_event, not_found, parse_id};
 use crate::heuristic::{compile_program, run_program, CompiledHeuristic, HeuristicRunError};
 use crate::{
     Backend, BackendError, FilterAction, FilterCondition, FilterRule, FilterRuleApplication,
-    FilterRuleId, FindingId, Heuristic, HeuristicEvaluation, HeuristicEvaluationStatus,
-    HeuristicFinding, HeuristicId, HeuristicSourceKind, Message, MessageId, NewFilterRule,
-    NewHeuristic, Result,
+    FilterRuleId, FilterRulePreview, FilterRuleReplay, FilterRuleUndo, FindingId, FolderId,
+    Heuristic, HeuristicEvaluation, HeuristicEvaluationStatus, HeuristicFinding, HeuristicId,
+    HeuristicSourceKind, ImapMutationId, ImapMutationOperation, ImapMutationStatus, Message,
+    MessageId, NewFilterRule, NewHeuristic, Result,
 };
 use chrono::Utc;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashSet;
+use turso::{params_from_iter, Value};
 use uuid::Uuid;
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+struct FilterPriorState {
+    #[serde(default)]
+    captured: bool,
+    local_folder_ids: Vec<FolderId>,
+    remote_mutation_ids: Vec<ImapMutationId>,
+}
 
 #[derive(Clone)]
 pub struct FilterRules(Backend);
@@ -243,6 +254,252 @@ impl FilterRules {
         Ok(applications)
     }
 
+    /// Count matches and messages whose current organization would materially
+    /// change, without recording applications or queuing server mutations.
+    pub async fn preview(&self, rule: &NewFilterRule) -> Result<FilterRulePreview> {
+        validate_filter_rule(&self.0, rule).await?;
+        let (matching, matching_parameters) = filter_match_sql(&rule.conditions)?;
+        let (affected, mut parameters) = filter_affected_sql(&rule.actions);
+        parameters.extend(matching_parameters);
+        let sql = format!(
+            "SELECT count(*), COALESCE(sum(CASE WHEN {affected} THEN 1 ELSE 0 END), 0) FROM messages m WHERE {matching}"
+        );
+        let connection = self.0.inner.connection.lock().await;
+        let mut rows = connection.query(sql, params_from_iter(parameters)).await?;
+        let row = rows.next().await?.ok_or_else(|| {
+            BackendError::InvalidInput("filter preview count returned no row".into())
+        })?;
+        Ok(FilterRulePreview {
+            matching_messages: database_u64(row.get(0)?, "matching message count")?,
+            affected_messages: database_u64(row.get(1)?, "affected message count")?,
+        })
+    }
+
+    /// Apply exactly the current rule revision to all existing matches.
+    /// Applications committed before an error remain durable; rerunning is
+    /// idempotent and resumes at the first unapplied message.
+    pub async fn replay(&self, id: FilterRuleId) -> Result<FilterRuleReplay> {
+        let rule = self.get(id).await?;
+        if !rule.enabled {
+            return Err(BackendError::Conflict(
+                "a disabled filter rule cannot be replayed".into(),
+            ));
+        }
+        let ids = self.matching_message_ids(&rule.conditions).await?;
+        let mut newly_applied_messages = 0u64;
+        let mut already_applied_messages = 0u64;
+        for message_id in &ids {
+            if self.apply_rule(&rule, *message_id).await?.is_some() {
+                newly_applied_messages += 1;
+            } else {
+                already_applied_messages += 1;
+            }
+        }
+        Ok(FilterRuleReplay {
+            matching_messages: ids.len() as u64,
+            newly_applied_messages,
+            already_applied_messages,
+        })
+    }
+
+    pub async fn undo(
+        &self,
+        rule_id: FilterRuleId,
+        rule_revision: u32,
+        message_id: MessageId,
+    ) -> Result<FilterRuleUndo> {
+        let _search_guard = self.0.inner.search_sync.write().await;
+        let now = Utc::now().timestamp();
+        let mut connection = self.0.inner.connection.lock().await;
+        let mut rows = connection
+            .query(
+                "SELECT prior_state_json, undone_at FROM filter_rule_applications WHERE rule_id = ?1 AND rule_revision = ?2 AND message_id = ?3",
+                turso::params![
+                    rule_id.to_string(),
+                    i64::from(rule_revision),
+                    message_id.to_string(),
+                ],
+            )
+            .await?;
+        let Some(row) = rows.next().await? else {
+            return Err(BackendError::NotFound {
+                entity: "filter rule application",
+                id: format!("{rule_id}:{rule_revision}:{message_id}"),
+            });
+        };
+        let prior: FilterPriorState = serde_json::from_str(&row.get::<String>(0)?)?;
+        if row.get::<Option<i64>>(1)?.is_some() {
+            return Err(BackendError::Conflict(
+                "filter rule application was already undone".into(),
+            ));
+        }
+        if !prior.captured {
+            return Err(BackendError::Conflict(
+                "this legacy filter application predates placement snapshots and cannot be safely undone"
+                    .into(),
+            ));
+        }
+        drop(rows);
+        let transaction = connection.transaction().await?;
+        let mut cancelled = Vec::new();
+        let mut inverses = Vec::new();
+        let mut events = Vec::new();
+        for mutation_id in &prior.remote_mutation_ids {
+            let mut rows = transaction
+                .query(
+                    "SELECT source_folder_id, operation_json, status FROM imap_mutations WHERE id = ?1",
+                    (mutation_id.to_string(),),
+                )
+                .await?;
+            let Some(row) = rows.next().await? else {
+                return Err(not_found("IMAP mutation", mutation_id));
+            };
+            let source_folder_id = parse_id::<FolderId>(row.get(0)?, "folder")?;
+            let operation: ImapMutationOperation = serde_json::from_str(&row.get::<String>(1)?)?;
+            let status = parse_mutation_status_for_undo(&row.get::<String>(2)?)?;
+            drop(rows);
+            match status {
+                ImapMutationStatus::Pending | ImapMutationStatus::Conflict => {
+                    transaction
+                        .execute(
+                            "UPDATE imap_mutations SET status = 'cancelled', updated_at = ?1, completed_at = ?1 WHERE id = ?2",
+                            (now, mutation_id.to_string()),
+                        )
+                        .await?;
+                    transaction
+                        .execute(
+                            "UPDATE imap_mutation_conflicts SET resolved_at = ?1 WHERE mutation_id = ?2 AND resolved_at IS NULL",
+                            (now, mutation_id.to_string()),
+                        )
+                        .await?;
+                    cancelled.push(*mutation_id);
+                    events.push(
+                        insert_event(
+                            &transaction,
+                            now,
+                            "imap_mutation_cancelled",
+                            mutation_id.to_string(),
+                            json!({"mutation_id": mutation_id, "origin": "filter_rule_undo"}),
+                        )
+                        .await?,
+                    );
+                }
+                ImapMutationStatus::Cancelled => {}
+                ImapMutationStatus::InFlight => {
+                    return Err(BackendError::Conflict(
+                        "an in-flight remote filter action cannot be safely undone".into(),
+                    ));
+                }
+                ImapMutationStatus::Applied => {
+                    let inverse = match operation {
+                        ImapMutationOperation::Move {
+                            destination_folder_id,
+                        } => (
+                            destination_folder_id,
+                            ImapMutationOperation::Move {
+                                destination_folder_id: source_folder_id,
+                            },
+                        ),
+                        ImapMutationOperation::Copy {
+                            destination_folder_id,
+                        } => (destination_folder_id, ImapMutationOperation::Delete),
+                        ImapMutationOperation::Delete => {
+                            return Err(BackendError::Conflict(
+                                "a completed permanent deletion cannot be undone".into(),
+                            ));
+                        }
+                        ImapMutationOperation::SetFlags { .. } => {
+                            return Err(BackendError::Conflict(
+                                "filter application contains an unsupported flag mutation".into(),
+                            ));
+                        }
+                    };
+                    let (id, event) = crate::imap_mutation::queue_exact_on(
+                        &transaction,
+                        message_id,
+                        inverse.0,
+                        inverse.1,
+                        now,
+                    )
+                    .await?;
+                    inverses.push(id);
+                    events.push(event);
+                }
+            }
+        }
+        transaction
+            .execute(
+                "DELETE FROM local_folder_memberships WHERE message_id = ?1",
+                (message_id.to_string(),),
+            )
+            .await?;
+        for folder_id in &prior.local_folder_ids {
+            transaction
+                .execute(
+                    "INSERT INTO local_folder_memberships(message_id, folder_id, created_at) VALUES (?1, ?2, ?3)",
+                    (message_id.to_string(), folder_id.to_string(), now),
+                )
+                .await?;
+        }
+        transaction
+            .execute(
+                "UPDATE filter_rule_applications SET undone_at = ?1 WHERE rule_id = ?2 AND rule_revision = ?3 AND message_id = ?4 AND undone_at IS NULL",
+                turso::params![
+                    now,
+                    rule_id.to_string(),
+                    i64::from(rule_revision),
+                    message_id.to_string(),
+                ],
+            )
+            .await?;
+        enqueue_search_on(&transaction, message_id).await?;
+        events.push(
+            insert_event(
+                &transaction,
+                now,
+                "filter_rule_application_undone",
+                message_id.to_string(),
+                json!({
+                    "message_id": message_id,
+                    "filter_rule_id": rule_id,
+                    "rule_revision": rule_revision,
+                    "restored_local_folders": prior.local_folder_ids,
+                    "cancelled_remote_mutations": cancelled,
+                    "queued_inverse_mutations": inverses,
+                }),
+            )
+            .await?,
+        );
+        transaction.commit().await?;
+        drop(connection);
+        self.0.flush_search_projection().await?;
+        for event in events {
+            let _ = self.0.inner.events.send(event);
+        }
+        Ok(FilterRuleUndo {
+            restored_local_folders: prior.local_folder_ids,
+            cancelled_remote_mutations: cancelled,
+            queued_inverse_mutations: inverses,
+            undone_at: now,
+        })
+    }
+
+    async fn matching_message_ids(&self, conditions: &[FilterCondition]) -> Result<Vec<MessageId>> {
+        let (predicate, parameters) = filter_match_sql(conditions)?;
+        let connection = self.0.inner.connection.lock().await;
+        let mut rows = connection
+            .query(
+                format!("SELECT m.id FROM messages m WHERE {predicate} ORDER BY m.id"),
+                params_from_iter(parameters),
+            )
+            .await?;
+        let mut ids = Vec::new();
+        while let Some(row) = rows.next().await? {
+            ids.push(parse_id(row.get::<String>(0)?, "message")?);
+        }
+        Ok(ids)
+    }
+
     pub(crate) async fn has_enabled(&self) -> Result<bool> {
         let connection = self.0.inner.connection.lock().await;
         let mut rows = connection
@@ -258,19 +515,22 @@ impl FilterRules {
         let connection = self.0.inner.connection.lock().await;
         let mut rows = connection
             .query(
-                "SELECT applications.rule_id, applications.rule_revision, applications.message_id, versions.conditions_json, applications.actions_json, applications.applied_at FROM filter_rule_applications applications JOIN filter_rule_versions versions ON versions.rule_id = applications.rule_id AND versions.revision = applications.rule_revision WHERE applications.message_id = ?1 ORDER BY applications.applied_at, applications.rule_id",
+                "SELECT applications.rule_id, applications.rule_revision, applications.message_id, versions.conditions_json, applications.actions_json, applications.prior_state_json, applications.applied_at, applications.undone_at FROM filter_rule_applications applications JOIN filter_rule_versions versions ON versions.rule_id = applications.rule_id AND versions.revision = applications.rule_revision WHERE applications.message_id = ?1 ORDER BY applications.applied_at, applications.rule_id",
                 (message_id.to_string(),),
             )
             .await?;
         let mut values = Vec::new();
         while let Some(row) = rows.next().await? {
+            let prior: FilterPriorState = serde_json::from_str(&row.get::<String>(5)?)?;
             values.push(FilterRuleApplication {
                 rule_id: parse_id(row.get::<String>(0)?, "filter rule")?,
                 rule_revision: database_u32(row.get(1)?, "filter rule revision")?,
                 message_id: parse_id(row.get::<String>(2)?, "message")?,
                 conditions: serde_json::from_str(&row.get::<String>(3)?)?,
                 actions: serde_json::from_str(&row.get::<String>(4)?)?,
-                applied_at: row.get(5)?,
+                applied_at: row.get(6)?,
+                remote_mutation_ids: prior.remote_mutation_ids,
+                undone_at: row.get(7)?,
             });
         }
         Ok(values)
@@ -315,8 +575,26 @@ impl FilterRules {
         }
         drop(rows);
 
+        let mut rows = connection
+            .query(
+                "SELECT folder_id FROM local_folder_memberships WHERE message_id = ?1 ORDER BY folder_id",
+                (message_id.to_string(),),
+            )
+            .await?;
+        let mut prior = FilterPriorState {
+            captured: true,
+            ..FilterPriorState::default()
+        };
+        while let Some(row) = rows.next().await? {
+            prior
+                .local_folder_ids
+                .push(parse_id(row.get::<String>(0)?, "folder")?);
+        }
+        drop(rows);
+
         let transaction = connection.transaction().await?;
         let mut placement_changed = false;
+        let mut mutation_events = Vec::new();
         for action in &rule.actions {
             match action {
                 FilterAction::AddToLocalFolder { folder_id } => {
@@ -353,18 +631,67 @@ impl FilterRules {
                         .await?
                         > 0;
                 }
+                FilterAction::MoveToRemoteFolder {
+                    source_folder_id,
+                    destination_folder_id,
+                } => {
+                    let (id, event) = crate::imap_mutation::queue_exact_on(
+                        &transaction,
+                        message_id,
+                        *source_folder_id,
+                        ImapMutationOperation::Move {
+                            destination_folder_id: *destination_folder_id,
+                        },
+                        now,
+                    )
+                    .await?;
+                    prior.remote_mutation_ids.push(id);
+                    mutation_events.push(event);
+                }
+                FilterAction::TrashRemote { source_folder_id } => {
+                    let source =
+                        message_remote_account_on(&transaction, message_id, *source_folder_id)
+                            .await?;
+                    let destination =
+                        crate::imap_mutation::trash_folder_on(&transaction, source).await?;
+                    let (id, event) = crate::imap_mutation::queue_exact_on(
+                        &transaction,
+                        message_id,
+                        *source_folder_id,
+                        ImapMutationOperation::Move {
+                            destination_folder_id: destination,
+                        },
+                        now,
+                    )
+                    .await?;
+                    prior.remote_mutation_ids.push(id);
+                    mutation_events.push(event);
+                }
+                FilterAction::DeleteRemote { source_folder_id } => {
+                    let (id, event) = crate::imap_mutation::queue_exact_on(
+                        &transaction,
+                        message_id,
+                        *source_folder_id,
+                        ImapMutationOperation::Delete,
+                        now,
+                    )
+                    .await?;
+                    prior.remote_mutation_ids.push(id);
+                    mutation_events.push(event);
+                }
                 FilterAction::Stop => {}
             }
         }
         let actions_json = serde_json::to_string(&rule.actions)?;
         transaction
             .execute(
-                "INSERT INTO filter_rule_applications(rule_id, rule_revision, message_id, actions_json, applied_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+                "INSERT INTO filter_rule_applications(rule_id, rule_revision, message_id, actions_json, prior_state_json, applied_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 turso::params![
                     rule.id.to_string(),
                     i64::from(rule.revision),
                     message_id.to_string(),
                     actions_json,
+                    serde_json::to_string(&prior)?,
                     now,
                 ],
             )
@@ -390,6 +717,9 @@ impl FilterRules {
         if placement_changed {
             self.0.flush_search_projection().await?;
         }
+        for event in mutation_events {
+            let _ = self.0.inner.events.send(event);
+        }
         let _ = self.0.inner.events.send(event);
         Ok(Some(FilterRuleApplication {
             rule_id: rule.id,
@@ -398,6 +728,8 @@ impl FilterRules {
             conditions: rule.conditions.clone(),
             actions: rule.actions.clone(),
             applied_at: now,
+            remote_mutation_ids: prior.remote_mutation_ids,
+            undone_at: None,
         }))
     }
 }
@@ -934,6 +1266,153 @@ impl Heuristics {
     }
 }
 
+fn filter_match_sql(conditions: &[FilterCondition]) -> Result<(String, Vec<Value>)> {
+    let mut clauses = Vec::with_capacity(conditions.len());
+    let mut parameters = Vec::new();
+    for condition in conditions {
+        match condition {
+            FilterCondition::SenderAddressEquals { value } => {
+                clauses.push("lower(m.from_address) = lower(?)");
+                parameters.push(Value::Text(value.clone()));
+            }
+            FilterCondition::SenderDomainEquals { value } => {
+                clauses.push("lower(substr(m.from_address, instr(m.from_address, '@') + 1)) = lower(?) AND instr(m.from_address, '@') > 0");
+                parameters.push(Value::Text(value.clone()));
+            }
+            FilterCondition::SubjectContains { value } => {
+                clauses.push("instr(lower(COALESCE(m.subject, '')), lower(?)) > 0");
+                parameters.push(Value::Text(value.clone()));
+            }
+            FilterCondition::BodyContains { value } => {
+                clauses.push("instr(lower(m.body_text), lower(?)) > 0");
+                parameters.push(Value::Text(value.clone()));
+            }
+            FilterCondition::HasAttachment { value } => {
+                clauses.push(if *value {
+                    "m.has_attachment = 1"
+                } else {
+                    "m.has_attachment = 0"
+                });
+            }
+            FilterCondition::AttachmentDeclaredType { value } => {
+                clauses.push("EXISTS (SELECT 1 FROM attachments a WHERE a.message_id = m.id AND lower(a.declared_media_type) = lower(?))");
+                parameters.push(Value::Text(value.clone()));
+            }
+            FilterCondition::SizeAtLeast { bytes } => {
+                clauses.push("m.size_bytes >= ?");
+                parameters.push(Value::Integer(i64::try_from(*bytes).map_err(|_| {
+                    BackendError::InvalidInput("filter byte size exceeds database range".into())
+                })?));
+            }
+            FilterCondition::SizeAtMost { bytes } => {
+                clauses.push("m.size_bytes <= ?");
+                parameters.push(Value::Integer(i64::try_from(*bytes).map_err(|_| {
+                    BackendError::InvalidInput("filter byte size exceeds database range".into())
+                })?));
+            }
+            FilterCondition::DeliveredTo { address } => {
+                clauses.push("EXISTS (SELECT 1 FROM json_each(m.delivered_to_addresses) WHERE lower(value) = lower(?))");
+                parameters.push(Value::Text(address.clone()));
+            }
+            FilterCondition::Account { id } => {
+                clauses.push("EXISTS (SELECT 1 FROM message_instances mi WHERE mi.message_id = m.id AND mi.account_id = ?)");
+                parameters.push(Value::Text(id.to_string()));
+            }
+            FilterCondition::DeliveryFolder { id } => {
+                clauses.push("EXISTS (SELECT 1 FROM message_instances mi WHERE mi.message_id = m.id AND mi.folder_id = ?)");
+                parameters.push(Value::Text(id.to_string()));
+            }
+        }
+    }
+    Ok((
+        if clauses.is_empty() {
+            "1".into()
+        } else {
+            clauses.join(" AND ")
+        },
+        parameters,
+    ))
+}
+
+fn filter_affected_sql(actions: &[FilterAction]) -> (String, Vec<Value>) {
+    let mut clauses = Vec::new();
+    let mut parameters = Vec::new();
+    for action in actions {
+        match action {
+            FilterAction::AddToLocalFolder { folder_id } => {
+                clauses.push("NOT EXISTS (SELECT 1 FROM local_folder_memberships lm WHERE lm.message_id = m.id AND lm.folder_id = ?)");
+                parameters.push(Value::Text(folder_id.to_string()));
+            }
+            FilterAction::RemoveFromLocalFolder { folder_id } => {
+                clauses.push("EXISTS (SELECT 1 FROM local_folder_memberships lm WHERE lm.message_id = m.id AND lm.folder_id = ?)");
+                parameters.push(Value::Text(folder_id.to_string()));
+            }
+            FilterAction::MoveToLocalFolder { folder_id } => {
+                clauses.push("(NOT EXISTS (SELECT 1 FROM local_folder_memberships lm WHERE lm.message_id = m.id AND lm.folder_id = ?) OR EXISTS (SELECT 1 FROM local_folder_memberships lm WHERE lm.message_id = m.id AND lm.folder_id != ?))");
+                parameters.push(Value::Text(folder_id.to_string()));
+                parameters.push(Value::Text(folder_id.to_string()));
+            }
+            FilterAction::MoveToRemoteFolder {
+                source_folder_id, ..
+            }
+            | FilterAction::TrashRemote { source_folder_id }
+            | FilterAction::DeleteRemote { source_folder_id } => {
+                clauses.push("EXISTS (SELECT 1 FROM message_instances mi WHERE mi.message_id = m.id AND mi.folder_id = ?)");
+                parameters.push(Value::Text(source_folder_id.to_string()));
+            }
+            FilterAction::Stop => {}
+        }
+    }
+    (
+        if clauses.is_empty() {
+            "0".into()
+        } else {
+            clauses.join(" OR ")
+        },
+        parameters,
+    )
+}
+
+async fn message_remote_account_on(
+    connection: &turso::Connection,
+    message_id: MessageId,
+    folder_id: FolderId,
+) -> Result<crate::AccountId> {
+    let mut rows = connection
+        .query(
+            "SELECT account_id FROM message_instances WHERE message_id = ?1 AND folder_id = ?2 ORDER BY uid_validity DESC, imap_uid DESC",
+            (message_id.to_string(), folder_id.to_string()),
+        )
+        .await?;
+    let account_id = rows
+        .next()
+        .await?
+        .ok_or_else(|| BackendError::NotFound {
+            entity: "remote message instance",
+            id: format!("{message_id}@{folder_id}"),
+        })?
+        .get::<String>(0)?;
+    if rows.next().await?.is_some() {
+        return Err(BackendError::Conflict(
+            "message has more than one instance in the source mailbox".into(),
+        ));
+    }
+    parse_id(account_id, "account")
+}
+
+fn parse_mutation_status_for_undo(value: &str) -> Result<ImapMutationStatus> {
+    match value {
+        "pending" => Ok(ImapMutationStatus::Pending),
+        "in_flight" => Ok(ImapMutationStatus::InFlight),
+        "applied" => Ok(ImapMutationStatus::Applied),
+        "conflict" => Ok(ImapMutationStatus::Conflict),
+        "cancelled" => Ok(ImapMutationStatus::Cancelled),
+        _ => Err(BackendError::InvalidInput(
+            "database contains invalid IMAP mutation status".into(),
+        )),
+    }
+}
+
 async fn validate_filter_rule(backend: &Backend, rule: &NewFilterRule) -> Result<()> {
     require_name("filter rule", &rule.name)?;
     // An empty conjunction is a useful explicit catch-all. A Stop-only rule is
@@ -954,20 +1433,52 @@ async fn validate_filter_rule(backend: &Backend, rule: &NewFilterRule) -> Result
             ));
         }
     }
-    let mut folders = HashSet::new();
+    let mut local_folders = HashSet::new();
+    let mut remote_sources = HashSet::new();
+    let mut remote_moves = Vec::new();
     for action in &rule.actions {
-        let folder_id = match action {
+        match action {
             FilterAction::AddToLocalFolder { folder_id }
             | FilterAction::RemoveFromLocalFolder { folder_id }
-            | FilterAction::MoveToLocalFolder { folder_id } => Some(*folder_id),
-            FilterAction::Stop => None,
-        };
-        if let Some(folder_id) = folder_id {
-            folders.insert(folder_id);
+            | FilterAction::MoveToLocalFolder { folder_id } => {
+                local_folders.insert(*folder_id);
+            }
+            FilterAction::MoveToRemoteFolder {
+                source_folder_id,
+                destination_folder_id,
+            } => {
+                if !remote_sources.insert(*source_folder_id) {
+                    return Err(BackendError::InvalidInput(
+                        "a filter rule can queue only one remote action for each source mailbox"
+                            .into(),
+                    ));
+                }
+                remote_moves.push((*source_folder_id, *destination_folder_id));
+            }
+            FilterAction::TrashRemote { source_folder_id }
+            | FilterAction::DeleteRemote { source_folder_id } => {
+                if !remote_sources.insert(*source_folder_id) {
+                    return Err(BackendError::InvalidInput(
+                        "a filter rule can queue only one remote action for each source mailbox"
+                            .into(),
+                    ));
+                }
+            }
+            FilterAction::Stop => {}
         }
     }
     let connection = backend.inner.connection.lock().await;
-    for folder_id in folders {
+    for source in &remote_sources {
+        if !rule.conditions.iter().any(
+            |condition| matches!(condition, FilterCondition::DeliveryFolder { id } if id == source),
+        ) {
+            return Err(BackendError::InvalidInput(
+                "remote filter actions require a matching DeliveryFolder condition for their exact source mailbox"
+                    .into(),
+            ));
+        }
+    }
+    for folder_id in local_folders {
         let mut rows = connection
             .query(
                 "SELECT kind FROM folders WHERE id = ?1",
@@ -980,6 +1491,45 @@ async fn validate_filter_rule(backend: &Backend, rule: &NewFilterRule) -> Result
         if row.get::<String>(0)? != "local" {
             return Err(BackendError::InvalidInput(
                 "filter placement actions require local folders".into(),
+            ));
+        }
+    }
+    for folder_id in remote_sources {
+        let mut rows = connection
+            .query(
+                "SELECT kind, account_id FROM folders WHERE id = ?1",
+                (folder_id.to_string(),),
+            )
+            .await?;
+        let Some(row) = rows.next().await? else {
+            return Err(not_found("folder", folder_id));
+        };
+        if row.get::<String>(0)? != "remote" || row.get::<Option<String>>(1)?.is_none() {
+            return Err(BackendError::InvalidInput(
+                "remote filter actions require a remote source folder".into(),
+            ));
+        }
+    }
+    for (source, destination) in remote_moves {
+        if source == destination {
+            return Err(BackendError::InvalidInput(
+                "remote filter source and destination must differ".into(),
+            ));
+        }
+        let mut rows = connection
+            .query(
+                "SELECT source.account_id, destination.account_id, destination.kind FROM folders source JOIN folders destination ON destination.id = ?2 WHERE source.id = ?1",
+                (source.to_string(), destination.to_string()),
+            )
+            .await?;
+        let Some(row) = rows.next().await? else {
+            return Err(not_found("destination folder", destination));
+        };
+        if row.get::<Option<String>>(0)? != row.get::<Option<String>>(1)?
+            || row.get::<String>(2)? != "remote"
+        {
+            return Err(BackendError::InvalidInput(
+                "remote filter moves must remain within one IMAP account".into(),
             ));
         }
     }
@@ -997,6 +1547,10 @@ async fn validate_filter_rule(backend: &Backend, rule: &NewFilterRule) -> Result
                 if value.trim().is_empty()
                     || value.contains('@')
                     || value.chars().any(char::is_whitespace)
+                    || !value.is_ascii()
+                    || value
+                        .bytes()
+                        .any(|byte| !byte.is_ascii_alphanumeric() && !matches!(byte, b'.' | b'-'))
                 {
                     return Err(BackendError::InvalidInput(
                         "filter condition contains an invalid domain".into(),
@@ -1029,7 +1583,7 @@ fn filter_matches(condition: &FilterCondition, message: &Message) -> bool {
             .summary
             .from_address
             .as_deref()
-            .and_then(|address| address.rsplit_once('@').map(|(_, domain)| domain))
+            .and_then(|address| address.split_once('@').map(|(_, domain)| domain))
             .is_some_and(|domain| domain.eq_ignore_ascii_case(value)),
         FilterCondition::SubjectContains { value } => message
             .summary
@@ -1113,11 +1667,21 @@ fn valid_address(value: &str) -> bool {
 }
 
 fn contains_case_insensitive(haystack: &str, needle: &str) -> bool {
-    haystack.to_lowercase().contains(&needle.to_lowercase())
+    // SQLite's built-in lower()/NOCASE behavior is deliberately ASCII-only.
+    // Keep live delivery evaluation identical to preview and replay instead of
+    // letting the same rule acquire subtly different Unicode semantics.
+    haystack
+        .to_ascii_lowercase()
+        .contains(&needle.to_ascii_lowercase())
 }
 
 fn database_u32(value: i64, label: &str) -> Result<u32> {
     u32::try_from(value)
+        .map_err(|_| BackendError::InvalidInput(format!("database contains invalid {label}")))
+}
+
+fn database_u64(value: i64, label: &str) -> Result<u64> {
+    u64::try_from(value)
         .map_err(|_| BackendError::InvalidInput(format!("database contains invalid {label}")))
 }
 

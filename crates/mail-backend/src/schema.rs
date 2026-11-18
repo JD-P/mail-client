@@ -11,7 +11,7 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 version INTEGER NOT NULL
             );
             INSERT INTO schema_meta(version)
-                SELECT 14 WHERE NOT EXISTS (SELECT 1 FROM schema_meta);
+                SELECT 15 WHERE NOT EXISTS (SELECT 1 FROM schema_meta);
 
             CREATE TABLE IF NOT EXISTS accounts (
                 id TEXT PRIMARY KEY,
@@ -83,6 +83,10 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 attachment_names TEXT NOT NULL,
                 is_read INTEGER NOT NULL,
                 is_starred INTEGER NOT NULL,
+                snoozed_until INTEGER,
+                muted INTEGER NOT NULL DEFAULT 0,
+                priority TEXT NOT NULL DEFAULT 'normal'
+                    CHECK(priority IN ('low', 'normal', 'high')),
                 user_classification TEXT,
                 content_state TEXT NOT NULL,
                 search_metadata TEXT NOT NULL,
@@ -237,7 +241,9 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
             CREATE TABLE IF NOT EXISTS contacts (
                 id TEXT PRIMARY KEY,
                 display_name TEXT NOT NULL,
-                created_at INTEGER NOT NULL
+                provenance_json TEXT NOT NULL DEFAULT '{"kind":"manual","source_label":null,"imported_at":null}',
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL DEFAULT 0
             );
 
             CREATE TABLE IF NOT EXISTS contact_addresses (
@@ -412,8 +418,18 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 rule_revision INTEGER NOT NULL,
                 message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
                 actions_json TEXT NOT NULL,
+                prior_state_json TEXT NOT NULL DEFAULT '{"local_folder_ids":[],"remote_mutation_ids":[]}',
                 applied_at INTEGER NOT NULL,
+                undone_at INTEGER,
                 PRIMARY KEY(rule_id, rule_revision, message_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS saved_searches (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                query TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS filter_rule_versions (
@@ -508,6 +524,8 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 ON changes(sequence);
             CREATE INDEX IF NOT EXISTS filter_rules_execution
                 ON filter_rules(enabled, priority, id);
+            CREATE INDEX IF NOT EXISTS saved_searches_name
+                ON saved_searches(name COLLATE NOCASE, id);
             CREATE INDEX IF NOT EXISTS heuristic_findings_message
                 ON heuristic_findings(message_id, presentation, severity, id);
             CREATE INDEX IF NOT EXISTS heuristics_execution
@@ -856,7 +874,103 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
             .await?;
         version = 14;
     }
-    if version != 14 {
+    if version == 14 {
+        // Version fifteen completes durable organization state. Every step is
+        // independently probed so interrupted upgrades resume safely.
+        let mut rows = connection.query("PRAGMA table_info(messages)", ()).await?;
+        let mut message_columns = HashSet::new();
+        while let Some(row) = rows.next().await? {
+            message_columns.insert(row.get::<String>(1)?);
+        }
+        drop(rows);
+        if !message_columns.contains("snoozed_until") {
+            connection
+                .execute("ALTER TABLE messages ADD COLUMN snoozed_until INTEGER", ())
+                .await?;
+        }
+        if !message_columns.contains("muted") {
+            connection
+                .execute(
+                    "ALTER TABLE messages ADD COLUMN muted INTEGER NOT NULL DEFAULT 0",
+                    (),
+                )
+                .await?;
+        }
+        if !message_columns.contains("priority") {
+            connection
+                .execute(
+                    "ALTER TABLE messages ADD COLUMN priority TEXT NOT NULL DEFAULT 'normal'",
+                    (),
+                )
+                .await?;
+        }
+
+        let mut rows = connection.query("PRAGMA table_info(contacts)", ()).await?;
+        let mut contact_columns = HashSet::new();
+        while let Some(row) = rows.next().await? {
+            contact_columns.insert(row.get::<String>(1)?);
+        }
+        drop(rows);
+        if !contact_columns.contains("provenance_json") {
+            connection
+                .execute(
+                    r#"ALTER TABLE contacts ADD COLUMN provenance_json TEXT NOT NULL DEFAULT '{"kind":"manual","source_label":null,"imported_at":null}'"#,
+                    (),
+                )
+                .await?;
+        }
+        if !contact_columns.contains("updated_at") {
+            connection
+                .execute("ALTER TABLE contacts ADD COLUMN updated_at INTEGER", ())
+                .await?;
+            connection
+                .execute("UPDATE contacts SET updated_at = created_at", ())
+                .await?;
+        }
+
+        let mut rows = connection
+            .query("PRAGMA table_info(filter_rule_applications)", ())
+            .await?;
+        let mut application_columns = HashSet::new();
+        while let Some(row) = rows.next().await? {
+            application_columns.insert(row.get::<String>(1)?);
+        }
+        drop(rows);
+        if !application_columns.contains("prior_state_json") {
+            connection
+                .execute(
+                    r#"ALTER TABLE filter_rule_applications ADD COLUMN prior_state_json TEXT NOT NULL DEFAULT '{"local_folder_ids":[],"remote_mutation_ids":[]}'"#,
+                    (),
+                )
+                .await?;
+        }
+        if !application_columns.contains("undone_at") {
+            connection
+                .execute(
+                    "ALTER TABLE filter_rule_applications ADD COLUMN undone_at INTEGER",
+                    (),
+                )
+                .await?;
+        }
+        connection
+            .execute_batch(
+                r#"
+                CREATE TABLE IF NOT EXISTS saved_searches (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    query TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS saved_searches_name
+                    ON saved_searches(name COLLATE NOCASE, id);
+                UPDATE schema_meta SET version = 15;
+                "#,
+            )
+            .await?;
+        version = 15;
+    }
+    if version != 15 {
         return Err(crate::BackendError::InvalidInput(format!(
             "unsupported database schema version {version}"
         )));
@@ -999,7 +1113,7 @@ mod tests {
             .await
             .unwrap();
         let row = rows.next().await.unwrap().unwrap();
-        assert_eq!(row.get::<i64>(0).unwrap(), 14);
+        assert_eq!(row.get::<i64>(0).unwrap(), 15);
         assert_eq!(row.get::<String>(1).unwrap(), r#"{"received_at":123}"#);
         drop(rows);
 
@@ -1042,7 +1156,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap(),
-            14
+            15
         );
         drop(rows);
 

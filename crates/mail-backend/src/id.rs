@@ -59,3 +59,4 @@ id_type!(DraftAttachmentId);
 id_type!(SubmissionId);
 id_type!(ImapMutationId);
 id_type!(ImapMutationConflictId);
+id_type!(SavedSearchId);

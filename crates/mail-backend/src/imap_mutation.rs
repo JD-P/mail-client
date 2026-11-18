@@ -3,7 +3,7 @@ use crate::backend::{
     refresh_remote_in_transaction,
 };
 use crate::{
-    AccountId, Backend, BackendError, FolderId, ImapMutation, ImapMutationConflict,
+    AccountId, Backend, BackendError, BackendEvent, FolderId, ImapMutation, ImapMutationConflict,
     ImapMutationConflictId, ImapMutationConflictKind, ImapMutationId, ImapMutationOperation,
     ImapMutationStatus, MessageId, RemoteMessageIdentity, Result,
 };
@@ -17,6 +17,108 @@ const ACTIVE_MUTATION_SQL: &str = "status IN ('pending', 'in_flight')";
 enum QueueRequest {
     Exact(ImapMutationOperation),
     PatchSystemFlag { flag: &'static str, present: bool },
+}
+
+/// Queue one exact non-flag mutation inside a caller-owned transaction. Filter
+/// application uses this boundary so recording the rule application and its
+/// server-side action is atomic.
+pub(crate) async fn queue_exact_on(
+    connection: &turso::Connection,
+    message_id: MessageId,
+    source_folder_id: FolderId,
+    operation: ImapMutationOperation,
+    now: i64,
+) -> Result<(ImapMutationId, BackendEvent)> {
+    if matches!(operation, ImapMutationOperation::SetFlags { .. }) {
+        return Err(BackendError::InvalidInput(
+            "filter mutations cannot set IMAP flags".into(),
+        ));
+    }
+    let source = load_instance_on(connection, message_id, source_folder_id).await?;
+    validate_destination_on(connection, &source, &operation).await?;
+    let mut rows = connection
+        .query(
+            &format!(
+                "SELECT 1 FROM imap_mutations WHERE message_id = ?1 AND source_folder_id = ?2 AND source_uid_validity = ?3 AND source_uid = ?4 AND {ACTIVE_MUTATION_SQL} LIMIT 1"
+            ),
+            (
+                message_id.to_string(),
+                source_folder_id.to_string(),
+                i64::from(source.uid_validity),
+                i64::from(source.uid),
+            ),
+        )
+        .await?;
+    if rows.next().await?.is_some() {
+        return Err(BackendError::Conflict(
+            "another server mutation already targets this remote instance".into(),
+        ));
+    }
+    drop(rows);
+    let id = ImapMutationId::new();
+    connection
+        .execute(
+            "INSERT INTO imap_mutations(id, account_id, message_id, source_folder_id, source_uid_validity, source_uid, source_modseq, source_flags_json, operation_json, status, attempts, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'pending', 0, ?10, ?10)",
+            turso::params![
+                id.to_string(),
+                source.account_id.to_string(),
+                message_id.to_string(),
+                source.folder_id.to_string(),
+                i64::from(source.uid_validity),
+                i64::from(source.uid),
+                source.mod_sequence.map(|value| value as i64),
+                serde_json::to_string(&source.flags)?,
+                serde_json::to_string(&operation)?,
+                now,
+            ],
+        )
+        .await?;
+    let event = insert_event(
+        connection,
+        now,
+        "imap_mutation_queued",
+        id.to_string(),
+        json!({
+            "mutation_id": id,
+            "message_id": message_id,
+            "source": source,
+            "operation": operation,
+            "origin": "filter_rule",
+        }),
+    )
+    .await?;
+    Ok((id, event))
+}
+
+pub(crate) async fn trash_folder_on(
+    connection: &turso::Connection,
+    account_id: AccountId,
+) -> Result<FolderId> {
+    let mut rows = connection
+        .query(
+            "SELECT f.id, s.attributes_json FROM folders f JOIN imap_mailbox_state s ON s.folder_id = f.id WHERE f.account_id = ?1 AND f.kind = 'remote' AND s.remote_present = 1 AND s.selectable = 1 ORDER BY f.id",
+            (account_id.to_string(),),
+        )
+        .await?;
+    let mut matches = Vec::new();
+    while let Some(row) = rows.next().await? {
+        let attributes: Vec<String> = serde_json::from_str(&row.get::<String>(1)?)?;
+        if attributes
+            .iter()
+            .any(|attribute| attribute.eq_ignore_ascii_case("\\Trash"))
+        {
+            matches.push(parse_folder_id(row.get::<String>(0)?)?);
+        }
+    }
+    match matches.as_slice() {
+        [folder] => Ok(*folder),
+        [] => Err(BackendError::Conflict(
+            "the account does not advertise a unique Trash mailbox".into(),
+        )),
+        _ => Err(BackendError::Conflict(
+            "the account advertises more than one Trash mailbox".into(),
+        )),
+    }
 }
 
 #[derive(Clone)]

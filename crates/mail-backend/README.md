@@ -60,8 +60,19 @@ Current invariants:
   cannot inject a forged reply even when it copies a real `Message-ID`;
   known/self senders may continue an older cold thread without upgrading it;
 - remote mailbox instances and local folder memberships are durable state;
-- filter conditions are pure implicit-AND checks and filter authority is limited
-  to local placement of the message being evaluated;
+- filter conditions are pure implicit-AND checks; actions may change local
+  placement or queue exact remote move/trash/delete operations through the
+  durable IMAP mutation outbox, but cannot modify contacts or trust, alter raw
+  message content, send mail, or affect messages other than the match;
+- filter previews report both matches and material changes, explicit replay is
+  idempotent across existing mail, and every application captures exact prior
+  local placement plus remote mutation IDs for durable undo;
+- named saved searches persist validated Gmail-shaped queries; snooze, mute and
+  low/normal/high priority are durable message state exposed in summaries and
+  mailbox filters;
+- contacts support editing and bounded UTF-8 vCard 4.0 import/export with
+  manual/import provenance; account and folder records support update/removal,
+  while authenticated IMAP sessions create, rename and delete remote mailboxes;
 - heuristic source is compiled from a restricted Python-shaped subset into a
   bounded serialized IR; no Python runtime, imports or arbitrary calls execute;
 - typed findings and separate dismissal state are durable Turso data returned

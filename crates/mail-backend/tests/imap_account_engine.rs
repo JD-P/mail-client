@@ -3,9 +3,10 @@ mod support;
 use futures_util::future::BoxFuture;
 use futures_util::TryStreamExt;
 use lizard_mail_backend::{
-    AccountKind, Backend, BackendConfig, CredentialProvider, ImapAccountEngineConfig,
-    ImapCredential, ImapMailboxCompleteness, ImapMutationConflictKind, ImapMutationStatus,
-    ImapSecurity, ImapSettings, MessageContentAvailability, MessageFilter, NewAccount, SecretValue,
+    AccountKind, Backend, BackendConfig, CredentialProvider, FilterAction, FilterCondition,
+    ImapAccountEngineConfig, ImapCredential, ImapMailboxCompleteness, ImapMutationConflictKind,
+    ImapMutationStatus, ImapSecurity, ImapSettings, MessageContentAvailability, MessageFilter,
+    NewAccount, NewFilterRule, SecretValue,
 };
 use std::sync::Arc;
 use std::time::Duration;
@@ -404,11 +405,49 @@ async fn applies_server_mutations_and_records_flag_conflicts() {
             .is_read
     );
     let copy_mutation = mutations.copy(copy_id, inbox.id, archive.id).await.unwrap();
-    let move_mutation = mutations
-        .move_to(move_id, inbox.id, archive.id)
+    let move_rule = backend
+        .filter_rules()
+        .add(NewFilterRule {
+            name: "Move fixture through filter".into(),
+            priority: 1,
+            enabled: true,
+            conditions: vec![
+                FilterCondition::DeliveryFolder { id: inbox.id },
+                FilterCondition::SubjectContains {
+                    value: "Move".into(),
+                },
+            ],
+            actions: vec![FilterAction::MoveToRemoteFolder {
+                source_folder_id: inbox.id,
+                destination_folder_id: archive.id,
+            }],
+        })
         .await
         .unwrap();
-    let trash_mutation = mutations.trash(trash_id, inbox.id).await.unwrap();
+    backend.filter_rules().replay(move_rule.id).await.unwrap();
+    let move_mutation_id =
+        backend.filter_rules().applications(move_id).await.unwrap()[0].remote_mutation_ids[0];
+    let trash_rule = backend
+        .filter_rules()
+        .add(NewFilterRule {
+            name: "Trash fixture through filter".into(),
+            priority: 1,
+            enabled: true,
+            conditions: vec![
+                FilterCondition::DeliveryFolder { id: inbox.id },
+                FilterCondition::SubjectContains {
+                    value: "Trash".into(),
+                },
+            ],
+            actions: vec![FilterAction::TrashRemote {
+                source_folder_id: inbox.id,
+            }],
+        })
+        .await
+        .unwrap();
+    backend.filter_rules().replay(trash_rule.id).await.unwrap();
+    let trash_mutation_id =
+        backend.filter_rules().applications(trash_id).await.unwrap()[0].remote_mutation_ids[0];
     let delete_mutation = mutations.delete(delete_id, inbox.id).await.unwrap();
 
     let report = engine.sync_once(account.id).await.unwrap();
@@ -418,8 +457,8 @@ async fn applies_server_mutations_and_records_flag_conflicts() {
     for mutation in [
         flag_mutation.id,
         copy_mutation.id,
-        move_mutation.id,
-        trash_mutation.id,
+        move_mutation_id,
+        trash_mutation_id,
         delete_mutation.id,
     ] {
         assert_eq!(
@@ -455,6 +494,32 @@ async fn applies_server_mutations_and_records_flag_conflicts() {
         .iter()
         .any(|instance| instance.folder_id == trash.id));
     assert!(backend.messages().get(delete_id).await.is_err());
+
+    let undo = backend
+        .filter_rules()
+        .undo(trash_rule.id, trash_rule.revision, trash_id)
+        .await
+        .unwrap();
+    assert_eq!(undo.queued_inverse_mutations.len(), 1);
+    let undo_report = engine.sync_once(account.id).await.unwrap();
+    assert_eq!(undo_report.mutations.applied, 1);
+    assert_eq!(
+        mutations
+            .get(undo.queued_inverse_mutations[0])
+            .await
+            .unwrap()
+            .status,
+        ImapMutationStatus::Applied
+    );
+    let restored = backend.messages().get(trash_id).await.unwrap();
+    assert!(restored
+        .instances
+        .iter()
+        .any(|instance| instance.folder_id == inbox.id));
+    assert!(!restored
+        .instances
+        .iter()
+        .any(|instance| instance.folder_id == trash.id));
 
     let conflict_mutation = mutations
         .set_starred(conflict_id, inbox.id, true)
