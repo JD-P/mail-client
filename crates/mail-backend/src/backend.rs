@@ -183,12 +183,13 @@ pub struct Backend {
 }
 
 pub(crate) struct Inner {
-    config: BackendConfig,
+    pub(crate) config: BackendConfig,
     _database: turso::Database,
     pub(crate) connection: Mutex<Connection>,
-    search_index: Arc<SearchIndex>,
+    pub(crate) search_index: Arc<SearchIndex>,
     pub(crate) search_sync: RwLock<()>,
     pub(crate) blobs: BlobStore,
+    pub(crate) storage: Arc<crate::storage::StorageBudget>,
     pub(crate) credentials: Arc<crate::credential::CredentialManager>,
     dkim_verifier: DkimVerifier,
     pub(crate) events: broadcast::Sender<BackendEvent>,
@@ -199,15 +200,11 @@ impl Backend {
     pub async fn open(config: BackendConfig) -> Result<Self> {
         tokio::fs::create_dir_all(&config.profile_dir)
             .await
-            .map_err(|source| BackendError::Io {
-                path: config.profile_dir.clone(),
-                source,
-            })?;
+            .map_err(|source| crate::error::io_error(config.profile_dir.clone(), source))?;
         tokio::fs::create_dir_all(config.profile_dir.join("downloads"))
             .await
-            .map_err(|source| BackendError::Io {
-                path: config.profile_dir.join("downloads"),
-                source,
+            .map_err(|source| {
+                crate::error::io_error(config.profile_dir.join("downloads"), source)
             })?;
         #[cfg(unix)]
         {
@@ -232,7 +229,10 @@ impl Backend {
         crate::spam::initialize(&mut connection).await?;
         crate::security::initialize(&mut connection).await?;
         let search_index = prepare_search_index(&config.profile_dir, &mut connection).await?;
-        let blobs = BlobStore::open(config.profile_dir.join("blobs")).await?;
+        let storage =
+            crate::storage::StorageBudget::open(config.profile_dir.clone(), config.storage_limits)
+                .await?;
+        let blobs = BlobStore::open(config.profile_dir.join("blobs"), Arc::clone(&storage)).await?;
         let credentials = crate::credential::CredentialManager::new(
             &config.profile_dir,
             config.credential_storage,
@@ -249,6 +249,7 @@ impl Backend {
                 search_index,
                 search_sync: RwLock::new(()),
                 blobs,
+                storage,
                 credentials,
                 dkim_verifier,
                 events,
@@ -496,6 +497,10 @@ impl Backend {
         Accounts(self.clone())
     }
 
+    pub fn storage(&self) -> crate::Storage {
+        crate::Storage::new(self.clone())
+    }
+
     pub fn credentials(&self) -> crate::Credentials {
         crate::Credentials::new(Arc::clone(&self.inner.credentials))
     }
@@ -723,6 +728,34 @@ impl Backend {
                         "an ingest batch cannot contain a duplicate remote UID".into(),
                     ));
                 }
+            }
+        }
+
+        let mut account_growth = HashMap::<AccountId, u64>::new();
+        {
+            let connection = self.inner.connection.lock().await;
+            for request in &requests {
+                let Some(remote) = &request.remote else {
+                    continue;
+                };
+                if lookup_remote_on(
+                    &connection,
+                    remote.folder_id,
+                    remote.uid_validity,
+                    remote.uid,
+                )
+                .await?
+                .is_some()
+                {
+                    continue;
+                }
+                let bytes = u64::try_from(request.raw.len()).unwrap_or(u64::MAX);
+                let total = account_growth.entry(remote.account_id).or_default();
+                *total = total.saturating_add(bytes);
+            }
+            for (account_id, requested) in account_growth {
+                crate::storage::ensure_account_capacity_on(&connection, account_id, requested)
+                    .await?;
             }
         }
 
@@ -1054,8 +1087,42 @@ impl Backend {
         downloaded_bytes: u64,
     ) -> Result<()> {
         let now = Utc::now().timestamp();
-        let connection = self.inner.connection.lock().await;
-        let changed = connection
+        let mut connection = self.inner.connection.lock().await;
+        let transaction = connection.transaction().await?;
+        let mut rows = transaction
+            .query(
+                "SELECT downloaded_bytes FROM messages WHERE id = ?1",
+                (message_id.to_string(),),
+            )
+            .await?;
+        let Some(row) = rows.next().await? else {
+            drop(rows);
+            transaction.rollback().await?;
+            return Err(not_found("message", message_id));
+        };
+        let previous_bytes = u64::try_from(row.get::<i64>(0)?).map_err(|_| {
+            BackendError::InvalidInput("database contains invalid downloaded byte count".into())
+        })?;
+        drop(rows);
+        let growth = downloaded_bytes.saturating_sub(previous_bytes);
+        if growth > 0 {
+            let mut rows = transaction
+                .query(
+                    "SELECT DISTINCT account_id FROM message_instances WHERE message_id = ?1",
+                    (message_id.to_string(),),
+                )
+                .await?;
+            let mut account_ids = Vec::new();
+            while let Some(row) = rows.next().await? {
+                account_ids.push(parse_id::<AccountId>(row.get(0)?, "account")?);
+            }
+            drop(rows);
+            for account_id in account_ids {
+                crate::storage::ensure_account_capacity_on(&transaction, account_id, growth)
+                    .await?;
+            }
+        }
+        let changed = transaction
             .execute(
                 "UPDATE messages SET content_availability = 'downloading', downloaded_bytes = ?1, download_error = NULL, download_updated_at = ?2 WHERE id = ?3 AND content_availability != 'complete'",
                 (
@@ -1066,13 +1133,16 @@ impl Backend {
             )
             .await?;
         if changed == 0 {
-            let status = load_content_status_on(&connection, message_id).await?;
+            let status = load_content_status_on(&transaction, message_id).await?;
+            transaction.rollback().await?;
             if status.availability != MessageContentAvailability::Complete {
                 return Err(BackendError::Conflict(
                     "message content state changed before download started".into(),
                 ));
             }
+            return Ok(());
         }
+        transaction.commit().await?;
         Ok(())
     }
 
@@ -1427,6 +1497,56 @@ impl Backend {
                     }
                 }
             }
+        }
+
+        let mut account_growth = HashMap::<AccountId, u64>::new();
+        for (position, message) in prepared.iter().enumerate() {
+            if let Some(existing) = existing_ids[position] {
+                if reconciled_sent[position] {
+                    let remote = message
+                        .remote
+                        .as_ref()
+                        .expect("sent reconciliation has remote identity");
+                    let mut rows = transaction
+                        .query(
+                            "SELECT EXISTS(SELECT 1 FROM message_instances WHERE message_id = ?1 AND account_id = ?2)",
+                            (existing.to_string(), remote.account_id.to_string()),
+                        )
+                        .await?;
+                    let already_counted = rows
+                        .next()
+                        .await?
+                        .expect("EXISTS query returns one row")
+                        .get::<bool>(0)?;
+                    drop(rows);
+                    if !already_counted {
+                        let downloaded = message
+                            .stage
+                            .as_ref()
+                            .map(|stage| stage.downloaded_bytes)
+                            .unwrap_or_default();
+                        let downloaded = u64::try_from(downloaded).map_err(|_| {
+                            BackendError::InvalidInput(
+                                "prepared message has invalid downloaded bytes".into(),
+                            )
+                        })?;
+                        let total = account_growth.entry(remote.account_id).or_default();
+                        *total = total.saturating_add(downloaded);
+                    }
+                }
+                continue;
+            }
+            let (Some(remote), Some(stage)) = (&message.remote, &message.stage) else {
+                continue;
+            };
+            let downloaded = u64::try_from(stage.downloaded_bytes).map_err(|_| {
+                BackendError::InvalidInput("prepared message has invalid downloaded bytes".into())
+            })?;
+            let total = account_growth.entry(remote.account_id).or_default();
+            *total = total.saturating_add(downloaded);
+        }
+        for (account_id, requested) in account_growth {
+            crate::storage::ensure_account_capacity_on(&transaction, account_id, requested).await?;
         }
 
         let mut staged_any = false;
@@ -3978,7 +4098,7 @@ impl Sync {
         let downloaded = match tokio::fs::metadata(&path).await {
             Ok(metadata) => metadata.len(),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
-            Err(source) => return Err(BackendError::Io { path, source }),
+            Err(source) => return Err(crate::error::io_error(path, source)),
         };
         if downloaded > target.expected_bytes || downloaded > u64::from(u32::MAX) {
             let error = BackendError::Conflict(
@@ -4000,6 +4120,13 @@ impl Sync {
                 .await?;
             return Err(error);
         }
+        let remaining_bytes = target.expected_bytes.saturating_sub(downloaded);
+        self.0
+            .storage()
+            .ensure_account_capacity(account_id, remaining_bytes)
+            .await?;
+        let mut storage_reservation = self.0.inner.storage.start_reservation().await?;
+        storage_reservation.grow(remaining_bytes)?;
         let mailbox = match session.examine(&target.remote_name).await {
             Ok(mailbox) => mailbox,
             Err(source) => {
@@ -4028,10 +4155,7 @@ impl Sync {
             .append(true)
             .open(&path)
             .await
-            .map_err(|source| BackendError::Io {
-                path: path.clone(),
-                source,
-            })?;
+            .map_err(|source| crate::error::io_error(path.clone(), source))?;
         let remote_size = match session.uid_fetch_body_size(target.uid).await {
             Ok(size) => u64::from(size),
             Err(source) => {
@@ -4079,11 +4203,9 @@ impl Sync {
                 return Err(error);
             }
             offset += requested as u64;
+            storage_reservation.materialized(requested as u64);
             if let Err(source) = file.sync_data().await {
-                let error = BackendError::Io {
-                    path: path.clone(),
-                    source,
-                };
+                let error = crate::error::io_error(path.clone(), source);
                 self.0
                     .store_download_failure(message_id, offset, &error.to_string())
                     .await?;
@@ -4092,16 +4214,14 @@ impl Sync {
             self.0.store_download_started(message_id, offset).await?;
         }
         if let Err(source) = file.sync_all().await {
-            let error = BackendError::Io {
-                path: path.clone(),
-                source,
-            };
+            let error = crate::error::io_error(path.clone(), source);
             self.0
                 .store_download_failure(message_id, offset, &error.to_string())
                 .await?;
             return Err(error);
         }
         drop(file);
+        drop(storage_reservation);
         let result = self
             .0
             .hydrate_downloaded_message(message_id, &path, target.expected_bytes)
@@ -4300,7 +4420,12 @@ struct ImapDownloadTarget {
 }
 
 fn imap_error(error: async_imap::error::Error) -> BackendError {
-    BackendError::Imap(error.to_string())
+    let detail = error.to_string();
+    if crate::error::is_storage_full_message(&detail) {
+        crate::error::storage_full_unknown()
+    } else {
+        BackendError::Imap(detail)
+    }
 }
 
 fn optional_database_u32(value: Option<i64>, field: &str) -> Result<Option<u32>> {

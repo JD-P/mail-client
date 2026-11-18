@@ -127,10 +127,8 @@ impl SearchIndex {
                 source,
             })?;
         }
-        fs::create_dir_all(&index_path).map_err(|source| BackendError::Io {
-            path: index_path.clone(),
-            source,
-        })?;
+        fs::create_dir_all(&index_path)
+            .map_err(|source| crate::error::io_error(index_path.clone(), source))?;
         let (schema, fields) = schema_and_fields();
         let index = Index::create_in_dir(&index_path, schema).map_err(search_error)?;
         Self::from_index(profile_dir.to_owned(), index, fields)
@@ -164,14 +162,10 @@ impl SearchIndex {
             format_version: INDEX_FORMAT_VERSION,
             database_generation: database_generation.to_owned(),
         })?;
-        fs::write(&temporary_path, contents).map_err(|source| BackendError::Io {
-            path: temporary_path.clone(),
-            source,
-        })?;
-        fs::rename(&temporary_path, &manifest_path).map_err(|source| BackendError::Io {
-            path: manifest_path,
-            source,
-        })?;
+        fs::write(&temporary_path, contents)
+            .map_err(|source| crate::error::io_error(temporary_path.clone(), source))?;
+        fs::rename(&temporary_path, &manifest_path)
+            .map_err(|source| crate::error::io_error(manifest_path, source))?;
         Ok(())
     }
 
@@ -577,5 +571,10 @@ fn query_error(term: &QueryTerm, message: impl Into<String>) -> BackendError {
 }
 
 fn search_error(error: impl std::fmt::Display) -> BackendError {
-    BackendError::SearchIndex(error.to_string())
+    let detail = error.to_string();
+    if crate::error::is_storage_full_message(&detail) {
+        crate::error::storage_full_unknown()
+    } else {
+        BackendError::SearchIndex(detail)
+    }
 }

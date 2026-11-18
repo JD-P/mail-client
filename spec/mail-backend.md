@@ -892,10 +892,24 @@ implementations are required to run disposable sandbox workers.
 
 - migrations with rollback/recovery tests;
 - backup and lossless export to standard formats;
-- database/index integrity checks and complete search-index rebuild;
+- bounded database/blob/download/search integrity reports, full optional blob
+  hash verification and automatic search-index rebuild are implemented;
 - account removal with final-reference credential-store cleanup;
 - cache/body-retention policy; and
-- explicit behavior when disk space is exhausted.
+- typed disk-full failures, a configurable emergency free-space reserve,
+  whole-profile quota and durable per-account downloaded-mail quotas are
+  implemented.
+
+The profile quota is evaluated against every file in the profile, including
+Turso, content blobs, partial downloads, credentials and rebuildable Tantivy
+state. Large content writes reserve space before materializing bytes and retain
+the configured free-space floor. Per-account quotas intentionally count exact
+downloaded RFC message bytes rather than derived MIME/search copies; lowering a
+quota below current usage blocks growth but never deletes mail. The integrity
+API treats missing, size-mismatched or hash-invalid referenced blobs and Turso
+integrity/foreign-key failures as errors. Orphaned blobs, abandoned temporary
+files, partial-download mismatches and rebuildable search drift are separately
+typed repairable warnings. Report memory is bounded even when damage is broad.
 
 ### Security and resource control
 

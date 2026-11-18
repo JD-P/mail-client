@@ -11,6 +11,8 @@ pub enum ErrorCode {
     Io,
     InvalidInput,
     MessageTooLarge,
+    StorageFull,
+    StorageQuotaExceeded,
     Parse,
     Query,
     Imap,
@@ -25,7 +27,7 @@ pub enum ErrorCode {
 #[derive(Debug, thiserror::Error)]
 pub enum BackendError {
     #[error("database error: {0}")]
-    Database(#[from] turso::Error),
+    Database(#[source] turso::Error),
     #[error("I/O error at {path}: {source}")]
     Io {
         path: PathBuf,
@@ -36,6 +38,19 @@ pub enum BackendError {
     InvalidInput(String),
     #[error("message is {actual} bytes; configured maximum is {limit}")]
     MessageTooLarge { actual: usize, limit: usize },
+    #[error("storage is full; {required_bytes} bytes are required and {available_bytes:?} are available")]
+    StorageFull {
+        path: Option<PathBuf>,
+        required_bytes: u64,
+        available_bytes: Option<u64>,
+    },
+    #[error("storage quota for {scope} would be exceeded: {used} used + {requested} requested > {limit}")]
+    StorageQuotaExceeded {
+        scope: String,
+        used: u64,
+        requested: u64,
+        limit: u64,
+    },
     #[error("message could not be parsed as RFC 5322/MIME")]
     Parse,
     #[error(transparent)]
@@ -65,6 +80,8 @@ impl BackendError {
             Self::Io { .. } => ErrorCode::Io,
             Self::InvalidInput(_) => ErrorCode::InvalidInput,
             Self::MessageTooLarge { .. } => ErrorCode::MessageTooLarge,
+            Self::StorageFull { .. } => ErrorCode::StorageFull,
+            Self::StorageQuotaExceeded { .. } => ErrorCode::StorageQuotaExceeded,
             Self::Parse => ErrorCode::Parse,
             Self::Query(_) => ErrorCode::Query,
             Self::Imap(_) => ErrorCode::Imap,
@@ -76,5 +93,77 @@ impl BackendError {
             Self::ContentUnavailable { .. } => ErrorCode::ContentUnavailable,
             Self::Serialization(_) => ErrorCode::InvalidInput,
         }
+    }
+}
+
+impl From<turso::Error> for BackendError {
+    fn from(error: turso::Error) -> Self {
+        if is_storage_full_message(&error.to_string()) {
+            storage_full_unknown()
+        } else {
+            Self::Database(error)
+        }
+    }
+}
+
+pub(crate) fn is_storage_full_message(detail: &str) -> bool {
+    let detail = detail.to_ascii_lowercase();
+    detail.contains("database or disk is full")
+        || detail.contains("sqlite_full")
+        || detail.contains("no space left on device")
+        || detail.contains("disk quota exceeded")
+        || detail.contains("not enough space on the disk")
+}
+
+pub(crate) fn storage_full_unknown() -> BackendError {
+    BackendError::StorageFull {
+        path: None,
+        required_bytes: 1,
+        available_bytes: None,
+    }
+}
+
+pub(crate) fn io_error(path: PathBuf, source: std::io::Error) -> BackendError {
+    let raw = source.raw_os_error();
+    #[cfg(unix)]
+    let storage_full = matches!(raw, Some(28 | 122));
+    #[cfg(windows)]
+    let storage_full = matches!(raw, Some(39 | 112));
+    #[cfg(not(any(unix, windows)))]
+    let storage_full = false;
+    if storage_full {
+        BackendError::StorageFull {
+            path: Some(path),
+            required_bytes: 1,
+            available_bytes: None,
+        }
+    } else {
+        BackendError::Io { path, source }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recognizes_database_and_filesystem_full_failures() {
+        assert!(is_storage_full_message(
+            "SQLite error: database or disk is full"
+        ));
+        assert!(is_storage_full_message(
+            "No space left on device (os error 28)"
+        ));
+        assert!(!is_storage_full_message("permission denied"));
+
+        #[cfg(unix)]
+        assert_eq!(
+            io_error(
+                PathBuf::from("profile"),
+                std::io::Error::from_raw_os_error(28)
+            )
+            .code(),
+            ErrorCode::StorageFull
+        );
     }
 }

@@ -1,28 +1,38 @@
 use crate::{BackendError, Result};
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::{Arc, Weak};
 use tokio::fs;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::sync::Mutex;
 use uuid::Uuid;
 
-#[derive(Debug)]
 pub(crate) struct BlobStore {
     root: PathBuf,
+    budget: Arc<crate::storage::StorageBudget>,
+    write_locks: Mutex<HashMap<String, Weak<Mutex<()>>>>,
 }
 
 impl BlobStore {
-    pub(crate) async fn open(root: PathBuf) -> Result<Self> {
+    pub(crate) async fn open(
+        root: PathBuf,
+        budget: Arc<crate::storage::StorageBudget>,
+    ) -> Result<Self> {
         fs::create_dir_all(&root)
             .await
-            .map_err(|source| BackendError::Io {
-                path: root.clone(),
-                source,
-            })?;
-        Ok(Self { root })
+            .map_err(|source| crate::error::io_error(root.clone(), source))?;
+        Ok(Self {
+            root,
+            budget,
+            write_locks: Mutex::new(HashMap::new()),
+        })
     }
 
     pub(crate) async fn put(&self, bytes: &[u8]) -> Result<String> {
         let hash = hex::encode(Sha256::digest(bytes));
+        let write_lock = self.write_lock(&hash).await;
+        let _write_guard = write_lock.lock().await;
         let destination = self.path(&hash);
         if fs::try_exists(&destination)
             .await
@@ -35,30 +45,31 @@ impl BlobStore {
         }
 
         let parent = destination.parent().expect("blob path has parent");
-        fs::create_dir_all(parent)
-            .await
-            .map_err(|source| BackendError::Io {
-                path: parent.to_owned(),
-                source,
-            })?;
+        if let Err(source) = fs::create_dir_all(parent).await {
+            return Err(crate::error::io_error(parent.to_owned(), source));
+        }
         let temporary = parent.join(format!(".{}.tmp", Uuid::new_v4()));
-        fs::write(&temporary, bytes)
-            .await
-            .map_err(|source| BackendError::Io {
-                path: temporary.clone(),
-                source,
-            })?;
+        let mut reservation = self.budget.start_reservation().await?;
+        reservation.grow(bytes.len() as u64)?;
+        if let Err(source) = fs::write(&temporary, bytes).await {
+            let _ = fs::remove_file(&temporary).await;
+            return Err(crate::error::io_error(temporary, source));
+        }
+        reservation.materialized(bytes.len() as u64);
         match fs::rename(&temporary, &destination).await {
-            Ok(()) => Ok(hash),
-            Err(source) if destination.exists() => {
-                let _ = fs::remove_file(&temporary).await;
-                let _ = source;
+            Ok(()) => {
+                reservation.commit(bytes.len() as u64);
                 Ok(hash)
             }
-            Err(source) => Err(BackendError::Io {
-                path: destination,
-                source,
-            }),
+            Err(_source) if destination.exists() => {
+                let _ = fs::remove_file(&temporary).await;
+                reservation.commit(0);
+                Ok(hash)
+            }
+            Err(source) => {
+                let _ = fs::remove_file(&temporary).await;
+                Err(crate::error::io_error(destination, source))
+            }
         }
     }
 
@@ -87,28 +98,24 @@ impl BlobStore {
         let incoming = self.root.join("incoming");
         fs::create_dir_all(&incoming)
             .await
-            .map_err(|source| BackendError::Io {
-                path: incoming.clone(),
-                source,
-            })?;
+            .map_err(|source| crate::error::io_error(incoming.clone(), source))?;
         let temporary = incoming.join(format!("{}.tmp", Uuid::new_v4()));
+        let mut reservation = self.budget.start_reservation().await?;
         let mut file = fs::File::create(&temporary)
             .await
-            .map_err(|source| BackendError::Io {
-                path: temporary.clone(),
-                source,
-            })?;
+            .map_err(|source| crate::error::io_error(temporary.clone(), source))?;
         let mut hasher = Sha256::new();
         let mut size = 0u64;
         let mut buffer = vec![0u8; 64 * 1024];
         loop {
-            let read = reader
-                .read(&mut buffer)
-                .await
-                .map_err(|source| BackendError::Io {
-                    path: temporary.clone(),
-                    source,
-                })?;
+            let read = match reader.read(&mut buffer).await {
+                Ok(read) => read,
+                Err(source) => {
+                    drop(file);
+                    let _ = fs::remove_file(&temporary).await;
+                    return Err(crate::error::io_error(temporary, source));
+                }
+            };
             if read == 0 {
                 break;
             }
@@ -122,38 +129,55 @@ impl BlobStore {
                 });
             }
             hasher.update(&buffer[..read]);
-            file.write_all(&buffer[..read])
-                .await
-                .map_err(|source| BackendError::Io {
-                    path: temporary.clone(),
-                    source,
-                })?;
+            if let Err(error) = reservation.grow(read as u64) {
+                drop(file);
+                let _ = fs::remove_file(&temporary).await;
+                return Err(error);
+            }
+            if let Err(source) = file.write_all(&buffer[..read]).await {
+                drop(file);
+                let _ = fs::remove_file(&temporary).await;
+                return Err(crate::error::io_error(temporary, source));
+            }
+            reservation.materialized(read as u64);
         }
-        file.flush().await.map_err(|source| BackendError::Io {
-            path: temporary.clone(),
-            source,
-        })?;
+        if let Err(source) = file.sync_all().await {
+            drop(file);
+            let _ = fs::remove_file(&temporary).await;
+            return Err(crate::error::io_error(temporary, source));
+        }
         drop(file);
         let hash = hex::encode(hasher.finalize());
+        let write_lock = self.write_lock(&hash).await;
+        let _write_guard = write_lock.lock().await;
         let destination = self.path(&hash);
-        let parent = destination.parent().expect("blob path has parent");
-        fs::create_dir_all(parent)
+        if fs::try_exists(&destination)
             .await
-            .map_err(|source| BackendError::Io {
-                path: parent.to_owned(),
-                source,
-            })?;
+            .map_err(|source| crate::error::io_error(destination.clone(), source))?
+        {
+            let _ = fs::remove_file(&temporary).await;
+            reservation.commit(0);
+            return Ok((hash, size));
+        }
+        let parent = destination.parent().expect("blob path has parent");
+        if let Err(source) = fs::create_dir_all(parent).await {
+            let _ = fs::remove_file(&temporary).await;
+            return Err(crate::error::io_error(parent.to_owned(), source));
+        }
         match fs::rename(&temporary, &destination).await {
-            Ok(()) => Ok((hash, size)),
-            Err(source) if destination.exists() => {
-                let _ = fs::remove_file(&temporary).await;
-                let _ = source;
+            Ok(()) => {
+                reservation.commit(size);
                 Ok((hash, size))
             }
-            Err(source) => Err(BackendError::Io {
-                path: destination,
-                source,
-            }),
+            Err(_source) if destination.exists() => {
+                let _ = fs::remove_file(&temporary).await;
+                reservation.commit(0);
+                Ok((hash, size))
+            }
+            Err(source) => {
+                let _ = fs::remove_file(&temporary).await;
+                Err(crate::error::io_error(destination, source))
+            }
         }
     }
 
@@ -207,6 +231,21 @@ impl BlobStore {
             });
         }
         Ok(size)
+    }
+
+    async fn write_lock(&self, hash: &str) -> Arc<Mutex<()>> {
+        let mut locks = self.write_locks.lock().await;
+        locks.retain(|_, lock| lock.strong_count() > 0);
+        if let Some(lock) = locks.get(hash).and_then(Weak::upgrade) {
+            return lock;
+        }
+        let lock = Arc::new(Mutex::new(()));
+        locks.insert(hash.to_owned(), Arc::downgrade(&lock));
+        lock
+    }
+
+    pub(crate) fn root(&self) -> &std::path::Path {
+        &self.root
     }
 
     fn path(&self, hash: &str) -> PathBuf {

@@ -11,7 +11,7 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 version INTEGER NOT NULL
             );
             INSERT INTO schema_meta(version)
-                SELECT 16 WHERE NOT EXISTS (SELECT 1 FROM schema_meta);
+                SELECT 17 WHERE NOT EXISTS (SELECT 1 FROM schema_meta);
 
             CREATE TABLE IF NOT EXISTS accounts (
                 id TEXT PRIMARY KEY,
@@ -28,6 +28,12 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 queued_at INTEGER NOT NULL,
                 attempts INTEGER NOT NULL DEFAULT 0,
                 last_error TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS account_storage_quotas (
+                account_id TEXT PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+                max_bytes INTEGER NOT NULL CHECK(max_bytes >= 0),
+                updated_at INTEGER NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS folders (
@@ -993,7 +999,22 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
             .await?;
         version = 16;
     }
-    if version != 16 {
+    if version == 16 {
+        connection
+            .execute_batch(
+                r#"
+                CREATE TABLE IF NOT EXISTS account_storage_quotas (
+                    account_id TEXT PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+                    max_bytes INTEGER NOT NULL CHECK(max_bytes >= 0),
+                    updated_at INTEGER NOT NULL
+                );
+                UPDATE schema_meta SET version = 17;
+                "#,
+            )
+            .await?;
+        version = 17;
+    }
+    if version != 17 {
         return Err(crate::BackendError::InvalidInput(format!(
             "unsupported database schema version {version}"
         )));
@@ -1136,7 +1157,7 @@ mod tests {
             .await
             .unwrap();
         let row = rows.next().await.unwrap().unwrap();
-        assert_eq!(row.get::<i64>(0).unwrap(), 16);
+        assert_eq!(row.get::<i64>(0).unwrap(), 17);
         assert_eq!(row.get::<String>(1).unwrap(), r#"{"received_at":123}"#);
         drop(rows);
 
@@ -1179,7 +1200,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap(),
-            16
+            17
         );
         drop(rows);
 

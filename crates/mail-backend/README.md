@@ -90,6 +90,17 @@ Current invariants:
   projection maintained through a revisioned, crash-replayable database outbox;
 - missing, incompatible or count-inconsistent Tantivy indexes rebuild from
   Turso, and replay uses delete-plus-add upserts so a crash cannot duplicate hits;
+- `Storage::audit` checks Turso integrity and foreign keys, every database blob
+  reference, optional full SHA-256 content verification, partial-download
+  consistency, orphaned/temporary files and Tantivy counts under a bounded
+  typed report; warnings remain distinct from data-threatening errors;
+- profile usage is reported by database, content blobs, search projection,
+  partial downloads, credentials and other files; an optional whole-profile
+  quota, a default 64 MiB emergency free-space reserve and durable per-account
+  downloaded-message quotas fail with typed errors before message state commits;
+- content-addressed writes reserve their growth before writing, serialize only
+  equal-hash publication, clean failed temporary files and translate OS,
+  Turso, Tantivy and IMAP disk-full evidence into `StorageFull`;
 - changes commit with the state they describe and can be replayed by sequence;
 - bulk ingestion publishes at most 1,000 messages or 64 MiB of staged data per
   atomic Turso chunk, then commits the corresponding Tantivy batch before the

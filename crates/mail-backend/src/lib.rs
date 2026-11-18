@@ -30,6 +30,7 @@ mod security;
 mod sending;
 mod smtp;
 mod spam;
+mod storage;
 mod thread;
 mod types;
 
@@ -57,5 +58,9 @@ pub use query::{parse_query, QueryExpr, QueryParseError, QueryTerm};
 pub use sending::{Drafts, Outbox, Sending};
 pub use smtp::{SmtpEngine, SmtpEngineConfig};
 pub use spam::SpamClassifier;
+pub use storage::{
+    AccountStorageQuota, IntegrityAuditOptions, IntegrityAuditReport, IntegrityIssue,
+    IntegrityIssueKind, IntegritySeverity, Storage, StorageLimits, StorageUsage,
+};
 pub use thread::Threads;
 pub use types::*;

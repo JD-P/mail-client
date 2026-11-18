@@ -19,6 +19,9 @@ pub struct BackendConfig {
     /// ProfileOnly exists for portable profiles and deterministic tests.
     #[serde(default)]
     pub credential_storage: CredentialStoragePolicy,
+    /// Profile-wide free-space reserve and optional hard byte budget.
+    #[serde(default)]
+    pub storage_limits: crate::StorageLimits,
 }
 
 impl BackendConfig {
@@ -29,6 +32,7 @@ impl BackendConfig {
             event_buffer: 1_024,
             dkim_dns: DkimDnsResolver::default(),
             credential_storage: CredentialStoragePolicy::default(),
+            storage_limits: crate::StorageLimits::default(),
         }
     }
 }

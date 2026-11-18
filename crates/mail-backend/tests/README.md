@@ -48,6 +48,12 @@ IDs across reopen, Reply/Reply-All and forward construction, and the adversarial
 case where an unknown sender copies a known conversation's identifiers. That
 message must remain in a separate unknown-sender thread.
 
+`storage.rs` covers whole-profile and durable per-account quotas, the emergency
+free-space reserve, usage accounting, Turso/foreign-key/search/blob audits,
+full content-hash verification, corruption detection, orphan classification
+and bounded issue reports which remain unhealthy even when errors are omitted
+from the returned detail list.
+
 `sending.rs` runs an in-process ESMTP server with a private test root and a
 real STARTTLS upgrade. It covers revisioned autosave, streamed attachment
 ingest, protected MIME headers, envelope-only Bcc, definite and temporary SMTP
