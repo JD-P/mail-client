@@ -14,6 +14,7 @@ pub enum ErrorCode {
     Parse,
     Query,
     Imap,
+    CredentialStore,
     SearchIndex,
     NotFound,
     Conflict,
@@ -41,6 +42,8 @@ pub enum BackendError {
     Query(#[from] QueryParseError),
     #[error("IMAP protocol error: {0}")]
     Imap(String),
+    #[error("credential store error: {0}")]
+    CredentialStore(String),
     #[error("search index error: {0}")]
     SearchIndex(String),
     #[error("{entity} not found: {id}")]
@@ -65,6 +68,7 @@ impl BackendError {
             Self::Parse => ErrorCode::Parse,
             Self::Query(_) => ErrorCode::Query,
             Self::Imap(_) => ErrorCode::Imap,
+            Self::CredentialStore(_) => ErrorCode::CredentialStore,
             Self::SearchIndex(_) => ErrorCode::SearchIndex,
             Self::NotFound { .. } => ErrorCode::NotFound,
             Self::Conflict(_) => ErrorCode::Conflict,

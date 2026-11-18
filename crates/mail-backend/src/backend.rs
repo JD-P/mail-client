@@ -189,6 +189,7 @@ pub(crate) struct Inner {
     search_index: Arc<SearchIndex>,
     pub(crate) search_sync: RwLock<()>,
     pub(crate) blobs: BlobStore,
+    pub(crate) credentials: Arc<crate::credential::CredentialManager>,
     dkim_verifier: DkimVerifier,
     pub(crate) events: broadcast::Sender<BackendEvent>,
     download_locks: Mutex<HashMap<MessageId, Weak<Mutex<()>>>>,
@@ -232,6 +233,10 @@ impl Backend {
         crate::security::initialize(&mut connection).await?;
         let search_index = prepare_search_index(&config.profile_dir, &mut connection).await?;
         let blobs = BlobStore::open(config.profile_dir.join("blobs")).await?;
+        let credentials = crate::credential::CredentialManager::new(
+            &config.profile_dir,
+            config.credential_storage,
+        );
         let dkim_verifier = DkimVerifier::new(config.dkim_dns).map_err(|error| {
             BackendError::InvalidInput(format!("could not initialize DKIM resolver: {error}"))
         })?;
@@ -244,11 +249,13 @@ impl Backend {
                 search_index,
                 search_sync: RwLock::new(()),
                 blobs,
+                credentials,
                 dkim_verifier,
                 events,
                 download_locks: Mutex::new(HashMap::new()),
             }),
         };
+        backend.drain_credential_cleanup(64).await?;
         backend.recover_interrupted_downloads().await?;
         backend.backfill_sender_projection().await?;
         backend.backfill_delivery_authentication().await?;
@@ -489,6 +496,106 @@ impl Backend {
         Accounts(self.clone())
     }
 
+    pub fn credentials(&self) -> crate::Credentials {
+        crate::Credentials::new(Arc::clone(&self.inner.credentials))
+    }
+
+    /// A ready-to-use provider for the IMAP and SMTP engines. References
+    /// belonging to external providers still require their own adapter.
+    pub fn credential_provider(&self) -> Arc<dyn crate::CredentialProvider> {
+        Arc::new(self.credentials())
+    }
+
+    pub(crate) async fn queue_managed_credential_cleanup_on(
+        &self,
+        connection: &Connection,
+        reference: &str,
+        now: i64,
+    ) -> Result<bool> {
+        if !self.inner.credentials.manages(reference)? {
+            return Ok(false);
+        }
+        let mut rows = connection
+            .query(
+                "SELECT EXISTS(SELECT 1 FROM accounts WHERE credential_ref = ?1), EXISTS(SELECT 1 FROM smtp_accounts WHERE credential_ref = ?1)",
+                (reference,),
+            )
+            .await?;
+        let row = rows.next().await?.ok_or_else(|| {
+            BackendError::CredentialStore("could not check credential ownership".into())
+        })?;
+        let shared = row.get::<bool>(0)? || row.get::<bool>(1)?;
+        drop(rows);
+        if shared {
+            return Ok(false);
+        }
+        connection
+            .execute(
+                "INSERT INTO credential_cleanup_queue(reference, queued_at, attempts) VALUES (?1, ?2, 0) ON CONFLICT(reference) DO NOTHING",
+                (reference, now),
+            )
+            .await?;
+        Ok(true)
+    }
+
+    pub(crate) async fn drain_credential_cleanup(&self, limit: usize) -> Result<usize> {
+        let limit = i64::try_from(limit).map_err(|_| {
+            BackendError::InvalidInput("credential cleanup limit is too large".into())
+        })?;
+        let references = {
+            let connection = self.inner.connection.lock().await;
+            let mut rows = connection
+                .query(
+                    "SELECT reference FROM credential_cleanup_queue ORDER BY queued_at, reference LIMIT ?1",
+                    (limit,),
+                )
+                .await?;
+            let mut values = Vec::new();
+            while let Some(row) = rows.next().await? {
+                values.push(row.get::<String>(0)?);
+            }
+            values
+        };
+        for reference in references {
+            let result = self.inner.credentials.delete_if_managed(&reference).await;
+            let connection = self.inner.connection.lock().await;
+            match result {
+                Ok(_) => {
+                    connection
+                        .execute(
+                            "DELETE FROM credential_cleanup_queue WHERE reference = ?1",
+                            (reference,),
+                        )
+                        .await?;
+                }
+                Err(error) => {
+                    let detail = error.to_string();
+                    let detail = detail.chars().take(1_024).collect::<String>();
+                    connection
+                        .execute(
+                            "UPDATE credential_cleanup_queue SET attempts = attempts + 1, last_error = ?1 WHERE reference = ?2",
+                            (detail, reference),
+                        )
+                        .await?;
+                }
+            }
+        }
+        let connection = self.inner.connection.lock().await;
+        let mut rows = connection
+            .query("SELECT count(*) FROM credential_cleanup_queue", ())
+            .await?;
+        let remaining = rows
+            .next()
+            .await?
+            .ok_or_else(|| {
+                BackendError::CredentialStore("credential cleanup count returned no row".into())
+            })?
+            .get::<i64>(0)?;
+        usize::try_from(remaining).map_err(|_| {
+            BackendError::CredentialStore("credential cleanup count is invalid".into())
+        })
+    }
+
     pub fn folders(&self) -> Folders {
         Folders(self.clone())
     }
@@ -561,12 +668,26 @@ impl Backend {
         crate::ImapAccountEngine::new(self.clone(), credentials, config)
     }
 
+    pub fn managed_imap_account_engine(
+        &self,
+        config: crate::ImapAccountEngineConfig,
+    ) -> Result<crate::ImapAccountEngine> {
+        self.imap_account_engine(self.credential_provider(), config)
+    }
+
     pub async fn smtp_engine(
         &self,
         credentials: Arc<dyn crate::CredentialProvider>,
         config: crate::SmtpEngineConfig,
     ) -> Result<crate::SmtpEngine> {
         crate::SmtpEngine::new(self.clone(), credentials, config).await
+    }
+
+    pub async fn managed_smtp_engine(
+        &self,
+        config: crate::SmtpEngineConfig,
+    ) -> Result<crate::SmtpEngine> {
+        self.smtp_engine(self.credential_provider(), config).await
     }
 
     /// Store an exact RFC 5322 message. Protocol adapters should call this
@@ -1925,6 +2046,59 @@ impl Backend {
 pub struct Accounts(Backend);
 
 impl Accounts {
+    pub async fn add_with_credential(
+        &self,
+        mut account: NewAccount,
+        credential: crate::ImapCredential,
+    ) -> Result<Account> {
+        if account.credential_ref.is_some() {
+            return Err(BackendError::InvalidInput(
+                "add_with_credential requires an empty credential reference".into(),
+            ));
+        }
+        let reference = self.0.credentials().store(credential).await?;
+        account.credential_ref = Some(reference.clone());
+        match self.add(account).await {
+            Ok(account) => Ok(account),
+            Err(error) => {
+                let _ = self.0.credentials().delete(&reference).await;
+                Err(error)
+            }
+        }
+    }
+
+    pub async fn set_credential(
+        &self,
+        id: AccountId,
+        credential: crate::ImapCredential,
+    ) -> Result<Account> {
+        let existing = self.get(id).await?;
+        let reference = self.0.credentials().store(credential).await?;
+        let updated = self
+            .update(
+                id,
+                NewAccount {
+                    name: existing.name,
+                    kind: existing.kind,
+                    credential_ref: Some(reference.clone()),
+                    imap: existing.imap,
+                },
+            )
+            .await;
+        if updated.is_err() {
+            let committed = self
+                .get(id)
+                .await
+                .ok()
+                .and_then(|account| account.credential_ref)
+                .is_some_and(|stored| stored == reference);
+            if !committed {
+                let _ = self.0.credentials().delete(&reference).await;
+            }
+        }
+        updated
+    }
+
     pub async fn add(&self, account: NewAccount) -> Result<Account> {
         require_nonempty("account name", &account.name)?;
         if account
@@ -2070,9 +2244,23 @@ impl Accounts {
             }
             (AccountKind::Local, None) => {}
         }
+        let next_credential_ref = account.credential_ref.clone();
         let now = Utc::now().timestamp();
         let mut connection = self.0.inner.connection.lock().await;
         let transaction = connection.transaction().await?;
+        let mut rows = transaction
+            .query(
+                "SELECT credential_ref FROM accounts WHERE id = ?1",
+                (id.to_string(),),
+            )
+            .await?;
+        let Some(row) = rows.next().await? else {
+            drop(rows);
+            transaction.rollback().await?;
+            return Err(not_found("account", id));
+        };
+        let previous_credential_ref = row.get::<Option<String>>(0)?;
+        drop(rows);
         if transaction
             .execute(
                 "UPDATE accounts SET name = ?1, credential_ref = ?2, settings_json = ?3 WHERE id = ?4",
@@ -2089,6 +2277,13 @@ impl Accounts {
             transaction.rollback().await?;
             return Err(not_found("account", id));
         }
+        if previous_credential_ref != next_credential_ref {
+            if let Some(reference) = &previous_credential_ref {
+                self.0
+                    .queue_managed_credential_cleanup_on(&transaction, reference, now)
+                    .await?;
+            }
+        }
         let event = insert_event(
             &transaction,
             now,
@@ -2099,6 +2294,7 @@ impl Accounts {
         .await?;
         transaction.commit().await?;
         drop(connection);
+        self.0.drain_credential_cleanup(16).await?;
         let _ = self.0.inner.events.send(event);
         self.get(id).await
     }
@@ -2108,6 +2304,17 @@ impl Accounts {
         let now = Utc::now().timestamp();
         let mut connection = self.0.inner.connection.lock().await;
         let transaction = connection.transaction().await?;
+        let mut rows = transaction
+            .query(
+                "SELECT credential_ref FROM accounts WHERE id = ?1 AND credential_ref IS NOT NULL UNION SELECT credential_ref FROM smtp_accounts WHERE account_id = ?1",
+                (id.to_string(),),
+            )
+            .await?;
+        let mut references = HashSet::new();
+        while let Some(row) = rows.next().await? {
+            references.insert(row.get::<String>(0)?);
+        }
+        drop(rows);
         let mut rows = transaction
             .query(
                 "SELECT DISTINCT m.id, m.thread_id FROM messages m WHERE EXISTS (SELECT 1 FROM message_instances mi WHERE mi.message_id = m.id AND mi.account_id = ?1) OR EXISTS (SELECT 1 FROM local_folder_memberships lm JOIN folders f ON f.id = lm.folder_id WHERE lm.message_id = m.id AND f.account_id = ?1)",
@@ -2129,6 +2336,11 @@ impl Accounts {
         {
             transaction.rollback().await?;
             return Err(not_found("account", id));
+        }
+        for reference in &references {
+            self.0
+                .queue_managed_credential_cleanup_on(&transaction, reference, now)
+                .await?;
         }
         let mut removed_messages = Vec::new();
         let mut touched_threads = HashSet::new();
@@ -2189,6 +2401,7 @@ impl Accounts {
         .await?;
         transaction.commit().await?;
         drop(connection);
+        self.0.drain_credential_cleanup(16).await?;
         for message_id in removed_messages {
             let _ = tokio::fs::remove_file(self.0.partial_download_path(message_id)).await;
         }

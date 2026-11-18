@@ -21,6 +21,29 @@ impl Sending {
         Self(backend)
     }
 
+    pub async fn configure_smtp_with_credential(
+        &self,
+        account_id: AccountId,
+        settings: SmtpSettings,
+        credential: crate::ImapCredential,
+    ) -> Result<SmtpAccount> {
+        let reference = self.0.credentials().store(credential).await?;
+        let configured = self
+            .configure_smtp(account_id, settings, reference.clone())
+            .await;
+        if configured.is_err() {
+            let committed = self
+                .smtp_account(account_id)
+                .await
+                .ok()
+                .is_some_and(|account| account.credential_ref == reference);
+            if !committed {
+                let _ = self.0.credentials().delete(&reference).await;
+            }
+        }
+        configured
+    }
+
     pub async fn configure_smtp(
         &self,
         account_id: AccountId,
@@ -46,6 +69,18 @@ impl Sending {
             return Err(not_found("account", account_id));
         }
         drop(rows);
+        let mut rows = connection
+            .query(
+                "SELECT credential_ref FROM smtp_accounts WHERE account_id = ?1",
+                (account_id.to_string(),),
+            )
+            .await?;
+        let previous_reference = rows
+            .next()
+            .await?
+            .map(|row| row.get::<String>(0))
+            .transpose()?;
+        drop(rows);
         let transaction = connection.transaction().await?;
         transaction
             .execute(
@@ -58,6 +93,13 @@ impl Sending {
                 ),
             )
             .await?;
+        if previous_reference.as_deref() != Some(credential_ref.as_str()) {
+            if let Some(reference) = &previous_reference {
+                self.0
+                    .queue_managed_credential_cleanup_on(&transaction, reference, now)
+                    .await?;
+            }
+        }
         let event = insert_event(
             &transaction,
             now,
@@ -68,6 +110,7 @@ impl Sending {
         .await?;
         transaction.commit().await?;
         drop(connection);
+        self.0.drain_credential_cleanup(16).await?;
         let _ = self.0.inner.events.send(event);
         Ok(SmtpAccount {
             account_id,
@@ -85,6 +128,18 @@ impl Sending {
     pub async fn remove_smtp(&self, account_id: AccountId) -> Result<()> {
         let now = Utc::now().timestamp();
         let mut connection = self.0.inner.connection.lock().await;
+        let mut rows = connection
+            .query(
+                "SELECT credential_ref FROM smtp_accounts WHERE account_id = ?1",
+                (account_id.to_string(),),
+            )
+            .await?;
+        let previous_reference = rows
+            .next()
+            .await?
+            .map(|row| row.get::<String>(0))
+            .transpose()?;
+        drop(rows);
         let transaction = connection.transaction().await?;
         transaction
             .execute(
@@ -92,6 +147,11 @@ impl Sending {
                 (account_id.to_string(),),
             )
             .await?;
+        if let Some(reference) = &previous_reference {
+            self.0
+                .queue_managed_credential_cleanup_on(&transaction, reference, now)
+                .await?;
+        }
         let event = insert_event(
             &transaction,
             now,
@@ -102,6 +162,7 @@ impl Sending {
         .await?;
         transaction.commit().await?;
         drop(connection);
+        self.0.drain_credential_cleanup(16).await?;
         let _ = self.0.inner.events.send(event);
         Ok(())
     }

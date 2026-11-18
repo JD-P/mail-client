@@ -502,7 +502,7 @@ one copy of the same inbox merely to support each sort choice.
 The implemented account engine supports:
 
 - implicit TLS and STARTTLS with hostname and certificate verification;
-- SASL/OAuth mechanisms and credentials referenced from an OS-protected store;
+- SASL/OAuth mechanisms and credentials referenced through an opaque provider;
 - capability discovery and conservative fallback;
 - UIDVALIDITY, UIDNEXT and per-mailbox UID state;
 - CONDSTORE/QRESYNC/MODSEQ when available;
@@ -535,6 +535,28 @@ IDLE, polls when IDLE is absent, reconnects after failures, and persists retry
 state. A `CredentialProvider` is the platform boundary for an OS keychain or
 OAuth broker; secrets are debug-redacted, zeroized on drop and never written to
 the account database. TLS certificate exceptions are not an account setting.
+
+The concrete built-in provider implements the deliberate version-one storage
+policy. Each new password or OAuth access token is first written to macOS
+Keychain, Windows Credential Manager or the freedesktop Secret Service. If that
+write does not succeed, it is stored in a bounded profile-local vault encrypted
+with XChaCha20-Poly1305 and authenticated against its opaque reference. The
+fallback key is an owner-only file in the same profile. This is intentionally
+the Thunderbird-without-a-Primary-Password threat model: secrets are never
+plaintext, but copying the complete profile is sufficient to decrypt them.
+Existing native references never acquire a weaker duplicate when their OS
+store is temporarily inaccessible.
+
+Lizard does not claim application-level encryption for downloaded messages,
+Turso metadata or the Tantivy index. Those rely on operating-system account and
+full-disk encryption. `ProfileOnly` is available for deterministic tests and
+portable profiles; normal configuration selects native storage automatically.
+Replacing or removing account/SMTP configuration deletes a Lizard-managed
+credential only after its final database reference disappears. External opaque
+references remain the responsibility of their provider. Failed native-store
+deletions remain in a durable cleanup queue and are retried when the profile is
+opened and after later credential changes, so removing an account cannot leave
+an untracked secret or make the profile undeletable while a keyring is offline.
 
 Locally requested flag/copy/move/trash/delete mutations are represented by a
 durable outbox. Every row captures the exact source UIDVALIDITY epoch, UID,
@@ -871,14 +893,16 @@ implementations are required to run disposable sandbox workers.
 - migrations with rollback/recovery tests;
 - backup and lossless export to standard formats;
 - database/index integrity checks and complete search-index rebuild;
-- account removal and secure credential deletion;
+- account removal with final-reference credential-store cleanup;
 - cache/body-retention policy; and
 - explicit behavior when disk space is exhausted.
 
 ### Security and resource control
 
-- OS file permissions and an at-rest encryption decision;
-- credential storage outside ordinary database rows;
+- owner-only profile permissions and an explicit decision to rely on OS
+  full-disk encryption for mail/profile data;
+- native credential storage with an authenticated profile-local fallback,
+  outside ordinary database rows;
 - strict parser, decompression, image and attachment budgets;
 - disposable sandbox workers for hostile codecs and document extraction;
 - DNS/network timeouts and cache policy for signature checks; and

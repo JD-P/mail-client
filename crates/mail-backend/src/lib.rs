@@ -11,6 +11,7 @@ mod authentication;
 mod automation;
 mod backend;
 mod blob;
+mod credential;
 mod delivery_auth;
 mod error;
 mod event;
@@ -34,6 +35,7 @@ mod types;
 
 pub use automation::{FilterRules, Heuristics};
 pub use backend::{Accounts, Backend, Contacts, Events, Folders, Messages, Search, Sync};
+pub use credential::{CredentialStorageKind, Credentials};
 pub use error::{BackendError, ErrorCode, Result};
 pub use event::{ChangeCursor, EventRecvError, EventSubscription};
 pub use heuristic::compile_heuristic;

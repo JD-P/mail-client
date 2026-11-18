@@ -9,10 +9,13 @@ description = "Headless local mail storage, ingestion, classification, and searc
 async-imap = { path = "../../vendor/async-imap", default-features = false, features = ["runtime-tokio"] }
 base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
+chacha20poly1305 = { version = "0.11", features = ["zeroize"] }
 futures-util = "0.3"
+getrandom = "0.4"
 hex = "0.4"
 html5ever = "=0.40.1"
 linkify = "0.10"
+keyring = "4.2"
 mail-parser = { version = "=1.0.1", features = ["full_encoding"] }
 mail-auth = { path = "../../vendor/mail-auth", default-features = false, features = ["dns-hickory", "dns-tls-ring", "rust-crypto"] }
 psl = "2"

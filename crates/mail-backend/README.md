@@ -23,6 +23,14 @@ Current invariants:
   on read; a header-only projection is separately and explicitly typed until
   the complete payload arrives;
 - on Unix, the profile directory is forced to owner-only permissions;
+- account passwords and OAuth access tokens never enter Turso: the built-in
+  provider first writes to macOS Keychain, Windows Credential Manager or
+  freedesktop Secret Service, then falls back to an XChaCha20-Poly1305 profile
+  vault when no native write succeeds;
+- the fallback key deliberately lives in the same owner-only profile, like
+  Thunderbird without a Primary Password: it prevents plaintext storage but
+  does not protect a copied profile; mail blobs, Turso and Tantivy likewise
+  rely on operating-system full-disk encryption;
 - normalized metadata/search text is rebuildable local Turso state;
 - MIME parsing and decoded body extraction have explicit byte/depth/part limits;
 - the complete MIME tree, selected plain/HTML alternatives, per-part decode
@@ -87,7 +95,9 @@ Current invariants:
   atomic Turso chunk, then commits the corresponding Tantivy batch before the
   API call returns;
 - IMAP configuration permits TLS or STARTTLS, not plaintext, and stores only an
-  opaque credential reference.
+  opaque credential reference; replacing or removing account/SMTP
+  configuration deletes a Lizard-owned credential after its final reference
+  disappears;
 - `ImapAccountEngine` owns TLS connection establishment, credential resolution,
   SASL/OAuth authentication, mailbox discovery, capability negotiation,
   UIDVALIDITY/CONDSTORE/QRESYNC reconciliation, IDLE/poll wakeups, cancellation

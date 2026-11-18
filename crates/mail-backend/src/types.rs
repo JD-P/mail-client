@@ -14,6 +14,11 @@ pub struct BackendConfig {
     /// transport and enables local DNSSEC validation.
     #[serde(default)]
     pub dkim_dns: DkimDnsResolver,
+    /// Automatic uses the operating-system credential store when a write
+    /// succeeds and otherwise falls back to a profile-local encrypted vault.
+    /// ProfileOnly exists for portable profiles and deterministic tests.
+    #[serde(default)]
+    pub credential_storage: CredentialStoragePolicy,
 }
 
 impl BackendConfig {
@@ -23,8 +28,17 @@ impl BackendConfig {
             limits: IngestLimits::default(),
             event_buffer: 1_024,
             dkim_dns: DkimDnsResolver::default(),
+            credential_storage: CredentialStoragePolicy::default(),
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CredentialStoragePolicy {
+    #[default]
+    Automatic,
+    ProfileOnly,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]

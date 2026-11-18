@@ -11,7 +11,7 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 version INTEGER NOT NULL
             );
             INSERT INTO schema_meta(version)
-                SELECT 15 WHERE NOT EXISTS (SELECT 1 FROM schema_meta);
+                SELECT 16 WHERE NOT EXISTS (SELECT 1 FROM schema_meta);
 
             CREATE TABLE IF NOT EXISTS accounts (
                 id TEXT PRIMARY KEY,
@@ -21,6 +21,13 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 settings_json TEXT,
                 trusted_authserv_ids_json TEXT NOT NULL DEFAULT '[]',
                 created_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS credential_cleanup_queue (
+                reference TEXT PRIMARY KEY,
+                queued_at INTEGER NOT NULL,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT
             );
 
             CREATE TABLE IF NOT EXISTS folders (
@@ -970,7 +977,23 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
             .await?;
         version = 15;
     }
-    if version != 15 {
+    if version == 15 {
+        connection
+            .execute_batch(
+                r#"
+                CREATE TABLE IF NOT EXISTS credential_cleanup_queue (
+                    reference TEXT PRIMARY KEY,
+                    queued_at INTEGER NOT NULL,
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    last_error TEXT
+                );
+                UPDATE schema_meta SET version = 16;
+                "#,
+            )
+            .await?;
+        version = 16;
+    }
+    if version != 16 {
         return Err(crate::BackendError::InvalidInput(format!(
             "unsupported database schema version {version}"
         )));
@@ -1113,7 +1136,7 @@ mod tests {
             .await
             .unwrap();
         let row = rows.next().await.unwrap().unwrap();
-        assert_eq!(row.get::<i64>(0).unwrap(), 15);
+        assert_eq!(row.get::<i64>(0).unwrap(), 16);
         assert_eq!(row.get::<String>(1).unwrap(), r#"{"received_at":123}"#);
         drop(rows);
 
@@ -1156,7 +1179,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap(),
-            15
+            16
         );
         drop(rows);
 
