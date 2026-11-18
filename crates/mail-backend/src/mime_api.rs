@@ -207,6 +207,9 @@ impl Mime {
         result
     }
 
+    /// Reads ZIP directory metadata under caller budgets without inflating an
+    /// entry. Expansion is available only through the separate, explicit
+    /// [`Self::read_archive_entry`] operation.
     pub async fn inspect_archive(
         &self,
         message_id: MessageId,

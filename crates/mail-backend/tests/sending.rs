@@ -290,7 +290,13 @@ async fn drafts_autosave_build_protected_mime_and_submit_over_starttls() {
     assert_eq!(completed[0].status, SubmissionStatus::Sent);
     assert_eq!(events.recv().await.unwrap().kind, "submission_in_flight");
     assert_eq!(events.recv().await.unwrap().kind, "message_ingested");
-    assert_eq!(events.recv().await.unwrap().kind, "submission_sent");
+    loop {
+        let kind = events.recv().await.unwrap().kind;
+        if kind == "submission_sent" {
+            break;
+        }
+        assert_eq!(kind, "heuristic_evaluated");
+    }
     let sent_id = completed[0].sent_message_id.unwrap();
     let transcript = server.await.unwrap();
     assert_eq!(

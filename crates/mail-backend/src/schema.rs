@@ -11,7 +11,7 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 version INTEGER NOT NULL
             );
             INSERT INTO schema_meta(version)
-                SELECT 12 WHERE NOT EXISTS (SELECT 1 FROM schema_meta);
+                SELECT 13 WHERE NOT EXISTS (SELECT 1 FROM schema_meta);
 
             CREATE TABLE IF NOT EXISTS accounts (
                 id TEXT PRIMARY KEY,
@@ -68,6 +68,7 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 to_addresses TEXT NOT NULL,
                 cc_addresses TEXT NOT NULL,
                 bcc_addresses TEXT NOT NULL,
+                sender_addresses TEXT NOT NULL DEFAULT '[]',
                 reply_to_addresses TEXT NOT NULL DEFAULT '[]',
                 delivered_to_addresses TEXT NOT NULL,
                 list_id TEXT,
@@ -796,7 +797,27 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
             .await?;
         version = 12;
     }
-    if version != 12 {
+    if version == 12 {
+        // Sender is distinct from From under RFC 5322 and is required for
+        // provenance-preserving reply/identity evidence. Existing rows are
+        // backfilled from immutable raw headers after the blob store opens.
+        let mut rows = connection.query("PRAGMA table_info(messages)", ()).await?;
+        let mut columns = HashSet::new();
+        while let Some(row) = rows.next().await? {
+            columns.insert(row.get::<String>(1)?);
+        }
+        drop(rows);
+        if !columns.contains("sender_addresses") {
+            connection
+                .execute("ALTER TABLE messages ADD COLUMN sender_addresses TEXT", ())
+                .await?;
+        }
+        connection
+            .execute("UPDATE schema_meta SET version = 13", ())
+            .await?;
+        version = 13;
+    }
+    if version != 13 {
         return Err(crate::BackendError::InvalidInput(format!(
             "unsupported database schema version {version}"
         )));
@@ -835,6 +856,7 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 to_addresses TEXT NOT NULL,
                 cc_addresses TEXT NOT NULL,
                 bcc_addresses TEXT NOT NULL,
+                sender_addresses TEXT NOT NULL,
                 reply_to_addresses TEXT NOT NULL,
                 delivered_to_addresses TEXT NOT NULL,
                 list_id TEXT,
@@ -937,7 +959,7 @@ mod tests {
             .await
             .unwrap();
         let row = rows.next().await.unwrap().unwrap();
-        assert_eq!(row.get::<i64>(0).unwrap(), 12);
+        assert_eq!(row.get::<i64>(0).unwrap(), 13);
         assert_eq!(row.get::<String>(1).unwrap(), r#"{"received_at":123}"#);
         drop(rows);
 
@@ -980,7 +1002,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap(),
-            12
+            13
         );
         drop(rows);
 

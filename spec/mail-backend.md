@@ -15,10 +15,10 @@ boundary, discovers mailboxes, negotiates capabilities, reconciles UID state
 and routes bounded body streams through the same idempotent ingestion path as
 local imports.
 
-The current slice does **not** yet run OpenPGP verification, extract every
-security heuristic, or expose inter-process transport. Those are tracked here
-as the next layers; the presence of their data-model requirements below is not
-a claim that they are implemented.
+The current slice does **not** yet run OpenPGP verification, trust provider
+`Authentication-Results`, or expose inter-process transport. It does run a
+mandatory bounded native security-evidence pass; later requirements are not a
+claim that every possible heuristic is implemented.
 
 Related frontend requirements: [security-ui.md](security-ui.md).
 
@@ -425,9 +425,24 @@ filesystem and network access are compile errors. Every program has static and
 runtime step limits, collection limits, finding limits and string limits.
 
 Native extractors produce reusable typed features such as MIME attachments,
-parsed links and registrable domains. Later extractors will add DKIM/OpenPGP,
-Unicode-confusable analysis, magic-byte file types and local semantic intent.
-Programs consume those features; they do not implement parsers or cryptography.
+parsed links and registrable domains. The implemented, non-removable native
+pass materializes identity contradictions, DKIM alignment failures, misleading
+destinations, remote-resource and credential-form presence, UTS #39 domain
+confusables, executable/type/filename evidence and bounded ZIP directory
+metadata. It uses a finite finding vocabulary and versioned evidence just like
+user rules. OpenPGP, trusted provider evidence and richer local semantic intent
+remain future work. Programs consume these features; they do not implement
+parsers or cryptography.
+
+The native pass is deliberately passive. Its HTML tokenizer has token, anchor,
+form, resource and string budgets and cannot execute script, submit a form,
+resolve DNS or fetch a URL. Automatic ZIP analysis accepts at most 8 MiB of
+compressed input, reads central-directory metadata with `by_index_raw`, never
+inflates an entry, never recurses into a nested archive and has entry-count,
+declared-size, ratio and wall-clock budgets. Encrypted, malformed, nested,
+oversized or over-budget archives produce `uninspectable_archive`; they never
+receive a clean verdict. Expansion remains a separate explicit API that refuses
+to run unless metadata inspection completes within caller-supplied limits.
 
 ### Finite presentation vocabulary
 
@@ -770,9 +785,10 @@ plain/HTML alternatives, parse/decode state and decoded CID resources. Decoded
 attachments stream from hash-checked blobs under caller limits and safe export
 uses a caller-selected create-new path, never the untrusted filename. ZIP
 inspection checks entry, compressed-input, per-entry, total-output, path and
-compression-ratio budgets before expansion. Document extraction is an optional
-trait boundary with byte, output and timeout budgets; implementations are
-required to run disposable sandbox workers.
+compression-ratio budgets before expansion. The built-in security pass uses
+only ZIP directory metadata and never calls the expansion API. Document
+extraction is an optional trait boundary with byte, output and timeout budgets;
+implementations are required to run disposable sandbox workers.
 
 ### Threads
 
@@ -818,7 +834,8 @@ required to run disposable sandbox workers.
 3. Search grammar, native Tantivy projection and the scaling benchmark.
 4. Local folders/labels, stateful rules, explanations and replay.
 5. Backend address book plus Warm/Cold query predicates.
-6. OpenPGP evidence and the remaining built-in heuristic feature pipeline.
+6. OpenPGP evidence and extensions to the implemented built-in heuristic
+   feature pipeline.
 7. Change-stream API and official CLI/GUI integration.
 8. Broader SMTP interoperability and provider-native send adapters (drafts,
    SMTP submission and IMAP mutations are implemented).

@@ -126,6 +126,7 @@ struct StagedMessage {
     to_addresses: String,
     cc_addresses: String,
     bcc_addresses: String,
+    sender_addresses: String,
     reply_to_addresses: String,
     delivered_to_addresses: String,
     list_id: Option<String>,
@@ -160,6 +161,7 @@ impl StagedMessage {
             + self.to_addresses.len()
             + self.cc_addresses.len()
             + self.bcc_addresses.len()
+            + self.sender_addresses.len()
             + self.reply_to_addresses.len()
             + self.delivered_to_addresses.len()
             + self.list_id.as_ref().map_or(0, String::len)
@@ -225,6 +227,7 @@ impl Backend {
         let mut connection = database.connect()?;
         schema::migrate(&connection).await?;
         crate::spam::initialize(&mut connection).await?;
+        crate::security::initialize(&mut connection).await?;
         let search_index = prepare_search_index(&config.profile_dir, &mut connection).await?;
         let blobs = BlobStore::open(config.profile_dir.join("blobs")).await?;
         let dkim_verifier = DkimVerifier::new(config.dkim_dns).map_err(|error| {
@@ -245,13 +248,79 @@ impl Backend {
             }),
         };
         backend.recover_interrupted_downloads().await?;
+        backend.backfill_sender_projection().await?;
         backend.backfill_thread_projection().await?;
         backend.backfill_mime_projection().await?;
+        let (_, security_remaining) = backend.heuristics().backfill_builtin(64).await?;
+        if security_remaining {
+            backend.schedule_security_backfill();
+        }
         let initial_spam = backend.spam_classifier().reclassify_pending(256).await?;
         if initial_spam.remaining > 0 {
             backend.schedule_spam_reclassification();
         }
         Ok(backend)
+    }
+
+    fn schedule_security_backfill(&self) {
+        let backend = self.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((processed, remaining)) = backend.heuristics().backfill_builtin(64).await
+                else {
+                    break;
+                };
+                if processed == 0 || !remaining {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        });
+    }
+
+    /// Version thirteen separates the RFC 5322 Sender field from From. Raw
+    /// immutable headers are reparsed in small chunks; `NULL` is used only as
+    /// an upgrade marker, while a real message with no Sender stores `[]`.
+    async fn backfill_sender_projection(&self) -> Result<()> {
+        loop {
+            let missing = {
+                let connection = self.inner.connection.lock().await;
+                let mut rows = connection
+                    .query(
+                        "SELECT id, blob_hash FROM messages WHERE sender_addresses IS NULL ORDER BY id LIMIT 100",
+                        (),
+                    )
+                    .await?;
+                let mut missing = Vec::new();
+                while let Some(row) = rows.next().await? {
+                    missing.push((
+                        parse_id::<MessageId>(row.get(0)?, "message")?,
+                        row.get::<String>(1)?,
+                    ));
+                }
+                missing
+            };
+            if missing.is_empty() {
+                return Ok(());
+            }
+            let mut projected = Vec::with_capacity(missing.len());
+            for (message_id, blob_hash) in missing {
+                let raw = self.inner.blobs.get(&blob_hash).await?;
+                let parsed = mime::parse_thread_headers(&raw)?;
+                projected.push((message_id, serde_json::to_string(&parsed.sender_addresses)?));
+            }
+            let mut connection = self.inner.connection.lock().await;
+            let transaction = connection.transaction().await?;
+            for (message_id, sender_addresses) in projected {
+                transaction
+                    .execute(
+                        "UPDATE messages SET sender_addresses = ?1 WHERE id = ?2 AND sender_addresses IS NULL",
+                        (sender_addresses, message_id.to_string()),
+                    )
+                    .await?;
+            }
+            transaction.commit().await?;
+        }
     }
 
     fn schedule_spam_reclassification(&self) {
@@ -584,6 +653,7 @@ impl Backend {
             to_addresses: serde_json::to_string(&parsed.to_addresses)?,
             cc_addresses: serde_json::to_string(&parsed.cc_addresses)?,
             bcc_addresses: serde_json::to_string(&parsed.bcc_addresses)?,
+            sender_addresses: serde_json::to_string(&parsed.sender_addresses)?,
             reply_to_addresses: serde_json::to_string(&parsed.reply_to_addresses)?,
             delivered_to_addresses: serde_json::to_string(&parsed.delivered_to_addresses)?,
             list_id: parsed.list_id,
@@ -691,6 +761,7 @@ impl Backend {
             to_addresses: serde_json::to_string(&parsed.to_addresses)?,
             cc_addresses: serde_json::to_string(&parsed.cc_addresses)?,
             bcc_addresses: serde_json::to_string(&parsed.bcc_addresses)?,
+            sender_addresses: serde_json::to_string(&parsed.sender_addresses)?,
             reply_to_addresses: serde_json::to_string(&parsed.reply_to_addresses)?,
             delivered_to_addresses: serde_json::to_string(&parsed.delivered_to_addresses)?,
             list_id: parsed.list_id,
@@ -883,15 +954,16 @@ impl Backend {
                     blob_hash = ?1, rfc_message_id = ?2, subject = ?3,
                     from_address = ?4, from_name = ?5, to_addresses = ?6,
                     cc_addresses = ?7, bcc_addresses = ?8,
-                    reply_to_addresses = ?9, delivered_to_addresses = ?10,
-                    list_id = ?11, body_text = ?12, body_html = ?13,
-                    preview = ?14, sent_at = ?15, has_attachment = ?16,
-                    attachment_names = ?17, content_state = ?18,
-                    search_metadata = ?19, dkim_json = ?20, mime_state = ?21,
-                    mime_detail = ?22, content_availability = 'complete',
+                    sender_addresses = ?9, reply_to_addresses = ?10,
+                    delivered_to_addresses = ?11, list_id = ?12,
+                    body_text = ?13, body_html = ?14, preview = ?15,
+                    sent_at = ?16, has_attachment = ?17,
+                    attachment_names = ?18, content_state = ?19,
+                    search_metadata = ?20, dkim_json = ?21, mime_state = ?22,
+                    mime_detail = ?23, content_availability = 'complete',
                     downloaded_bytes = size_bytes, download_error = NULL,
-                    download_updated_at = ?23
-                WHERE id = ?24 AND content_availability != 'complete' AND size_bytes = ?25"#,
+                    download_updated_at = ?24
+                WHERE id = ?25 AND content_availability != 'complete' AND size_bytes = ?26"#,
                 turso::params![
                     stage.blob_hash,
                     stage.rfc_message_id,
@@ -901,6 +973,7 @@ impl Backend {
                     stage.to_addresses,
                     stage.cc_addresses,
                     stage.bcc_addresses,
+                    stage.sender_addresses,
                     stage.reply_to_addresses,
                     stage.delivered_to_addresses,
                     stage.list_id,
@@ -1117,8 +1190,9 @@ impl Backend {
                     r#"INSERT INTO ingest_message_stage (
                         batch_id, position, id, blob_hash, rfc_message_id, subject,
                         from_address, from_name, to_addresses, cc_addresses,
-                        bcc_addresses, reply_to_addresses, delivered_to_addresses, list_id, body_text,
-                        body_html, preview, sent_at, received_at, size_bytes,
+                        bcc_addresses, sender_addresses, reply_to_addresses,
+                        delivered_to_addresses, list_id, body_text, body_html,
+                        preview, sent_at, received_at, size_bytes,
                         has_attachment, attachment_names, is_read, is_starred,
                         user_classification, content_state, search_metadata, dkim_json,
                         mime_state, mime_detail, content_availability,
@@ -1128,7 +1202,7 @@ impl Backend {
                         ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
                         ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22,
                         ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32,
-                        ?33, ?34, ?35
+                        ?33, ?34, ?35, ?36
                     )"#,
                     turso::params![
                         batch_id.clone(),
@@ -1142,6 +1216,7 @@ impl Backend {
                         stage.to_addresses,
                         stage.cc_addresses,
                         stage.bcc_addresses,
+                        stage.sender_addresses,
                         stage.reply_to_addresses,
                         stage.delivered_to_addresses,
                         stage.list_id,
@@ -1176,8 +1251,9 @@ impl Backend {
                 .execute(
                     r#"INSERT INTO messages (
                         id, blob_hash, rfc_message_id, subject, from_address, from_name,
-                        to_addresses, cc_addresses, bcc_addresses, reply_to_addresses, delivered_to_addresses,
-                        list_id, body_text, body_html, preview, sent_at, received_at,
+                        to_addresses, cc_addresses, bcc_addresses, sender_addresses,
+                        reply_to_addresses, delivered_to_addresses, list_id,
+                        body_text, body_html, preview, sent_at, received_at,
                         size_bytes, has_attachment, attachment_names, is_read, is_starred,
                         user_classification, content_state, search_metadata, dkim_json,
                         mime_state, mime_detail, content_availability,
@@ -1185,8 +1261,9 @@ impl Backend {
                         created_at
                     )
                     SELECT id, blob_hash, rfc_message_id, subject, from_address, from_name,
-                        to_addresses, cc_addresses, bcc_addresses, reply_to_addresses, delivered_to_addresses,
-                        list_id, body_text, body_html, preview, sent_at, received_at,
+                        to_addresses, cc_addresses, bcc_addresses, sender_addresses,
+                        reply_to_addresses, delivered_to_addresses, list_id,
+                        body_text, body_html, preview, sent_at, received_at,
                         size_bytes, has_attachment, attachment_names, is_read, is_starred,
                         user_classification, content_state, search_metadata, dkim_json,
                         mime_state, mime_detail, content_availability,
@@ -1921,7 +1998,7 @@ impl Messages {
         let mut rows = connection
             .query(
                 &format!(
-                    "SELECT {}, rfc_message_id, to_addresses, cc_addresses, bcc_addresses, delivered_to_addresses, list_id, body_text, body_html, dkim_json, in_reply_to_json, references_json, reply_to_addresses, parent_message_id, threading_source, sender_trust, user_classification FROM messages m WHERE m.id = ?1",
+                    "SELECT {}, rfc_message_id, to_addresses, cc_addresses, bcc_addresses, sender_addresses, delivered_to_addresses, list_id, body_text, body_html, dkim_json, in_reply_to_json, references_json, reply_to_addresses, parent_message_id, threading_source, sender_trust, user_classification FROM messages m WHERE m.id = ?1",
                     SUMMARY_COLUMNS
                 ),
                 (id.to_string(),),
@@ -1933,23 +2010,24 @@ impl Messages {
         let to_addresses = json_addresses(row.get(SUMMARY_COLUMN_COUNT + 1)?)?;
         let cc_addresses = json_addresses(row.get(SUMMARY_COLUMN_COUNT + 2)?)?;
         let bcc_addresses = json_addresses(row.get(SUMMARY_COLUMN_COUNT + 3)?)?;
-        let delivered_to_addresses = json_addresses(row.get(SUMMARY_COLUMN_COUNT + 4)?)?;
-        let list_id = row.get(SUMMARY_COLUMN_COUNT + 5)?;
-        let body_text = row.get(SUMMARY_COLUMN_COUNT + 6)?;
-        let body_html = row.get(SUMMARY_COLUMN_COUNT + 7)?;
-        let dkim = serde_json::from_str(&row.get::<String>(SUMMARY_COLUMN_COUNT + 8)?)?;
-        let in_reply_to = serde_json::from_str(&row.get::<String>(SUMMARY_COLUMN_COUNT + 9)?)?;
-        let references = serde_json::from_str(&row.get::<String>(SUMMARY_COLUMN_COUNT + 10)?)?;
-        let reply_to_addresses = json_addresses(row.get(SUMMARY_COLUMN_COUNT + 11)?)?;
+        let sender_addresses = json_addresses(row.get(SUMMARY_COLUMN_COUNT + 4)?)?;
+        let delivered_to_addresses = json_addresses(row.get(SUMMARY_COLUMN_COUNT + 5)?)?;
+        let list_id = row.get(SUMMARY_COLUMN_COUNT + 6)?;
+        let body_text = row.get(SUMMARY_COLUMN_COUNT + 7)?;
+        let body_html = row.get(SUMMARY_COLUMN_COUNT + 8)?;
+        let dkim = serde_json::from_str(&row.get::<String>(SUMMARY_COLUMN_COUNT + 9)?)?;
+        let in_reply_to = serde_json::from_str(&row.get::<String>(SUMMARY_COLUMN_COUNT + 10)?)?;
+        let references = serde_json::from_str(&row.get::<String>(SUMMARY_COLUMN_COUNT + 11)?)?;
+        let reply_to_addresses = json_addresses(row.get(SUMMARY_COLUMN_COUNT + 12)?)?;
         let parent_message_id = row
-            .get::<Option<String>>(SUMMARY_COLUMN_COUNT + 12)?
+            .get::<Option<String>>(SUMMARY_COLUMN_COUNT + 13)?
             .map(|value| parse_id(value, "message"))
             .transpose()?;
-        let source = crate::thread::parse_source(&row.get::<String>(SUMMARY_COLUMN_COUNT + 13)?)?;
+        let source = crate::thread::parse_source(&row.get::<String>(SUMMARY_COLUMN_COUNT + 14)?)?;
         let sender_trust =
-            crate::thread::parse_sender_trust(&row.get::<String>(SUMMARY_COLUMN_COUNT + 14)?)?;
+            crate::thread::parse_sender_trust(&row.get::<String>(SUMMARY_COLUMN_COUNT + 15)?)?;
         let user_classification = row
-            .get::<Option<String>>(SUMMARY_COLUMN_COUNT + 15)?
+            .get::<Option<String>>(SUMMARY_COLUMN_COUNT + 16)?
             .map(|value| parse_user_classification(&value))
             .transpose()?;
         drop(rows);
@@ -2075,6 +2153,7 @@ impl Messages {
             rfc_message_id,
             in_reply_to,
             references,
+            sender_addresses,
             reply_to_addresses,
             threading: ThreadMembership {
                 thread_id,

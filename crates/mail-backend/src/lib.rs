@@ -23,6 +23,7 @@ mod mime_api;
 mod query;
 mod schema;
 mod search_index;
+mod security;
 mod sending;
 mod smtp;
 mod spam;

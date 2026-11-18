@@ -478,6 +478,11 @@ impl Heuristics {
         validate_heuristic_input(&heuristic)?;
         let program = compile_program(&heuristic.source)?;
         let existing = self.get(id).await?;
+        if crate::security::is_builtin_native(&existing) {
+            return Err(BackendError::Conflict(
+                "native built-in security evidence cannot be edited".into(),
+            ));
+        }
         let version = existing
             .version
             .checked_add(1)
@@ -580,6 +585,12 @@ impl Heuristics {
     }
 
     pub async fn remove(&self, id: HeuristicId) -> Result<()> {
+        let existing = self.get(id).await?;
+        if crate::security::is_builtin_native(&existing) {
+            return Err(BackendError::Conflict(
+                "native built-in security evidence cannot be removed".into(),
+            ));
+        }
         let now = Utc::now().timestamp();
         let mut connection = self.0.inner.connection.lock().await;
         let transaction = connection.transaction().await?;
@@ -609,11 +620,8 @@ impl Heuristics {
 
     pub async fn evaluate_message(&self, message_id: MessageId) -> Result<Vec<HeuristicFinding>> {
         let programs = self.load_enabled_programs().await?;
-        if programs.is_empty() {
-            return Ok(Vec::new());
-        }
         let message = self.0.messages().get(message_id).await?;
-        let mut all_findings = Vec::new();
+        let mut all_findings = self.evaluate_builtin(&message).await?;
         for (heuristic, program) in programs {
             let (status, detail, findings) = match run_program(&program, &message) {
                 Ok(findings) => (HeuristicEvaluationStatus::Complete, None, findings),
@@ -632,6 +640,79 @@ impl Heuristics {
             );
         }
         Ok(all_findings)
+    }
+
+    pub(crate) async fn evaluate_builtin_message(
+        &self,
+        message_id: MessageId,
+    ) -> Result<Vec<HeuristicFinding>> {
+        let message = self.0.messages().get(message_id).await?;
+        self.evaluate_builtin(&message).await
+    }
+
+    async fn evaluate_builtin(&self, message: &Message) -> Result<Vec<HeuristicFinding>> {
+        let heuristic = crate::security::definition();
+        let evaluation = crate::security::evaluate(&self.0, message).await?;
+        self.replace_findings(
+            &heuristic,
+            message.summary.id,
+            evaluation.status,
+            evaluation.detail,
+            evaluation.findings,
+        )
+        .await
+    }
+
+    pub(crate) async fn backfill_builtin(&self, limit: usize) -> Result<(usize, bool)> {
+        let limit = limit.clamp(1, 1_000);
+        let ids = {
+            let connection = self.0.inner.connection.lock().await;
+            let mut rows = connection
+                .query(
+                    r#"SELECT m.id FROM messages m
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM heuristic_evaluations evaluation
+                        WHERE evaluation.message_id = m.id
+                            AND evaluation.heuristic_id = ?1
+                            AND evaluation.heuristic_version = ?2
+                    )
+                    ORDER BY m.received_at, m.id LIMIT ?3"#,
+                    (
+                        crate::security::builtin_id().to_string(),
+                        i64::from(crate::security::definition().version),
+                        i64::try_from(limit).unwrap_or(i64::MAX),
+                    ),
+                )
+                .await?;
+            let mut ids = Vec::new();
+            while let Some(row) = rows.next().await? {
+                ids.push(parse_id::<MessageId>(row.get(0)?, "message")?);
+            }
+            ids
+        };
+        for id in &ids {
+            self.evaluate_builtin_message(*id).await?;
+        }
+        let remaining = {
+            let connection = self.0.inner.connection.lock().await;
+            let mut rows = connection
+                .query(
+                    r#"SELECT 1 FROM messages m
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM heuristic_evaluations evaluation
+                        WHERE evaluation.message_id = m.id
+                            AND evaluation.heuristic_id = ?1
+                            AND evaluation.heuristic_version = ?2
+                    ) LIMIT 1"#,
+                    (
+                        crate::security::builtin_id().to_string(),
+                        i64::from(crate::security::definition().version),
+                    ),
+                )
+                .await?;
+            rows.next().await?.is_some()
+        };
+        Ok((ids.len(), remaining))
     }
 
     pub(crate) async fn has_enabled(&self) -> Result<bool> {
@@ -704,8 +785,8 @@ impl Heuristics {
         let connection = self.0.inner.connection.lock().await;
         let mut rows = connection
             .query(
-                "SELECT id, name, version, source, source_kind, enabled, required_features_json, maximum_steps, created_at, updated_at, compiled_json FROM heuristics WHERE enabled = 1 AND deleted_at IS NULL ORDER BY id",
-                (),
+                "SELECT id, name, version, source, source_kind, enabled, required_features_json, maximum_steps, created_at, updated_at, compiled_json FROM heuristics WHERE enabled = 1 AND deleted_at IS NULL AND source != ?1 ORDER BY id",
+                (crate::security::definition().source,),
             )
             .await?;
         let mut values = Vec::new();
@@ -717,7 +798,7 @@ impl Heuristics {
         Ok(values)
     }
 
-    async fn replace_findings(
+    pub(crate) async fn replace_findings(
         &self,
         heuristic: &Heuristic,
         message_id: MessageId,

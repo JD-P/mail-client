@@ -513,6 +513,9 @@ pub struct Message {
     /// untrusted evidence; [`threading`] records the backend's actual choice.
     pub in_reply_to: Vec<String>,
     pub references: Vec<String>,
+    /// RFC 5322 Sender mailboxes are message-supplied evidence. They are
+    /// separate from the visible From identity and may contradict it.
+    pub sender_addresses: Vec<String>,
     pub reply_to_addresses: Vec<String>,
     pub threading: ThreadMembership,
     pub to_addresses: Vec<String>,

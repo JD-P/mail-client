@@ -1,20 +1,20 @@
 //! Real-IMAP regression corpus for every warning class in `spec/security-ui.md`.
 //!
-//! Some evidence extractors are intentionally still future work. Every case is
-//! nevertheless delivered through Dovecot and retained byte-for-byte now, so
-//! adding an extractor cannot quietly replace the hostile input with a safer
-//! synthetic representation. Assertions become structured as the backend
-//! learns each evidence type.
+//! OpenPGP evidence is intentionally still future work. Every case is
+//! nevertheless delivered through Dovecot and retained byte-for-byte, so an
+//! extractor cannot quietly replace hostile input with a safer representation.
 
 mod support;
 
+use base64::Engine;
 use lizard_mail_backend::{
     AccountKind, Backend, BackendConfig, ContactAddress, DkimAuthenticationStatus, FolderKind,
-    HeuristicSourceKind, ImapSecurity, ImapSettings, InboxClass, NewAccount, NewContact, NewFolder,
-    NewHeuristic,
+    ImapSecurity, ImapSettings, InboxClass, NewAccount, NewContact, NewFolder,
 };
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::{Cursor, Write};
 use support::dovecot::DovecotContainer;
+use zip::write::SimpleFileOptions;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 enum RedFlag {
@@ -119,8 +119,47 @@ fn message(
     }
 }
 
+fn zip_base64(name: &str, bytes: &[u8]) -> String {
+    let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    writer
+        .start_file(name, SimpleFileOptions::default())
+        .unwrap();
+    writer.write_all(bytes).unwrap();
+    base64::engine::general_purpose::STANDARD.encode(writer.finish().unwrap().into_inner())
+}
+
 fn security_fixtures() -> Vec<SecurityFixture> {
+    let executable_archive = zip_base64("executable.exe", b"test marker");
+    let archive_body = format!(
+        concat!(
+            "--archive-boundary\r\nContent-Type: text/plain\r\n\r\nTwo archives.\r\n",
+            "--archive-boundary\r\nContent-Type: application/zip; name=\"contains-program.zip\"\r\n",
+            "Content-Disposition: attachment; filename=\"contains-program.zip\"\r\n",
+            "Content-Transfer-Encoding: base64\r\n\r\n{executable_archive}\r\n",
+            "--archive-boundary\r\nContent-Type: application/zip; name=\"malformed.zip\"\r\n",
+            "Content-Disposition: attachment; filename=\"malformed.zip\"\r\n",
+            "Content-Transfer-Encoding: base64\r\n\r\nUEsDBGRlbGliZXJhdGVseSB0cnVuY2F0ZWQ=\r\n",
+            "--archive-boundary--"
+        ),
+        executable_archive = executable_archive,
+    );
+    let established = SecurityFixture {
+        id: "established-thread-root",
+        raw: concat!(
+            "From: Frank <frank@example.test>\r\n",
+            "To: Reader <reader@example.test>\r\n",
+            "Date: Mon, 16 Nov 2026 11:59:00 +0000\r\n",
+            "Message-ID: <established-thread@example.test>\r\n",
+            "Subject: Security fixture established-thread-root\r\n",
+            "Content-Type: text/plain; charset=utf-8\r\n\r\n",
+            "This is the known root.\r\n"
+        )
+        .as_bytes()
+        .to_vec(),
+        red_flags: Vec::new(),
+    };
     vec![
+        established,
         message(
             "cold-name-collision",
             "Frank <stranger@unrelated.example>",
@@ -294,16 +333,7 @@ fn security_fixtures() -> Vec<SecurityFixture> {
             "Archive <archive@example.com>",
             "",
             "multipart/mixed; boundary=archive-boundary",
-            concat!(
-                "--archive-boundary\r\nContent-Type: text/plain\r\n\r\nTwo archives.\r\n",
-                "--archive-boundary\r\nContent-Type: application/zip; name=\"contains-program.zip\"\r\n",
-                "Content-Disposition: attachment; filename=\"contains-program.zip\"\r\n",
-                "Content-Transfer-Encoding: base64\r\n\r\nUEsDBGV4ZWN1dGFibGUuZXhl\r\n",
-                "--archive-boundary\r\nContent-Type: application/zip; name=\"password-protected.zip\"\r\n",
-                "Content-Disposition: attachment; filename=\"password-protected.zip\"\r\n",
-                "Content-Transfer-Encoding: base64\r\n\r\nUEsDBGVuY3J5cHRlZA==\r\n",
-                "--archive-boundary--"
-            ),
+            &archive_body,
             &[RedFlag::ExecutableInArchive, RedFlag::UninspectableArchive],
         ),
         message(
@@ -322,6 +352,20 @@ fn security_fixtures() -> Vec<SecurityFixture> {
 
 fn expected_codes(codes: &[&str]) -> BTreeSet<String> {
     codes.iter().map(|code| (*code).to_owned()).collect()
+}
+
+fn assert_has_codes(message: &lizard_mail_backend::Message, expected: &[&str]) {
+    let actual = message
+        .findings
+        .iter()
+        .map(|finding| finding.code.clone())
+        .collect::<BTreeSet<_>>();
+    for expected in expected_codes(expected) {
+        assert!(
+            actual.contains(&expected),
+            "missing {expected:?}; actual findings were {actual:?}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -358,8 +402,6 @@ async fn receives_every_security_warning_fixture_through_dovecot() {
         })
         .await
         .unwrap();
-    install_current_security_heuristics(&backend).await;
-
     let account = backend
         .accounts()
         .add(NewAccount {
@@ -419,15 +461,18 @@ async fn receives_every_security_warning_fixture_through_dovecot() {
     let cold = &messages["cold-name-collision"];
     assert_eq!(cold.summary.inbox_class, InboxClass::Cold);
     assert_eq!(cold.summary.from_name.as_deref(), Some("Frank"));
+    assert_has_codes(cold, &["cold_contact_name_collision"]);
     let warm = &messages["warm-name-change"];
     assert_eq!(warm.summary.inbox_class, InboxClass::Warm);
     assert_eq!(warm.summary.from_name.as_deref(), Some("Chase Bank"));
     assert_eq!(warm.dkim.status, DkimAuthenticationStatus::Failed);
     assert_eq!(warm.dkim.signatures.len(), 1);
+    assert_has_codes(warm, &["warm_sender_name_mismatch", "missing_aligned_dkim"]);
     assert_eq!(
         messages["missing-aligned-dkim"].dkim.status,
         DkimAuthenticationStatus::Unsigned
     );
+    assert_has_codes(&messages["missing-aligned-dkim"], &["missing_aligned_dkim"]);
 
     let navigation = &messages["misleading-navigation"];
     assert_eq!(
@@ -441,18 +486,15 @@ async fn receives_every_security_warning_fixture_through_dovecot() {
     assert!(navigation.links[0]
         .destination
         .contains("accounts.example.com@"));
-    assert_eq!(
-        navigation
-            .findings
-            .iter()
-            .map(|finding| finding.code.clone())
-            .collect::<BTreeSet<_>>(),
-        expected_codes(&[
+    assert_has_codes(
+        navigation,
+        &[
             "cross_domain_account_action",
+            "misleading_link_text",
             "misleading_userinfo",
             "nested_redirect",
             "unusual_port",
-        ])
+        ],
     );
 
     let active = &messages["active-and-ip-navigation"];
@@ -461,17 +503,14 @@ async fn receives_every_security_warning_fixture_through_dovecot() {
         .iter()
         .any(|link| link.host.as_deref() == Some("192.0.2.10")));
     assert!(active.links.iter().any(|link| link.scheme == "javascript"));
-    assert_eq!(
-        active
-            .findings
-            .iter()
-            .map(|finding| finding.code.clone())
-            .collect::<BTreeSet<_>>(),
-        expected_codes(&[
+    assert_has_codes(
+        active,
+        &[
             "cross_domain_account_action",
             "dangerous_scheme",
+            "interactive_credential_form",
             "raw_ip_destination",
-        ])
+        ],
     );
 
     let confusable = &messages["confusable-domains"];
@@ -484,15 +523,25 @@ async fn receives_every_security_warning_fixture_through_dovecot() {
         .links
         .iter()
         .any(|link| link.destination.contains("paypaI.com")));
+    assert_has_codes(
+        confusable,
+        &[
+            "unicode_confusable_domain",
+            "ascii_confusable_domain",
+            "invisible_or_bidi_domain",
+        ],
+    );
 
     let account_action = &messages["cross-domain-account-action"];
-    assert_eq!(
-        account_action
-            .findings
-            .iter()
-            .map(|finding| finding.code.clone())
-            .collect::<BTreeSet<_>>(),
-        expected_codes(&["cross_domain_account_action"])
+    assert_has_codes(account_action, &["cross_domain_account_action"]);
+
+    assert_has_codes(
+        &messages["reply-destination"],
+        &["reply_to_mismatch", "sender_from_mismatch"],
+    );
+    assert_has_codes(
+        &messages["conversation-injection"],
+        &["conversation_injection"],
     );
 
     let attachments = &messages["executable-attachments"];
@@ -501,84 +550,20 @@ async fn receives_every_security_warning_fixture_through_dovecot() {
         .attachments
         .iter()
         .any(|attachment| attachment.name.as_deref() == Some("invoice.pdf")));
-    assert_eq!(
-        attachments
-            .findings
-            .iter()
-            .map(|finding| finding.code.clone())
-            .collect::<BTreeSet<_>>(),
-        expected_codes(&["bidi_filename", "double_extension"])
+    assert_has_codes(
+        attachments,
+        &[
+            "attachment_type_mismatch",
+            "bidi_filename",
+            "double_extension",
+            "executable_attachment",
+        ],
     );
+    assert_has_codes(
+        &messages["archive-attachments"],
+        &["executable_in_archive", "uninspectable_archive"],
+    );
+    assert_has_codes(&messages["remote-tracking"], &["remote_tracking_resource"]);
 
     session.logout().await.unwrap();
-}
-
-async fn install_current_security_heuristics(backend: &Backend) {
-    let heuristics = [
-        (
-            "Cross-domain account action",
-            r#"
-@heuristic
-def detect(message):
-    body = message.body_text.lower()
-    if not (body.contains("password") or body.contains("reset") or body.contains("account") or body.contains("sign in") or body.contains("login") or body.contains("verify")):
-        return
-    for link in message.links:
-        if link.registrable_domain != message.sender.registrable_domain:
-            yield Finding(
-                code="cross_domain_account_action",
-                presentation=LinkInterstitial,
-                severity=Danger,
-                target=link.id,
-                evidence={"destination": link.destination},
-            )
-"#,
-        ),
-        (
-            "Navigation boundaries",
-            r#"
-@heuristic
-def detect(message):
-    for link in message.links:
-        if link.destination.contains("@"):
-            yield Finding(code="misleading_userinfo", presentation=LinkInterstitial, severity=Danger, target=link.id, evidence={"destination": link.destination})
-        if link.host == "192.0.2.10":
-            yield Finding(code="raw_ip_destination", presentation=LinkInterstitial, severity=Warning, target=link.id, evidence={"host": link.host})
-        if link.destination.contains(":8443"):
-            yield Finding(code="unusual_port", presentation=LinkInterstitial, severity=Warning, target=link.id, evidence={"destination": link.destination})
-        if link.scheme == "javascript":
-            yield Finding(code="dangerous_scheme", presentation=LinkInterstitial, severity=Danger, target=link.id, evidence={"scheme": link.scheme})
-        if link.destination.contains("next="):
-            yield Finding(code="nested_redirect", presentation=LinkInterstitial, severity=Warning, target=link.id, evidence={"destination": link.destination})
-"#,
-        ),
-        (
-            "Filename hazards",
-            concat!(
-                r#"
-@heuristic
-def detect(message):
-    for attachment in message.attachments:
-        if attachment.name.ends_with(".pdf.exe"):
-            yield Finding(code="double_extension", presentation=AttachmentInterstitial, severity=Danger, target=attachment.id, evidence={"name": attachment.name})
-        if attachment.name.contains(""#,
-                "\u{202e}",
-                r#""):
-            yield Finding(code="bidi_filename", presentation=AttachmentInterstitial, severity=Danger, target=attachment.id, evidence={"name": attachment.name})
-"#
-            ),
-        ),
-    ];
-    for (name, source) in heuristics {
-        backend
-            .heuristics()
-            .add(NewHeuristic {
-                name: name.into(),
-                source: source.into(),
-                source_kind: HeuristicSourceKind::BuiltIn,
-                enabled: true,
-            })
-            .await
-            .unwrap();
-    }
 }

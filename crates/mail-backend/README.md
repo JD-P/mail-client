@@ -189,7 +189,10 @@ The crate now includes account-owned IMAP receive and SMTP submission engines,
 durable security-partitioned threads, reply/forward and MIME construction,
 structured filter execution, bounded Python-shaped heuristic programs,
 materialized MIME resources, and persisted DKIM evidence. Findings and
-authentication results are returned with message reads. OpenPGP,
-trusted-provider `Authentication-Results` and the broader built-in extractor
-library remain future work. See `../../spec/mail-backend.md` for the authority
-and presentation model.
+authentication results are returned with message reads. A mandatory native
+security-evidence pass covers identity contradictions, DKIM alignment, hostile
+navigation, UTS #39 domain confusables, remote resources, credential forms,
+attachment magic/filenames and bounded ZIP directory metadata. It performs no
+network loads, script execution or archive expansion. OpenPGP and
+trusted-provider `Authentication-Results` remain future work. See
+`../../spec/mail-backend.md` for the authority and presentation model.

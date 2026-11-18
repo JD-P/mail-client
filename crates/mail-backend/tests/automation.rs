@@ -149,7 +149,14 @@ def detect(message):
         message.links[0].registrable_domain.as_deref(),
         Some("example.org")
     );
-    assert_eq!(message.findings.len(), 2);
+    assert_eq!(
+        message
+            .findings
+            .iter()
+            .filter(|finding| finding.heuristic_id == heuristic.id)
+            .count(),
+        2
+    );
     let finding = message
         .findings
         .iter()
@@ -183,7 +190,13 @@ def detect(message):
         .evaluate_message(message_id)
         .await
         .unwrap();
-    assert_eq!(replacement.len(), 2);
+    assert_eq!(
+        replacement
+            .iter()
+            .filter(|finding| finding.heuristic_id == heuristic.id)
+            .count(),
+        2
+    );
     let replacement_id = replacement
         .iter()
         .find(|finding| finding.code == "pdf_attachment")
@@ -215,7 +228,14 @@ def detect(message):
         .unwrap();
     let message = reopened.messages().get(message_id).await.unwrap();
     assert_eq!(message.local_folder_ids, vec![receipts.id]);
-    assert_eq!(message.findings.len(), 2);
+    assert_eq!(
+        message
+            .findings
+            .iter()
+            .filter(|finding| finding.heuristic_id == heuristic.id)
+            .count(),
+        2
+    );
     assert!(message
         .findings
         .iter()
@@ -229,7 +249,9 @@ def detect(message):
             .evaluations(message_id)
             .await
             .unwrap()
-            .len(),
+            .iter()
+            .filter(|evaluation| evaluation.heuristic_id == heuristic.id)
+            .count(),
         1
     );
 }
@@ -258,7 +280,13 @@ def detect(message):
     assert!(error
         .to_string()
         .contains("standalone expressions are forbidden"));
-    assert!(backend.heuristics().list().await.unwrap().is_empty());
+    assert!(backend
+        .heuristics()
+        .list()
+        .await
+        .unwrap()
+        .iter()
+        .all(|heuristic| heuristic.source_kind == HeuristicSourceKind::BuiltIn));
 }
 
 #[tokio::test]

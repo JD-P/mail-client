@@ -312,6 +312,14 @@ structure, not solely from MIME metadata or the filename.
 - Password-protected or otherwise uninspectable archives must say that the
   client could not inspect them; they must not receive a clean verdict.
 
+Automatic inspection itself must not become an expansion oracle. The current
+backend reads bounded ZIP central-directory metadata only: it does not inflate
+entries, decrypt them or recurse into nested archives. Declared sizes and
+compression ratios can therefore identify a likely ZIP bomb without triggering
+it. Malformed, encrypted, nested and over-budget containers are simply tagged
+uninspectable. Opening an entry is a separate explicit operation with fresh
+limits and is unavailable after an incomplete inspection.
+
 ```text
 This attachment is named "invoice.pdf," but it is a program.
 
