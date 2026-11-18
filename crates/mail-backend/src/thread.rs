@@ -1,3 +1,4 @@
+use crate::backend::{COLD_PREDICATE, SPAM_PREDICATE, WARM_PREDICATE};
 use crate::{
     Backend, BackendError, CompositionKind, InboxClass, MessageComposition, MessageId, MessageSort,
     Page, ReplyAudience, Result, Thread, ThreadFilter, ThreadId, ThreadMembership,
@@ -117,11 +118,14 @@ impl Threads {
             parameters.push(Value::Text(folder_id.to_string()));
         }
         if let Some(class) = filter.inbox_class {
-            clauses.push(match class {
-                InboxClass::Warm => "m.user_classification IS NOT 'spam' AND m.from_address IS NOT NULL AND EXISTS (SELECT 1 FROM contact_addresses ca WHERE ca.address = m.from_address COLLATE NOCASE)",
-                InboxClass::Cold => "m.user_classification IS NOT 'spam' AND (m.from_address IS NULL OR NOT EXISTS (SELECT 1 FROM contact_addresses ca WHERE ca.address = m.from_address COLLATE NOCASE))",
-                InboxClass::Spam => "COALESCE(m.user_classification = 'spam', 0)",
-            }.into());
+            clauses.push(
+                match class {
+                    InboxClass::Warm => WARM_PREDICATE,
+                    InboxClass::Cold => COLD_PREDICATE,
+                    InboxClass::Spam => SPAM_PREDICATE,
+                }
+                .into(),
+            );
         }
         let mut sql = format!(
             "SELECT m.thread_id, MAX(m.received_at) AS latest FROM messages m WHERE {} GROUP BY m.thread_id",

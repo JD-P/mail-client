@@ -37,8 +37,15 @@ Current invariants:
 - the default DKIM resolver uses Quad9 DNS-over-TLS with local DNSSEC
   validation; system DNS is an explicit configuration policy;
 - a remote identity is `(folder, UIDVALIDITY, UID)`, never RFC `Message-ID`;
-- contacts are the single source of truth for Warm versus Cold, while explicit
-  Spam wins over contact state;
+- contacts are the single source of truth for Warm versus Cold; explicit user
+  Spam/NotSpam corrections are authoritative, while RFC 6154 `\Junk` mailbox
+  state and registered `$Junk`/`$NotJunk` keywords are preserved as separate,
+  typed provider evidence;
+- a bounded Robinson/Fisher Bayesian classifier is initialized from a bundled,
+  literally authored CC0 corpus of 1,000 messages: 20 categories with 50
+  examples each, evenly divided between spam and legitimate mail; explicit
+  user corrections train it reversibly, while provider verdicts and contact
+  membership never become training labels;
 - every message receives a stable `ThreadId` atomically with ingestion;
   `References`/`In-Reply-To` take precedence, while normalized-subject fallback
   requires an unambiguous recent match from the same sender;

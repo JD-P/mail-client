@@ -2,7 +2,8 @@ use lizard_mail_backend::{
     AccountId, AccountKind, Backend, BackendConfig, ChangeCursor, ContactAddress,
     DkimAuthenticationStatus, DkimSignatureStatus, FolderId, FolderKind, ImapFetchedMessage,
     ImapSecurity, ImapSettings, InboxClass, IngestMessage, MessageFilter, MessageSort, NewAccount,
-    NewContact, NewFolder, RemoteMessageIdentity, SearchRequest, UserClassification,
+    NewContact, NewFolder, ProviderSpamEvidenceSource, ProviderSpamVerdict, RemoteMessageIdentity,
+    SearchRequest, SpamEvidenceVerdict, UserClassification,
 };
 
 fn message(subject: &str, body: &str) -> Vec<u8> {
@@ -286,6 +287,100 @@ async fn complete_local_backend_flow() {
         .unwrap();
     assert_eq!(spam.items.len(), 1);
     assert_eq!(spam.items[0].id, id);
+
+    // Provider observations remain distinct from explicit user corrections.
+    backend.messages().classify(id, None).await.unwrap();
+    backend
+        .sync()
+        .ingest_imap_batch(
+            account.id,
+            folder.id,
+            17,
+            vec![ImapFetchedMessage {
+                uid: 42,
+                mod_sequence: Some(10),
+                flags: vec!["$Junk".into()],
+                internal_date: Some(1_800_000_000),
+                raw: raw.clone(),
+            }],
+        )
+        .await
+        .unwrap();
+    let provider_spam = backend.messages().get(id).await.unwrap();
+    assert_eq!(provider_spam.summary.inbox_class, InboxClass::Spam);
+    assert_eq!(provider_spam.user_classification, None);
+    assert_eq!(
+        provider_spam.provider_spam.verdict,
+        ProviderSpamVerdict::Spam
+    );
+    assert_eq!(provider_spam.provider_spam.evidence.len(), 1);
+    assert_eq!(
+        provider_spam.provider_spam.evidence[0].source,
+        ProviderSpamEvidenceSource::ImapJunkKeyword
+    );
+    assert_eq!(
+        provider_spam.provider_spam.evidence[0].verdict,
+        SpamEvidenceVerdict::Spam
+    );
+    let indexed_provider_spam = backend
+        .search()
+        .search(SearchRequest {
+            query: "is:spam".into(),
+            page_size: 20,
+            cursor: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(indexed_provider_spam.items.len(), 1);
+    assert_eq!(indexed_provider_spam.items[0].id, id);
+
+    backend
+        .messages()
+        .classify(id, Some(UserClassification::NotSpam))
+        .await
+        .unwrap();
+    let corrected = backend.messages().get(id).await.unwrap();
+    assert_eq!(corrected.summary.inbox_class, InboxClass::Cold);
+    assert_eq!(
+        corrected.provider_spam.verdict,
+        ProviderSpamVerdict::Spam,
+        "user correction must not erase the provider observation"
+    );
+
+    backend.messages().classify(id, None).await.unwrap();
+    backend
+        .sync()
+        .ingest_imap_batch(
+            account.id,
+            folder.id,
+            17,
+            vec![ImapFetchedMessage {
+                uid: 42,
+                mod_sequence: Some(11),
+                flags: vec!["$NotJunk".into()],
+                internal_date: Some(1_800_000_000),
+                raw: raw.clone(),
+            }],
+        )
+        .await
+        .unwrap();
+    let provider_ham = backend.messages().get(id).await.unwrap();
+    assert_eq!(provider_ham.summary.inbox_class, InboxClass::Cold);
+    assert_eq!(
+        provider_ham.provider_spam.verdict,
+        ProviderSpamVerdict::NotSpam
+    );
+    assert!(backend
+        .search()
+        .search(SearchRequest {
+            query: "is:spam".into(),
+            page_size: 20,
+            cursor: None,
+        })
+        .await
+        .unwrap()
+        .items
+        .is_empty());
 
     let changes = backend
         .events()

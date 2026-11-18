@@ -11,7 +11,7 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 version INTEGER NOT NULL
             );
             INSERT INTO schema_meta(version)
-                SELECT 10 WHERE NOT EXISTS (SELECT 1 FROM schema_meta);
+                SELECT 12 WHERE NOT EXISTS (SELECT 1 FROM schema_meta);
 
             CREATE TABLE IF NOT EXISTS accounts (
                 id TEXT PRIMARY KEY,
@@ -103,6 +103,66 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 mod_sequence INTEGER,
                 flags_json TEXT NOT NULL,
                 PRIMARY KEY(folder_id, uid_validity, imap_uid)
+            );
+
+            CREATE TABLE IF NOT EXISTS provider_spam_evidence (
+                message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+                account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+                folder_id TEXT NOT NULL,
+                uid_validity INTEGER NOT NULL,
+                imap_uid INTEGER NOT NULL,
+                source TEXT NOT NULL CHECK(source IN (
+                    'imap_junk_mailbox',
+                    'imap_junk_keyword',
+                    'imap_not_junk_keyword'
+                )),
+                verdict TEXT NOT NULL CHECK(verdict IN ('spam', 'not_spam')),
+                observed_at INTEGER NOT NULL,
+                PRIMARY KEY(folder_id, uid_validity, imap_uid, source),
+                FOREIGN KEY(folder_id, uid_validity, imap_uid)
+                    REFERENCES message_instances(folder_id, uid_validity, imap_uid)
+                    ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS spam_model_meta (
+                singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+                seed_corpus_hash TEXT NOT NULL,
+                seed_spam_messages INTEGER NOT NULL,
+                seed_ham_messages INTEGER NOT NULL,
+                user_spam_messages INTEGER NOT NULL,
+                user_ham_messages INTEGER NOT NULL,
+                model_version INTEGER NOT NULL CHECK(model_version > 0),
+                updated_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS spam_token_counts (
+                token TEXT PRIMARY KEY,
+                seed_spam_documents INTEGER NOT NULL CHECK(seed_spam_documents >= 0),
+                seed_ham_documents INTEGER NOT NULL CHECK(seed_ham_documents >= 0),
+                user_spam_documents INTEGER NOT NULL CHECK(user_spam_documents >= 0),
+                user_ham_documents INTEGER NOT NULL CHECK(user_ham_documents >= 0)
+            );
+
+            CREATE TABLE IF NOT EXISTS spam_user_training (
+                message_id TEXT PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+                classification TEXT NOT NULL CHECK(classification IN ('spam', 'not_spam')),
+                tokens_json TEXT NOT NULL,
+                trained_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS local_spam_assessments (
+                message_id TEXT PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+                verdict TEXT NOT NULL CHECK(verdict IN ('spam', 'not_spam', 'uncertain')),
+                score REAL NOT NULL CHECK(score >= 0.0 AND score <= 1.0),
+                model_version INTEGER NOT NULL,
+                evidence_json TEXT NOT NULL,
+                evaluated_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS spam_classification_queue (
+                message_id TEXT PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+                reason TEXT NOT NULL,
+                queued_at INTEGER NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS local_folder_memberships (
@@ -429,6 +489,12 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 ON message_instances(message_id);
             CREATE INDEX IF NOT EXISTS instances_account_folder
                 ON message_instances(account_id, folder_id, message_id);
+            CREATE INDEX IF NOT EXISTS provider_spam_evidence_message
+                ON provider_spam_evidence(message_id, verdict, source);
+            CREATE INDEX IF NOT EXISTS local_spam_assessments_verdict
+                ON local_spam_assessments(verdict, message_id);
+            CREATE INDEX IF NOT EXISTS spam_classification_queue_order
+                ON spam_classification_queue(queued_at, message_id);
             CREATE INDEX IF NOT EXISTS local_memberships_folder
                 ON local_folder_memberships(folder_id, message_id);
             CREATE INDEX IF NOT EXISTS message_links_message
@@ -670,7 +736,67 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
             .await?;
         version = 10;
     }
-    if version != 10 {
+    if version == 10 {
+        // Preserve standardized provider observations which were already
+        // present as IMAP mailbox attributes and per-message keywords.
+        connection
+            .execute_batch(
+                r#"
+                INSERT OR IGNORE INTO provider_spam_evidence (
+                    message_id, account_id, folder_id, uid_validity, imap_uid,
+                    source, verdict, observed_at
+                )
+                SELECT mi.message_id, mi.account_id, mi.folder_id,
+                    mi.uid_validity, mi.imap_uid,
+                    'imap_junk_mailbox', 'spam', unixepoch()
+                FROM message_instances mi
+                JOIN imap_mailbox_state mailbox ON mailbox.folder_id = mi.folder_id
+                JOIN json_each(mailbox.attributes_json) attribute
+                WHERE attribute.value = '\Junk' COLLATE NOCASE;
+
+                INSERT OR IGNORE INTO provider_spam_evidence (
+                    message_id, account_id, folder_id, uid_validity, imap_uid,
+                    source, verdict, observed_at
+                )
+                SELECT mi.message_id, mi.account_id, mi.folder_id,
+                    mi.uid_validity, mi.imap_uid,
+                    'imap_junk_keyword', 'spam', unixepoch()
+                FROM message_instances mi
+                JOIN json_each(mi.flags_json) flag
+                WHERE flag.value = '$Junk' COLLATE NOCASE;
+
+                INSERT OR IGNORE INTO provider_spam_evidence (
+                    message_id, account_id, folder_id, uid_validity, imap_uid,
+                    source, verdict, observed_at
+                )
+                SELECT mi.message_id, mi.account_id, mi.folder_id,
+                    mi.uid_validity, mi.imap_uid,
+                    'imap_not_junk_keyword', 'not_spam', unixepoch()
+                FROM message_instances mi
+                JOIN json_each(mi.flags_json) flag
+                WHERE flag.value = '$NotJunk' COLLATE NOCASE;
+
+                INSERT INTO search_index_queue(message_id, revision)
+                    SELECT DISTINCT message_id, 1 FROM provider_spam_evidence
+                    WHERE true
+                    ON CONFLICT(message_id) DO UPDATE
+                    SET revision = search_index_queue.revision + 1;
+                UPDATE schema_meta SET version = 11;
+                "#,
+            )
+            .await?;
+        version = 11;
+    }
+    if version == 11 {
+        // Version-twelve classifier tables and indexes are created
+        // idempotently by the common schema batch. The bundled seed corpus is
+        // installed by the classifier after structural migration completes.
+        connection
+            .execute("UPDATE schema_meta SET version = 12", ())
+            .await?;
+        version = 12;
+    }
+    if version != 12 {
         return Err(crate::BackendError::InvalidInput(format!(
             "unsupported database schema version {version}"
         )));
@@ -811,7 +937,7 @@ mod tests {
             .await
             .unwrap();
         let row = rows.next().await.unwrap().unwrap();
-        assert_eq!(row.get::<i64>(0).unwrap(), 10);
+        assert_eq!(row.get::<i64>(0).unwrap(), 12);
         assert_eq!(row.get::<String>(1).unwrap(), r#"{"received_at":123}"#);
         drop(rows);
 
@@ -854,7 +980,56 @@ mod tests {
             .unwrap();
         assert_eq!(
             rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap(),
-            10
+            12
+        );
+        drop(rows);
+
+        // Version eleven recovers standardized evidence that was already
+        // represented by the server's mailbox attributes and keywords.
+        connection
+            .execute_batch(
+                r#"
+                INSERT INTO accounts(id, name, kind, created_at)
+                    VALUES ('account-1', 'Migration account', 'imap', 123);
+                INSERT INTO folders(
+                    id, account_id, name, kind, remote_name, created_at
+                ) VALUES (
+                    'folder-1', 'account-1', 'Junk', 'remote', 'Junk', 123
+                );
+                INSERT INTO imap_mailbox_state(folder_id, attributes_json)
+                    VALUES ('folder-1', '["\\Junk"]');
+                INSERT INTO message_instances(
+                    message_id, account_id, folder_id, uid_validity,
+                    imap_uid, flags_json
+                ) VALUES (
+                    'message-1', 'account-1', 'folder-1', 7, 9,
+                    '["$Junk","$NotJunk"]'
+                );
+                DELETE FROM provider_spam_evidence;
+                UPDATE schema_meta SET version = 10;
+                "#,
+            )
+            .await
+            .unwrap();
+        migrate(&connection).await.unwrap();
+        let mut rows = connection
+            .query(
+                "SELECT source, verdict FROM provider_spam_evidence ORDER BY source",
+                (),
+            )
+            .await
+            .unwrap();
+        let mut recovered = Vec::new();
+        while let Some(row) = rows.next().await.unwrap() {
+            recovered.push((row.get::<String>(0).unwrap(), row.get::<String>(1).unwrap()));
+        }
+        assert_eq!(
+            recovered,
+            vec![
+                ("imap_junk_keyword".into(), "spam".into()),
+                ("imap_junk_mailbox".into(), "spam".into()),
+                ("imap_not_junk_keyword".into(), "not_spam".into()),
+            ]
         );
     }
 }

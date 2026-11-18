@@ -674,9 +674,50 @@ index entries without deleting the encrypted original.
 
 Preserve receiving-server spam flags/scores, local classifier results, matching
 rules and user corrections as separate evidence with source and version. The
-derived Spam workflow must be reversible and explainable. A local classifier
-is not part of the first storage/search milestone, but the schema/API must not
-force every provider result and future classifier into one unexplained boolean.
+derived Spam workflow must be reversible and explainable.
+
+Implemented provider evidence uses authenticated account state rather than
+untrusted message headers: RFC 6154 `\Junk` mailbox membership plus registered
+`$Junk` and `$NotJunk` IMAP keywords. Each observation retains its account,
+folder, UIDVALIDITY, UID, source and observation time. Positive and negative
+observations together produce an explicit `conflicting` assessment and do not
+put the message in Spam. A user `Spam` or `NotSpam` correction takes precedence
+without deleting the provider observations. The absence of `$Junk` is not ham
+evidence. Proprietary `X-Spam-*` headers are not interpreted globally; a future
+provider adapter may ingest one only when it can establish that the trusted
+receiving boundary inserted or replaced it.
+
+The local classifier is a bounded Robinson/Fisher Bayesian document-frequency
+model. It combines sender-domain, subject, body unigram/bigram, link-domain,
+attachment-extension and a small fixed set of structural tokens. Tokenization
+is capped per field and per message; scoring uses only the most discriminating
+features and returns a numeric score, model version and the strongest token
+probabilities. Scores at or above 0.90 enter Spam, scores at or below 0.10 are
+local not-spam evidence, and the middle remains explicitly uncertain.
+
+Every new profile installs an original, literally authored synthetic CC0 corpus
+of 1,000 static messages. Its 20 categories contain exactly 50 messages each:
+500 spam examples covering credential and payment phishing, advance-fee fraud,
+cryptocurrency fraud, malicious attachments, parcel scams, support/subscription
+scams, business-email compromise, fake jobs and SEO lead generation; and 500
+legitimate examples covering personal mail, work, billing, real account-security
+notices, shipping/travel, medical/education, marketing, security training,
+freelance payments and open-source communities. These are individual records,
+not runtime-generated templates. Difficult legitimate counterexamples include
+password resets, invoices, PayPal/commission payments, unsubscribe language and
+training mail that quotes phishing vocabulary. Reserved example identities are
+used throughout. The corpus hash and counts are durable model metadata so a
+future corpus update is versioned and reclassifies existing mail.
+
+Only an explicit user Spam/NotSpam action trains the personal model. Repeating
+the same action is idempotent; relabeling first subtracts the old document and
+clearing the correction untrains it. Exact bounded token snapshots make those
+operations reversible even after model or corpus upgrades. Provider evidence,
+contacts, rules and the classifier's own output never feed back as labels. A
+model change queues every message durably and reclassifies it in bounded idle
+batches; the corrected message is rescored synchronously. Header-only messages
+are rescored after hydration, including reversible replacement of a user's old
+header-only training snapshot.
 
 ## Other required backend capabilities
 

@@ -1,4 +1,7 @@
-use crate::backend::{enqueue_search_on, insert_event, refresh_remote_in_transaction};
+use crate::backend::{
+    enqueue_search_on, insert_event, refresh_provider_spam_evidence_in_transaction,
+    refresh_remote_in_transaction,
+};
 use crate::{
     AccountId, Backend, BackendError, FolderId, ImapMutation, ImapMutationConflict,
     ImapMutationConflictId, ImapMutationConflictKind, ImapMutationId, ImapMutationOperation,
@@ -601,6 +604,19 @@ impl ImapMutations {
                 ));
             }
             drop(rows);
+            refresh_provider_spam_evidence_in_transaction(
+                &transaction,
+                mutation.message_id,
+                &RemoteMessageIdentity {
+                    account_id: mutation.account_id,
+                    folder_id: *folder_id,
+                    uid_validity: *uid_validity,
+                    uid: *uid,
+                    mod_sequence: None,
+                    flags: flags.clone(),
+                },
+            )
+            .await?;
             enqueue_search_on(&transaction, mutation.message_id).await?;
         }
         transaction

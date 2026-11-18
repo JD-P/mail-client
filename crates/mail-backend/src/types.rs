@@ -214,6 +214,105 @@ pub enum InboxClass {
     Spam,
 }
 
+/// The provider-side fact from which a spam verdict was obtained.
+///
+/// These are authenticated account-state observations, not RFC 5322 headers
+/// supplied by the message sender. Provider-specific headers can be added
+/// later only through an adapter which can establish their trusted boundary.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderSpamEvidenceSource {
+    /// The message has an instance in an RFC 6154 `\\Junk` mailbox.
+    ImapJunkMailbox,
+    /// The server attached the registered `$Junk` IMAP keyword.
+    ImapJunkKeyword,
+    /// The server attached the registered `$NotJunk` IMAP keyword.
+    ImapNotJunkKeyword,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SpamEvidenceVerdict {
+    Spam,
+    NotSpam,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ProviderSpamEvidence {
+    pub source: ProviderSpamEvidenceSource,
+    pub verdict: SpamEvidenceVerdict,
+    pub account_id: AccountId,
+    pub folder_id: FolderId,
+    pub uid_validity: u32,
+    pub uid: u32,
+    pub observed_at: i64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderSpamVerdict {
+    Unknown,
+    Spam,
+    NotSpam,
+    /// Positive and negative provider observations coexist. This is exposed
+    /// rather than silently inventing precedence between providers/instances.
+    Conflicting,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ProviderSpamAssessment {
+    pub verdict: ProviderSpamVerdict,
+    pub evidence: Vec<ProviderSpamEvidence>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalSpamVerdict {
+    Spam,
+    NotSpam,
+    Uncertain,
+}
+
+/// One of the locally learned features which most influenced a score.
+/// Tokens are deliberately exposed so a client can explain the decision and
+/// diagnose a badly trained model without presenting it as cryptographic fact.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SpamTokenEvidence {
+    pub token: String,
+    /// Learned probability for this token in the range 0.0 (ham) to 1.0
+    /// (spam). The message score is a Fisher combination, not an average.
+    pub probability: f64,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LocalSpamAssessment {
+    pub verdict: LocalSpamVerdict,
+    pub score: f64,
+    pub model_version: u64,
+    pub evidence: Vec<SpamTokenEvidence>,
+    pub evaluated_at: i64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SpamClassifierStatus {
+    pub seed_corpus_hash: String,
+    pub seed_spam_messages: u64,
+    pub seed_ham_messages: u64,
+    pub user_spam_messages: u64,
+    pub user_ham_messages: u64,
+    pub model_version: u64,
+    pub pending_messages: u64,
+    pub updated_at: i64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SpamReclassificationResult {
+    pub processed: usize,
+    pub changed_verdicts: usize,
+    pub remaining: u64,
+    pub model_version: u64,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ContentState {
@@ -405,7 +504,7 @@ pub struct MessageSummary {
     pub content_availability: MessageContentAvailability,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Message {
     #[serde(flatten)]
     pub summary: MessageSummary,
@@ -428,6 +527,13 @@ pub struct Message {
     pub links: Vec<MessageLink>,
     pub instances: Vec<MessageInstance>,
     pub local_folder_ids: Vec<FolderId>,
+    /// The user's explicit correction. This is authoritative but does not
+    /// erase provider evidence, which remains available for explanation.
+    pub user_classification: Option<UserClassification>,
+    pub provider_spam: ProviderSpamAssessment,
+    /// Local Bayesian evidence. `None` means evaluation is durably queued, not
+    /// that the message was judged legitimate.
+    pub local_spam: Option<LocalSpamAssessment>,
     /// DKIM evidence captured from the exact bytes stored for this message.
     pub dkim: DkimAuthentication,
     /// Active, materialized heuristic results. Clients render these through
@@ -482,7 +588,7 @@ pub struct ThreadSummary {
     pub sender_trust: ThreadSenderTrust,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Thread {
     #[serde(flatten)]
     pub summary: ThreadSummary,

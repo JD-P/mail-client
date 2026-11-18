@@ -1,4 +1,7 @@
-use crate::backend::{enqueue_search_on, insert_event, refresh_remote_in_transaction};
+use crate::backend::{
+    enqueue_search_on, insert_event, refresh_junk_mailbox_evidence_in_transaction,
+    refresh_remote_in_transaction,
+};
 use crate::imap::imap_fetch_state;
 use crate::imap_mutation::normalize_mutable_flags;
 use crate::{
@@ -1387,14 +1390,27 @@ impl ImapAccountEngine {
         let transaction = connection.transaction().await?;
         let mut rows = transaction
             .query(
-                "SELECT id, remote_name FROM folders WHERE account_id = ?1 AND kind = 'remote'",
+                "SELECT f.id, f.remote_name, s.attributes_json FROM folders f LEFT JOIN imap_mailbox_state s ON s.folder_id = f.id WHERE f.account_id = ?1 AND f.kind = 'remote'",
                 (account_id.to_string(),),
             )
             .await?;
         let mut existing = HashMap::new();
         while let Some(row) = rows.next().await? {
             if let Some(remote_name) = row.get::<Option<String>>(1)? {
-                existing.insert(remote_name, parse_folder_id(row.get(0)?)?);
+                let attributes = row
+                    .get::<Option<String>>(2)?
+                    .map(|value| serde_json::from_str::<Vec<String>>(&value))
+                    .transpose()?
+                    .unwrap_or_default();
+                existing.insert(
+                    remote_name,
+                    (
+                        parse_folder_id(row.get(0)?)?,
+                        attributes
+                            .iter()
+                            .any(|attribute| attribute.eq_ignore_ascii_case("\\Junk")),
+                    ),
+                );
             }
         }
         drop(rows);
@@ -1406,8 +1422,9 @@ impl ImapAccountEngine {
             .await?;
         let mut events = Vec::new();
         for mailbox in &mut mailboxes {
-            if let Some(id) = existing.get(&mailbox.remote_name) {
+            let old_junk = if let Some((id, old_junk)) = existing.get(&mailbox.remote_name) {
                 mailbox.folder_id = *id;
+                *old_junk
             } else {
                 transaction
                     .execute(
@@ -1435,7 +1452,8 @@ impl ImapAccountEngine {
                     )
                     .await?,
                 );
-            }
+                false
+            };
             transaction
                 .execute(
                     "INSERT INTO imap_mailbox_state(folder_id, delimiter, attributes_json, selectable, remote_present) VALUES (?1, ?2, ?3, ?4, 1) ON CONFLICT(folder_id) DO UPDATE SET delimiter = excluded.delimiter, attributes_json = excluded.attributes_json, selectable = excluded.selectable, remote_present = 1",
@@ -1447,9 +1465,40 @@ impl ImapAccountEngine {
                     ],
                 )
                 .await?;
+            let new_junk = mailbox
+                .attributes
+                .iter()
+                .any(|attribute| attribute.eq_ignore_ascii_case("\\Junk"));
+            if old_junk != new_junk {
+                for message_id in refresh_junk_mailbox_evidence_in_transaction(
+                    &transaction,
+                    mailbox.folder_id,
+                    new_junk,
+                    now,
+                )
+                .await?
+                {
+                    events.push(
+                        insert_event(
+                            &transaction,
+                            now,
+                            "provider_spam_evidence_changed",
+                            message_id.to_string(),
+                            serde_json::json!({
+                                "message_id": message_id,
+                                "folder_id": mailbox.folder_id,
+                                "source": "imap_junk_mailbox",
+                                "present": new_junk,
+                            }),
+                        )
+                        .await?,
+                    );
+                }
+            }
         }
         transaction.commit().await?;
         drop(connection);
+        self.backend.flush_search_projection().await?;
         for event in events {
             let _ = self.backend.inner.events.send(event);
         }

@@ -1,0 +1,1003 @@
+# SPDX-License-Identifier: CC0-1.0
+# Original synthetic email corpus written for Lizard. All identities, organizations, transactions, and events are fictional; reserved example domains are used throughout.
+label	category	from	subject	body
+spam	credential_phishing	security@signin-review.example	Mailbox access expires today	Your mailbox has not completed the security migration. Enter your email password at https://signin-review.example/continue before access is removed tonight.
+spam	credential_phishing	admin@webmail-validate.example	Confirm your webmail credentials	Messages are being held because your credentials are outdated. Sign in through our validation page and provide the requested password immediately.
+spam	credential_phishing	notice@storage-upgrade.example	Cloud storage suspended	Your files will be deleted unless you confirm the account at https://storage-upgrade.example/login and enter your current password within two hours.
+spam	credential_phishing	helpdesk@password-audit.example	Mandatory password audit	The annual audit found an invalid password record. Reply with your username and password so the administrator can preserve your mailbox.
+spam	credential_phishing	alerts@session-restore.example	Unusual login must be cancelled	A foreign login is active. Authenticate at https://session-restore.example/cancel with your email password to terminate the intruder session.
+spam	credential_phishing	migration@office-mail.example	Final migration warning	Your account remains on the retired mail server. Complete the external sign-in form before midnight or lose every archived message.
+spam	credential_phishing	support@quota-release.example	Incoming messages blocked	Your quota is full and six messages are waiting. Verify your identity and password at the quota release portal to receive them.
+spam	credential_phishing	team@document-share.example	Confidential document shared with you	A protected salary document awaits your review. Sign in with your work email and password at the attached external viewer.
+spam	credential_phishing	calendar@meeting-auth.example	Private meeting invitation	You were added to an executive meeting. Authenticate through https://meeting-auth.example/view to reveal the confidential time and agenda.
+spam	credential_phishing	voice@voicemail-access.example	New secure voicemail	A caller left a protected voicemail. Use the web player and enter your mailbox credentials to listen before the recording expires.
+spam	credential_phishing	security@twofactor-reset.example	Two-factor reset requested	A reset is pending for your account. Sign in through the verification link and submit the current one-time code to reject it.
+spam	credential_phishing	scanner@document-auth.example	Scanned contract requires login	The office scanner uploaded a contract for you. Open the document portal and confirm your email password to download the scan.
+spam	credential_phishing	admin@domain-renewal.example	Email domain renewal failed	Your organization has not renewed mail service. Log in at the billing verification page with administrator credentials to prevent shutdown.
+spam	credential_phishing	compliance@policy-signin.example	Policy acknowledgement overdue	Employees who do not authenticate and accept the revised policy today will have their accounts disabled. Use the secure form below.
+spam	credential_phishing	files@secure-preview.example	Encrypted file notification	An encrypted file from your manager is waiting. Enter your company username and password in the preview service to decrypt it.
+spam	credential_phishing	it@remote-mail-fix.example	Mailbox repair required	We detected corrupted account settings. Send your password to the IT repair queue so technicians can restore normal delivery.
+spam	credential_phishing	recovery@identity-confirm.example	Recovery email changed	Someone changed your recovery address. Confirm ownership at https://identity-confirm.example/reverse by supplying your password and security answers.
+spam	credential_phishing	service@account-lock.example	Account lock in progress	Multiple failures triggered a scheduled lock. Complete the credential confirmation link within thirty minutes to keep the account open.
+spam	credential_phishing	portal@shared-spreadsheet.example	Budget spreadsheet shared	A finance spreadsheet mentions your name. Sign in to the external spreadsheet viewer with your office credentials to read the comments.
+spam	credential_phishing	fax@online-fax-auth.example	Fax delivery waiting	An eight-page fax could not be delivered. Authenticate to the fax gateway with your email password before the document is discarded.
+spam	credential_phishing	noreply@employee-benefits-login.example	Benefits statement available	Your private benefits statement requires identity confirmation. Enter workplace credentials on the linked benefits reader to continue.
+spam	credential_phishing	audit@inactive-user.example	Inactive user removal list	Your address appears on the deletion list. Verify the account with your existing password before the automated cleanup begins.
+spam	credential_phishing	message@secure-envelope.example	You received a secure envelope	The sender marked this message confidential. Open the envelope site and authenticate with your complete email credentials.
+spam	credential_phishing	admin@address-book-sync.example	Contact synchronization failed	Your contacts cannot sync until you confirm the mailbox password. Use the synchronization form and retry immediately.
+spam	credential_phishing	reports@payroll-document.example	Payroll report awaiting review	A payroll correction lists your employee address. Log in through the report link with your company password to view the amount.
+spam	credential_phishing	verification@account-health.example	Account health score critical	Your account failed three security checks. Improve the score by confirming username, password, and recovery phone on our page.
+spam	credential_phishing	notifications@photo-mention.example	Someone tagged you in a private photo	The image is hidden until you sign in. Enter your social account password at the photo review page before removal.
+spam	credential_phishing	share@contract-signature.example	Signature requested on agreement	A supplier requests your signature. Access the document through the external sign-in form using your corporate mailbox password.
+spam	credential_phishing	system@message-release.example	Release quarantined mail	Three urgent messages were quarantined. Confirm your password and click release all before the quarantine is emptied.
+spam	credential_phishing	administrator@new-login-page.example	Use the new employee login	The old portal closes this afternoon. Test your credentials on the replacement sign-in page to ensure uninterrupted access.
+spam	credential_phishing	security@device-enrollment.example	Enroll your device now	Unregistered devices lose mail access tonight. Enter your email password and verification code to enroll this computer remotely.
+spam	credential_phishing	cloud@file-expiration.example	Shared files expire in one hour	Several confidential files will expire. Sign in at the cloud preview link with your work credentials to retain copies.
+spam	credential_phishing	workflow@approval-center.example	Approval task reassigned	A payment approval was reassigned to you. Authenticate at the workflow page with your mailbox password to accept the task.
+spam	credential_phishing	webmaster@certificate-warning.example	Mail certificate validation needed	The mail certificate cannot be renewed until every user verifies credentials. Submit your current password through the linked certificate form.
+spam	credential_phishing	assistant@executive-document.example	Executive memo for your eyes only	Your director shared a restricted memo. The viewer asks for your company email password before showing the contents.
+spam	credential_phishing	archive@restore-messages.example	Archived messages scheduled for deletion	Restore old messages by logging into the archive recovery page with the same password used for your mailbox.
+spam	credential_phishing	support@browser-session.example	Browser session expired	Your authenticated session has expired while receiving mail. Re-enter username and password at https://browser-session.example/resume.
+spam	credential_phishing	forms@annual-review.example	Annual review form incomplete	Human resources cannot process your review until you sign into the external form using your work email credentials.
+spam	credential_phishing	admin@mobile-mail-enroll.example	Mobile mail enrollment cancelled	Keep mobile access by confirming the account password and current authentication code on the enrollment website.
+spam	credential_phishing	security@forwarding-rule.example	Suspicious forwarding rule found	An unknown rule copies your mail. Verify ownership with your password at the security console to remove the rule.
+spam	credential_phishing	service@encrypted-message.example	Encrypted message from accounting	Accounting sent an encrypted statement. Provide your office login at the secure reader to unlock the message.
+spam	credential_phishing	updates@collaboration-login.example	Collaboration account requires update	Your team account uses an obsolete profile. Sign in through the update button and confirm all credentials today.
+spam	credential_phishing	support@delivery-auth.example	Delivery authentication error	The server rejected incoming mail because authentication expired. Validate the mailbox password to resume delivery.
+spam	credential_phishing	admin@employee-directory.example	Directory profile will be hidden	Your employee profile is unverified. Log in to the external directory with workplace credentials before it disappears.
+spam	credential_phishing	review@shared-notes.example	Private notes require confirmation	Meeting notes were shared under restricted access. Confirm your email address and password in the linked notes application.
+spam	credential_phishing	notice@backup-mailbox.example	Mailbox backup failed	The nightly backup could not decrypt your account. Enter the current password in our backup repair form to protect old mail.
+spam	credential_phishing	security@license-login.example	Productivity license deactivated	Your office license no longer matches the mailbox. Sign in with work credentials through the activation page before editing is blocked.
+spam	credential_phishing	help@authentication-test.example	Complete the authentication test	IT requires all employees to test their password on the new gateway. Accounts that skip the test will be disabled.
+spam	credential_phishing	portal@message-center.example	Important message cannot display	Your browser cannot display this protected notice. Open the message center and enter the requested mailbox login details.
+spam	credential_phishing	service@identity-refresh.example	Refresh identity information	Security records expire today. Confirm your username, password, birth date, and recovery answers on the identity refresh page.
+spam	bank_payment_phishing	alerts@card-review.example	Card payment placed on hold	A large card payment is waiting. Enter card number, PIN, and one-time code at https://card-review.example/release.
+spam	bank_payment_phishing	fraud@banking-confirm.example	Confirm suspicious transfer	We blocked a transfer to a new recipient. Sign in through our review page and provide the SMS security code to cancel it.
+spam	bank_payment_phishing	security@credit-lock.example	Online banking locked	Your banking profile is locked after unusual activity. Restore access by submitting account credentials and card details immediately.
+spam	bank_payment_phishing	notice@payment-reversal.example	Payment reversal requires action	A merchant refund cannot be credited until you verify your bank account and routing information on the linked form.
+spam	bank_payment_phishing	refund@tax-credit.example	Tax refund approved	A refund of 1,284 is ready. Provide banking details and pay the small processing charge to receive it today.
+spam	bank_payment_phishing	billing@wallet-limits.example	Digital wallet temporarily limited	Your wallet cannot send funds. Confirm the linked card, password, and verification code to remove the limitation.
+spam	bank_payment_phishing	compliance@account-freeze.example	Account freeze scheduled	Compliance needs identity documents and online banking credentials before tomorrow or your funds will remain frozen.
+spam	bank_payment_phishing	payments@invoice-settlement.example	Invoice settlement failed	The bank rejected your invoice payment. Use the attached portal to re-enter account details and authorize another attempt.
+spam	bank_payment_phishing	secure@card-expiration.example	Replacement card waiting	Your replacement card cannot ship until you confirm the full card number, PIN, address, and security password.
+spam	bank_payment_phishing	transfer@wire-verification.example	Wire transfer verification	A wire transfer for 9,600 needs your approval. Submit the one-time banking code through the verification link within twenty minutes.
+spam	bank_payment_phishing	service@direct-deposit-update.example	Direct deposit information expired	Payroll deposits may stop. Re-enter bank login, account number, and routing number at the update page.
+spam	bank_payment_phishing	alerts@cashapp-review.example	Incoming payment needs confirmation	Someone sent you 750. Confirm your wallet password and card details before the payment returns to the sender.
+spam	bank_payment_phishing	security@mobile-bank-reset.example	Mobile banking reset requested	Reject the reset by signing into the linked security center and entering your current password and authentication code.
+spam	bank_payment_phishing	claims@chargeback-center.example	Chargeback case opened	A customer disputed your transaction. Verify settlement information and bank credentials to prevent automatic withdrawal.
+spam	bank_payment_phishing	rewards@card-bonus.example	Card reward expires tonight	You have 82,000 reward points. Enter your card details and online banking password to redeem the cash value.
+spam	bank_payment_phishing	verification@merchant-payout.example	Merchant payout delayed	Your business payout is delayed by identity checks. Upload documents and confirm the bank password on our payout portal.
+spam	bank_payment_phishing	accounting@new-payment-route.example	Updated remittance account	Future invoices must use our new account. Download the instructions and confirm a test transfer to avoid late fees.
+spam	bank_payment_phishing	executive@urgent-wire.example	Urgent confidential wire	I need a confidential transfer completed before the meeting ends. Use the new banking coordinates below and do not call me.
+spam	bank_payment_phishing	bank@security-token.example	Security token out of sync	Synchronize the token by entering two consecutive codes along with your online banking username and password.
+spam	bank_payment_phishing	service@atm-dispute.example	ATM withdrawal dispute	A cash withdrawal is under review. Confirm your PIN and card number through the dispute form to receive provisional credit.
+spam	bank_payment_phishing	payments@subscription-refund.example	Subscription refund pending	Your 399 refund requires a destination account. Submit online banking credentials so the refund team can deposit it.
+spam	bank_payment_phishing	fraud@beneficiary-check.example	New beneficiary detected	An unknown beneficiary was added. Remove it by authenticating at the linked bank mirror with your full credentials.
+spam	bank_payment_phishing	alerts@contactless-limit.example	Contactless spending disabled	Restore contactless purchases by confirming card number, expiration, security code, PIN, and mobile verification code.
+spam	bank_payment_phishing	service@statement-access.example	Secure bank statement ready	Your encrypted annual statement can only be opened after you sign into the external reader with banking credentials.
+spam	bank_payment_phishing	notice@loan-payment.example	Loan payment overdue	Avoid collection by paying through our temporary portal and confirming your checking account password for instant posting.
+spam	bank_payment_phishing	security@bank-profile.example	Profile address changed	Your mailing address was changed. Verify identity using card details and the latest one-time code to reverse the update.
+spam	bank_payment_phishing	payments@escrow-release.example	Escrow funds available	Release your escrow balance by paying the clearance tax and providing an account where the funds can be deposited.
+spam	bank_payment_phishing	claims@insurance-payout.example	Insurance payout approved	Your claim payment is ready but bank verification failed. Re-enter account credentials through the claims payment link.
+spam	bank_payment_phishing	billing@duplicate-charge.example	Duplicate charge refund	We found a duplicate charge. Confirm your card number and online banking login to receive an immediate reversal.
+spam	bank_payment_phishing	security@savings-bonus.example	Savings bonus qualification	Verify your account and deposit a processing fee today to unlock the guaranteed high-interest bonus.
+spam	bank_payment_phishing	transfer@international-review.example	International transfer held	Customs compliance is holding an incoming transfer. Pay the release fee and provide bank account details before it is returned.
+spam	bank_payment_phishing	service@bank-app-update.example	Banking app security update	Install the attached banking update and enter your credentials when prompted to preserve mobile account access.
+spam	bank_payment_phishing	alerts@payment-device.example	New payment device enrolled	A new device can spend from your wallet. Sign into our cancellation page and enter the received security code.
+spam	bank_payment_phishing	verification@credit-score.example	Credit score changed dramatically	View the urgent score report by confirming social security number, card information, and a refundable identity charge.
+spam	bank_payment_phishing	banking@account-inheritance.example	Dormant account matched to your name	A dormant account may belong to your family. Submit bank details and a legal search fee to claim it.
+spam	bank_payment_phishing	payments@vendor-change.example	Vendor banking details changed	Our old remittance account closed unexpectedly. Send all pending invoice payments to the new account listed below.
+spam	bank_payment_phishing	security@debit-pin.example	Debit PIN reset pending	Cancel the unauthorized reset by entering your existing PIN, card number, and mobile banking password online.
+spam	bank_payment_phishing	service@cash-transfer.example	Cash transfer waiting for pickup	A transfer in your name expires today. Pay the pickup certification fee and provide a receiving bank account.
+spam	bank_payment_phishing	fraud@check-deposit.example	Mobile check deposit rejected	The check image was rejected. Authenticate to online banking through the linked resubmission form and upload identity documents.
+spam	bank_payment_phishing	rewards@refund-voucher.example	Government refund voucher	Redeem your government refund voucher by submitting bank login information and paying a verification stamp fee.
+spam	bank_payment_phishing	billing@autopay-cancel.example	Automatic payment cancellation failed	To stop tomorrow's debit, confirm account number and online password in the emergency cancellation portal.
+spam	bank_payment_phishing	alerts@investment-bank.example	Brokerage withdrawal paused	Your withdrawal is paused for enhanced verification. Supply brokerage password, bank login, and current authentication code.
+spam	bank_payment_phishing	service@payment-limit.example	Daily payment limit exceeded	Raise the limit by confirming identity and re-entering every card detail on the linked secure review page.
+spam	bank_payment_phishing	finance@settlement-award.example	Settlement award ready	A class settlement owes you money. Enter banking credentials and pay a filing charge before the claim deadline.
+spam	bank_payment_phishing	security@card-token.example	Card token compromised	Protect your balance by validating card number, PIN, password, and the code just sent to your phone.
+spam	bank_payment_phishing	payments@rent-refund.example	Rent overpayment refund	Your landlord reported an overpayment. Confirm bank login details through the refund page to receive the excess amount.
+spam	bank_payment_phishing	bank@identity-call.example	Missed fraud department call	We could not reach you about suspicious activity. Open the linked form and provide full banking credentials immediately.
+spam	bank_payment_phishing	service@deposit-insurance.example	Deposit insurance renewal	Your account loses insurance unless you verify the balance, bank password, and payment card before the renewal cutoff.
+spam	bank_payment_phishing	alerts@instant-credit.example	Instant credit approved	Your preapproved credit is ready. Pay the activation fee and enter bank information so funds can be deposited.
+spam	bank_payment_phishing	payments@security-hold.example	Security hold on all payments	Remove the hold by signing into the alternate bank portal and confirming the one-time code before it expires.
+spam	advance_fee_lottery	awards@global-lottery.example	Your lottery number won	A dormant ticket registered to your email won 2.4 million dollars. Send the processing fee today to release the prize.
+spam	advance_fee_lottery	agent@estate-release.example	Unclaimed estate beneficiary	You share a surname with my late client and can claim his estate if you pay the legal transfer charge in advance.
+spam	advance_fee_lottery	desk@international-prize.example	Final notice for cash award	Your address was selected for an international cash award. Reply with identification and a courier fee to receive the package.
+spam	advance_fee_lottery	barrister@inheritance-office.example	Confidential inheritance proposal	I need a trustworthy partner to receive an unclaimed inheritance. You keep thirty percent after paying document certification costs.
+spam	advance_fee_lottery	coordinator@charity-grant.example	Private foundation grant approved	Our foundation selected you for a large personal grant. Purchase the registration voucher before funds can be wired.
+spam	advance_fee_lottery	official@treasury-release.example	Compensation fund waiting	The treasury approved compensation for scam victims. Pay the anti-fraud clearance fee so the money can leave our account.
+spam	advance_fee_lottery	courier@diplomatic-case.example	Diplomatic parcel in your name	A sealed case containing cash is held at the airport. Send the customs handling payment and your address for delivery.
+spam	advance_fee_lottery	claims@raffle-center.example	Raffle claim expires Friday	Your email won our annual raffle despite no ticket purchase. A small claim charge is required before Friday.
+spam	advance_fee_lottery	secretary@family-trust.example	Family trust seeks next of kin	Records indicate you may be next of kin to a forgotten trust. Wire the search fee so we can confirm your entitlement.
+spam	advance_fee_lottery	manager@overseas-bank.example	Dormant account partnership	Help transfer funds from an inactive corporate account and receive a generous share. First cover the account activation tax.
+spam	advance_fee_lottery	mission@humanitarian-award.example	Humanitarian award nomination	A committee nominated you for a humanitarian award worth cash. Send passport details and the ceremony administration fee.
+spam	advance_fee_lottery	winner@mobile-draw.example	Phone number selected in draw	Your mobile number was randomly selected for a prize. Buy a prepaid card to validate the winning line.
+spam	advance_fee_lottery	director@development-fund.example	Development fund disbursement	An unused development allocation can be released to you as a beneficiary after you pay the compliance stamp fee.
+spam	advance_fee_lottery	attorney@probate-chambers.example	Probate matter requires response	A deceased expatriate left no heirs and your name is similar. Retain our office with an upfront filing payment to claim it.
+spam	advance_fee_lottery	payout@promotion-board.example	Promotional payout confirmation	Your address appeared in a promotional database and won. Confirm bank details and remit the insurance charge.
+spam	advance_fee_lottery	captain@peacekeeping-funds.example	Safe investment partnership	I am a deployed officer holding recovered funds. Pay for diplomatic paperwork and help me move the money discreetly.
+spam	advance_fee_lottery	administrator@scholarship-award.example	Lifetime scholarship cash option	You received a scholarship you never applied for. Choose the cash option by sending the enrollment processing fee.
+spam	advance_fee_lottery	broker@unclaimed-bonds.example	Unclaimed bonds found	Bonds belonging to a namesake are about to expire. Pay the ownership search expense and I will arrange transfer.
+spam	advance_fee_lottery	committee@peace-prize.example	Peace prize selection result	The selection committee awarded you a major prize. A mandatory diplomatic delivery fee must arrive before announcement.
+spam	advance_fee_lottery	representative@recovery-program.example	Recovered funds available	Investigators recovered money lost in online fraud and assigned it to you. Send a release deposit to prove the claim is genuine.
+spam	advance_fee_lottery	cashier@airport-vault.example	Cash consignment held at airport	A consignment tagged with your email is in our vault. Pay storage penalties immediately to prevent confiscation.
+spam	advance_fee_lottery	registrar@world-donation.example	Anonymous donor selected you	An anonymous millionaire wants to donate to you. Purchase the beneficiary certificate required for international settlement.
+spam	advance_fee_lottery	administrator@pension-surplus.example	Pension surplus allocation	A government pension surplus has been allocated to citizens by email draw. Submit a tax prepayment to join the payout.
+spam	advance_fee_lottery	protocol@royal-foundation.example	Royal foundation gift	The royal foundation approved a personal gift in your name. Settle the protocol charge so an agent can deliver it.
+spam	advance_fee_lottery	claims@casino-jackpot.example	Online jackpot claim	A casino account associated with your address won a jackpot. Deposit the withdrawal authorization fee to collect it.
+spam	advance_fee_lottery	liaison@oil-contract.example	Oil contract commission	Your assistance is requested to receive a contract overpayment. Pay the solicitor fee and retain part of the transfer.
+spam	advance_fee_lottery	rector@education-endowment.example	Education endowment beneficiary	A retired professor left an endowment to a random student. Send the notary charge and identity scan to qualify.
+spam	advance_fee_lottery	trustee@orphan-fund.example	Help transfer orphan fund	I need your account to safeguard an orphan's inheritance. Cover the international transfer certificate and share the proceeds.
+spam	advance_fee_lottery	consul@embassy-compensation.example	Embassy compensation approval	The embassy approved compensation for delayed parcels. Remit the diplomatic seal fee before the file closes.
+spam	advance_fee_lottery	finance@celebrity-giveaway.example	Celebrity giveaway winner	A celebrity charity chose your social profile for a cash gift. Send gift cards to pay the prize agent.
+spam	advance_fee_lottery	clerk@supreme-settlement.example	Court settlement notice	A court settlement includes your email among eligible recipients. Pay the docket fee to unlock your portion.
+spam	advance_fee_lottery	chair@pandemic-relief.example	Unused relief payment	You qualify for an unused relief payment based on a public email list. Provide banking details and an activation payment.
+spam	advance_fee_lottery	paymaster@contract-refund.example	Contract refund authorization	A refund from a foreign contract is ready for your account. The paymaster requires an advance laundering clearance fee.
+spam	advance_fee_lottery	delegate@conference-award.example	Conference attendance award	Although you did not attend, your email won the conference attendance award. Pay badge registration to receive the cash alternative.
+spam	advance_fee_lottery	administrator@veterans-grant.example	Veterans grant beneficiary	A private veterans group selected you as beneficiary. Purchase a money order for the grant processing office.
+spam	advance_fee_lottery	dispatch@armored-delivery.example	Armored delivery scheduled	An armored courier has a cash trunk for you but cannot depart until its refundable security charge is paid.
+spam	advance_fee_lottery	minister@public-works-refund.example	Public works refund list	Your email appears on a refund list for a project you never joined. Wire the ministry documentation cost.
+spam	advance_fee_lottery	accounts@tax-rebate-board.example	Special tax rebate awarded	A rebate board approved a large rebate without a return. Pay a percentage as verification before disbursement.
+spam	advance_fee_lottery	agent@diamond-consignment.example	Diamond consignment partnership	Receive a parcel of diamonds on my behalf and keep several stones. First pay the freight and inspection fees.
+spam	advance_fee_lottery	secretariat@global-welfare.example	Global welfare assistance	Our welfare secretariat is giving selected email users a cash allowance. Buy the claimant code from the listed agent.
+spam	advance_fee_lottery	administrator@housing-lottery.example	New home lottery winner	You won a home in a draw you did not enter. Send the deed preparation fee to reserve the property.
+spam	advance_fee_lottery	director@museum-patron.example	Museum patron bequest	A museum patron left funds for a random art lover. Pay the curator's verification costs to access the bequest.
+spam	advance_fee_lottery	coordinator@small-business-grant.example	Business grant preapproval	Your nonexistent application was preapproved for a business grant. Transfer the licensing fee to finalize it.
+spam	advance_fee_lottery	settlements@airline-compensation.example	Airline compensation windfall	A class settlement selected your address even though no flight was recorded. Pay the claims agent to release funds.
+spam	advance_fee_lottery	chaplain@mission-bequest.example	Mission bequest request	A late parishioner wanted a stranger to receive her savings. Send the church records fee and your bank number.
+spam	advance_fee_lottery	organizer@sports-sweepstakes.example	Sports sweepstakes grand prize	Your email guessed every score without entering. Pay event insurance before the grand prize can ship.
+spam	advance_fee_lottery	executor@unknown-relative.example	A relative left you millions	We found a wealthy relative with no family record. An immediate genealogy payment will secure your inheritance.
+spam	advance_fee_lottery	claims@consumer-reward.example	Consumer reward selection	Your address won a reward for purchases we cannot identify. Send a prepaid voucher as claimant verification.
+spam	advance_fee_lottery	administrator@climate-grant.example	Climate grant allocated	An international climate fund allocated you a personal grant. Pay carbon registration costs before the allocation is revoked.
+spam	advance_fee_lottery	liaison@surplus-cargo.example	Surplus cargo proceeds	Help sell abandoned cargo and receive half the proceeds. Cover warehouse release charges before viewing the goods.
+spam	crypto_investment	advisor@coin-growth.example	Guaranteed crypto returns	Deposit cryptocurrency today and our trading bot guarantees ten percent profit every week with no risk.
+spam	crypto_investment	team@wallet-airdrop.example	Wallet airdrop waiting	Connect your wallet and enter its recovery phrase to claim an exclusive token airdrop before it expires.
+spam	crypto_investment	broker@digital-wealth.example	Turn 500 into 5000	Our private crypto desk multiplies deposits in seventy-two hours. Send coins to the attached wallet to reserve a slot.
+spam	crypto_investment	support@chain-restore.example	Wallet requires restoration	Your wallet is out of sync. Reply with all twelve recovery words so technicians can restore access.
+spam	crypto_investment	manager@mining-contract.example	Cloud mining income guaranteed	Purchase a mining contract and receive fixed daily payouts regardless of energy prices or network conditions.
+spam	crypto_investment	alerts@token-migration.example	Urgent token migration	Your tokens become worthless tonight unless you approve the migration contract at our unfamiliar site.
+spam	crypto_investment	founder@private-presale.example	Private token presale invitation	A secret presale promises one hundred times growth. Transfer stablecoins now because verification is intentionally waived.
+spam	crypto_investment	recovery@lost-coins.example	We recovered your stolen crypto	Investigators found your lost assets. Pay a recovery deposit in bitcoin before we reveal the transaction.
+spam	crypto_investment	coach@passive-chain.example	Earn passive income from home	Join a crypto income circle where new member deposits fund guaranteed rewards for earlier members.
+spam	crypto_investment	operator@staking-bonus.example	Triple staking bonus	Move your coins to our custodial address for a limited triple-yield staking promotion with instant withdrawal.
+spam	crypto_investment	compliance@exchange-unlock.example	Exchange account frozen	Send cryptocurrency for a refundable compliance test or your exchange balance will be seized.
+spam	crypto_investment	analyst@market-signal.example	Insider coin signal	A source inside a major exchange revealed tomorrow's listing. Buy through our referral address before the public announcement.
+spam	crypto_investment	admin@nft-reward.example	Rare NFT reward	Connect your wallet and sign an unlimited approval to receive a rare NFT reward at no cost.
+spam	crypto_investment	investor@wealth-mentor.example	My students became millionaires	Copy my secret crypto trades after paying the mentorship fee to a personal wallet.
+spam	crypto_investment	security@ledger-check.example	Hardware wallet security check	Confirm your device is genuine by typing its seed phrase into the verification form.
+spam	crypto_investment	vault@unclaimed-crypto.example	Unclaimed digital assets	A blockchain vault lists your email as owner of valuable coins. Pay network gas to a separate address to unlock them.
+spam	crypto_investment	trader@arbitrage-engine.example	Risk-free arbitrage account	Our exchange mismatch produces risk-free daily gains. Deposit at least one thousand dollars to activate automation.
+spam	crypto_investment	moderator@coin-community.example	Exclusive investment group	A famous entrepreneur runs this private chat group and personally guarantees every member's crypto profits.
+spam	crypto_investment	billing@wallet-tax.example	Crypto tax must be prepaid	Your wallet owes an international digital asset tax. Send the amount in cryptocurrency to prevent arrest.
+spam	crypto_investment	claims@fork-compensation.example	Blockchain fork compensation	You qualify for fork compensation. Import your private key into our portal to calculate the payment.
+spam	crypto_investment	validator@proof-reward.example	Validator reward available	Delegate all assets to an unknown validator for a guaranteed reward and a surprise matching bonus.
+spam	crypto_investment	agent@bitcoin-estate.example	Bitcoin inheritance proposal	A deceased investor left an encrypted wallet. Pay my decoding fee and we will split the recovered fortune.
+spam	crypto_investment	promotion@exchange-giveaway.example	Exchange doubles every deposit	Send any amount to the event wallet and the exchange will immediately return twice as much.
+spam	crypto_investment	service@wallet-upgrade.example	Mandatory wallet upgrade	Install the attached wallet update and enter your recovery phrase when prompted to retain your balance.
+spam	crypto_investment	mentor@retirement-coins.example	Protect retirement with crypto	Move your entire retirement balance into our new token before banks make withdrawals impossible.
+spam	crypto_investment	inspector@blockchain-audit.example	Wallet audit found violations	A blockchain audit found illegal transfers from your address. Pay a bitcoin penalty to close the investigation.
+spam	crypto_investment	partner@liquidity-farm.example	High-yield liquidity farm	Our liquidity farm pays two percent every day and has never experienced loss. Early deposits receive extra tokens.
+spam	crypto_investment	concierge@vip-exchange.example	VIP exchange membership	Send proof of a large deposit to a private wallet and receive permanent fee-free VIP trading.
+spam	crypto_investment	desk@stablecoin-refund.example	Stablecoin refund pending	A failed stablecoin transfer produced a refund. Approve our contract with unlimited spending permission to receive it.
+spam	crypto_investment	charity@coin-donation.example	Crypto donation matched tenfold	Donate cryptocurrency to this new address and an anonymous sponsor will return ten times the amount.
+spam	crypto_investment	engineer@quantum-wallet.example	Quantum threat to your wallet	Quantum computers will drain your wallet today unless you move funds into our protected custody address.
+spam	crypto_investment	advisor@celebrity-token.example	Celebrity token before launch	Buy an unofficial celebrity token now at the private sale address for an allegedly guaranteed launch-day gain.
+spam	crypto_investment	operator@recovery-miner.example	Mining fee releases payment	A large transfer to your wallet is waiting for miners. Send a separate fee directly to our operator to release it.
+spam	crypto_investment	team@dao-vote.example	DAO vote reward	Sign a blank wallet message and receive tokens for participating in a governance vote you never joined.
+spam	crypto_investment	broker@forex-chain.example	Automated forex and crypto profit	One bot trades both markets and promises steady profit without losing days. Fund it using cryptocurrency only.
+spam	crypto_investment	director@green-token.example	Government-backed green token	A supposedly government-backed environmental token is available only through a personal wallet for the next hour.
+spam	crypto_investment	notice@wallet-sanctions.example	Wallet flagged by sanctions office	Your anonymous wallet was flagged. Pay the verification charge in privacy coins to avoid permanent blocking.
+spam	crypto_investment	sales@mining-device.example	Mining device earns while unplugged	Our pocket mining device produces bitcoin even without electricity. Prepay in crypto for confidential shipping.
+spam	crypto_investment	rewards@loyalty-chain.example	Convert points into valuable tokens	Enter your exchange password and recovery phrase to convert imaginary loyalty points into cryptocurrency.
+spam	crypto_investment	custodian@escrow-chain.example	Crypto escrow release	An escrow account in your name contains valuable coins. Deposit collateral before the custodian will release it.
+spam	crypto_investment	academy@trading-certificate.example	Certified crypto trader course	Pay tuition in bitcoin and receive secret signals that guarantee passing trades and immediate wealth.
+spam	crypto_investment	whale@private-pump.example	Private pump starts tonight	Join a coordinated token pump before outsiders buy. Send the organizer a membership payment for the ticker.
+spam	crypto_investment	issuer@replacement-token.example	Old token being replaced	Transfer old tokens to our address and we promise replacement units later without any on-chain documentation.
+spam	crypto_investment	consultant@offshore-wallet.example	Hide assets in an offshore wallet	Our unlicensed service promises anonymous returns and asks you to transfer funds before any paperwork.
+spam	crypto_investment	admin@metaverse-land.example	Metaverse land deed ready	A virtual land deed was reserved for you. Pay the minting fee through an unknown contract by midnight.
+spam	crypto_investment	settlement@coin-lawsuit.example	Crypto lawsuit settlement	A class action awarded you tokens despite no claim. Share your private key so the settlement can be deposited.
+spam	crypto_investment	operator@node-rental.example	Rent a validator node	Prepay a year of node rental in cryptocurrency and receive an impossible fixed return starting tomorrow.
+spam	crypto_investment	alerts@price-protection.example	Protect against tonight's crash	An insider predicts a market crash. Transfer coins to our safe address until prices recover.
+spam	crypto_investment	payments@block-reversal.example	Reverse blockchain payment	We can reverse an irreversible transaction if you first send an equal test payment to our technician.
+spam	crypto_investment	guide@wallet-rescue.example	One step wallet rescue	Paste your seed words into our rescue page and the system will instantly secure funds from hackers.
+spam	malicious_attachment	billing@overdue-ledger.example	Overdue invoice attached	Review the attached invoice.exe and enable it to see the balance before late fees are added.
+spam	malicious_attachment	delivery@parcel-document.example	Shipping label requires review	Open shipping_label.scr from the attachment to confirm where your delayed parcel should be delivered.
+spam	malicious_attachment	hr@benefits-update.example	Employee benefits update	The attached benefits.docm contains the new plan. Enable macros when prompted so the enrollment form appears.
+spam	malicious_attachment	accounts@purchase-order.example	New purchase order	A customer sent purchase_order.iso with the quantities. Mount the image and run the included viewer.
+spam	malicious_attachment	scanner@office-device.example	Scanned document received	Your office scanner uploaded scan_1842.html. Open it and sign in to retrieve the confidential pages.
+spam	malicious_attachment	payroll@salary-review.example	Salary adjustment sheet	Open salary_adjustment.xlsm and allow active content to view your confidential raise.
+spam	malicious_attachment	legal@court-notice.example	Court summons attached	The urgent summons is packaged in court_notice.zip. Extract and run the document reader before tomorrow.
+spam	malicious_attachment	fax@cloud-fax.example	You received a secure fax	The fax is attached as fax_message.img. Install the bundled codec to display it.
+spam	malicious_attachment	service@voice-mailbox.example	Missed voice message	Listen to voicemail.mp3.exe from the attachment; the second extension is required by our audio service.
+spam	malicious_attachment	recruiter@candidate-review.example	Candidate resume enclosed	This applicant's resume is resume.pdf.lnk. Double-click the shortcut while connected to the company network.
+spam	malicious_attachment	tax@refund-statement.example	Tax refund statement	Unzip refund_statement.zip with the password in this email and launch the enclosed application to calculate your refund.
+spam	malicious_attachment	admin@security-patch.example	Critical security patch	Install urgent_patch.msi from this message immediately because normal software updates are unavailable.
+spam	malicious_attachment	supplier@revised-quote.example	Revised quotation	The quote is in revised_quote.docm. Disable protected view and enable editing to see our discounted pricing.
+spam	malicious_attachment	photos@shared-album.example	Private photos shared	The private album is attached as vacation_photos.rar. Run album_viewer.exe after extraction.
+spam	malicious_attachment	audit@compliance-files.example	Compliance audit evidence	Download evidence.7z and execute the included secure reader using your administrator password.
+spam	malicious_attachment	manager@meeting-recording.example	Confidential meeting recording	The recording is supplied as meeting_audio.zip. Ignore antivirus warnings because encryption causes false alarms.
+spam	malicious_attachment	bank@statement-reader.example	Encrypted bank statement	Install statement_reader.apk from the attachment on your phone to view this month's statement.
+spam	malicious_attachment	support@remote-fix.example	Diagnostic tool attached	Run remote_diagnostic.exe and accept the firewall prompt so our technician can repair your account.
+spam	malicious_attachment	secretary@board-minutes.example	Board minutes for approval	Open board_minutes.rtf and allow the external content requested by your word processor.
+spam	malicious_attachment	procurement@bid-package.example	Tender documents	The tender package uses bid_documents.chm because PDF cannot preserve its secure forms. Open it before the deadline.
+spam	malicious_attachment	insurance@claim-photos.example	Claim photographs enclosed	Extract claim_photos.zip and launch image_browser.exe to inspect the accident images.
+spam	malicious_attachment	calendar@conference-invite.example	Updated conference schedule	The schedule is attached as conference_schedule.js. Double-click it to add every session to your calendar.
+spam	malicious_attachment	printer@document-center.example	Printer document waiting	Run print_document.vbs from the attached archive to reconnect to the document center.
+spam	malicious_attachment	customer@contract-signature.example	Signed contract returned	The signed agreement is contract.pdf.exe. Windows may hide the final extension, which is normal.
+spam	malicious_attachment	records@medical-results.example	Private medical results	Open results_portal.htm from the attachment and enter your mail password to decrypt the laboratory report.
+spam	malicious_attachment	travel@itinerary-viewer.example	Flight itinerary attachment	Install itinerary_viewer.dmg from this unsolicited message to display your reservation.
+spam	malicious_attachment	agent@property-deed.example	Property deed scan	The deed scan requires deed_reader.pkg from the attachment. Bypass the unidentified developer warning.
+spam	malicious_attachment	administrator@shared-drive.example	Shared drive migration	Launch drive_migration.ps1 from the archive with administrative privileges to keep access to shared files.
+spam	malicious_attachment	collections@debt-file.example	Debt case file	Open case_file.one to review evidence for a debt you do not recognize before collection begins.
+spam	malicious_attachment	orders@wholesale-catalog.example	Wholesale catalog and order form	The catalog comes as catalog.xll. Install the Excel add-in to unlock wholesale prices.
+spam	malicious_attachment	school@grade-report.example	Student grade report	The attached grade_report.jar is our new cross-platform report viewer. Run it to see the student's marks.
+spam	malicious_attachment	claims@settlement-document.example	Settlement document requires signature	Unpack settlement.cab and execute sign_form.exe before the offer expires.
+spam	malicious_attachment	notary@secure-affidavit.example	Affidavit ready to notarize	Open affidavit.docm and approve all macro prompts to reveal the signature fields.
+spam	malicious_attachment	photos@traffic-camera.example	Traffic camera image	Your violation photo is traffic_image.svg. Open it in the attached special viewer rather than a browser.
+spam	malicious_attachment	it@vpn-certificate.example	New VPN certificate	Import vpn_update.pfx from the attachment and enter your email password when the installer asks.
+spam	malicious_attachment	shipping@customs-form.example	Customs declaration form	Complete customs_form.xlsm after enabling macros so your shipment is not returned.
+spam	malicious_attachment	reservations@hotel-voucher.example	Hotel voucher attached	The voucher is hotel_booking.pdf.url. Open the attachment to load and print your reservation.
+spam	malicious_attachment	reception@visitor-photo.example	Unknown visitor at reception	View visitor_photo.zip and run the included image file to identify the person waiting downstairs.
+spam	malicious_attachment	finance@wire-instructions.example	Updated wire instructions	The new account details are inside wire_details.lnk. Open them before paying the pending invoice.
+spam	malicious_attachment	admin@password-tool.example	Password expiration utility	Run password_reset.com from the attachment and enter your old password to prevent expiration.
+spam	malicious_attachment	messaging@chat-export.example	Chat history export	Your requested chat export is messages.tar.gz with a bundled executable needed to decrypt it.
+spam	malicious_attachment	laboratory@test-results.example	Laboratory result viewer	Install result_viewer.app from the unsolicited disk image and grant full disk access.
+spam	malicious_attachment	vendor@product-samples.example	Product sample images	The high-resolution samples are in images.zip. Disable antivirus temporarily if the viewer will not launch.
+spam	malicious_attachment	licensing@software-renewal.example	License renewal file	Execute renew_license.bat as administrator to keep your office software activated.
+spam	malicious_attachment	survey@research-panel.example	Paid survey application	Install survey_client.exe to answer three questions and receive an immediate payment.
+spam	malicious_attachment	repairs@device-warranty.example	Warranty diagnostic report	Run warranty_check.apk on the affected phone and grant access to messages and contacts.
+spam	malicious_attachment	broker@investment-report.example	Quarterly investment report	The encrypted report is investment.pdf.scr. Double-click and permit network access to decrypt it.
+spam	malicious_attachment	archive@historical-records.example	Requested family records	Genealogy records are packaged in family_tree.iso. Mount it and start records.exe to browse them.
+spam	malicious_attachment	organizer@event-tickets.example	Printable event tickets	Your tickets are in tickets.zip as ticket_printer.exe. Run it before arriving at the venue.
+spam	malicious_attachment	billing@refund-calculator.example	Refund calculator attached	Open refund_calculator.xlsb and enable all content to calculate the unexpected credit.
+spam	parcel_customs	tracking@parcel-release.example	Package held for small fee	Your package lacks a customs stamp. Pay 2.15 dollars at the linked page to schedule delivery.
+spam	parcel_customs	courier@missed-delivery.example	We could not deliver your parcel	Confirm your address and card details to pay the redelivery charge within twelve hours.
+spam	parcel_customs	customs@import-clearance.example	Import duty outstanding	A shipment addressed to you is detained. Settle the duty through our alternate payment portal today.
+spam	parcel_customs	dispatch@unknown-shipment.example	Shipment number 883104 delayed	We cannot reveal the sender until you purchase a tracking upgrade and enter your banking information.
+spam	parcel_customs	service@postal-reschedule.example	Reschedule your delivery	A 1.09 dollar scheduling payment is required. The form also asks for your email password to confirm identity.
+spam	parcel_customs	warehouse@storage-penalty.example	Storage penalties accumulating	An unidentified parcel is accruing hourly fees. Pay immediately to prevent destruction.
+spam	parcel_customs	alerts@address-correction.example	Delivery address incomplete	Correct the address through our link and provide a payment card for the verification charge.
+spam	parcel_customs	broker@border-fees.example	Border clearance invoice	Your supposed international purchase requires an unexpected brokerage fee paid in cryptocurrency.
+spam	parcel_customs	parcel@final-attempt.example	Final delivery attempt	This is the final attempt for a parcel you did not order. Confirm identity and pay redelivery now.
+spam	parcel_customs	logistics@secure-tracking.example	Tracking document available	Open the attached executable tracking document to locate your shipment.
+spam	parcel_customs	updates@overnight-courier.example	Overnight parcel stopped	A label error stopped your overnight parcel. Enter card details so a new label can be printed.
+spam	parcel_customs	customs@airport-cargo.example	Airport cargo requires release	Cash or valuables sent in your name need a large diplomatic release payment before inspection.
+spam	parcel_customs	notice@delivery-tax.example	Delivery tax unpaid	A new delivery tax applies to your package. Use the shortened link before the parcel is returned.
+spam	parcel_customs	tracking@wrong-postcode.example	Postcode mismatch found	Update the postcode and verify your bank account through the tracking portal.
+spam	parcel_customs	driver@courier-message.example	Your driver left a message	The driver cannot call you. Pay a contact fee to reveal the driver's phone number.
+spam	parcel_customs	orders@marketplace-shipping.example	Marketplace order suspended	An order absent from your purchase history needs a small fee and account login before shipping.
+spam	parcel_customs	service@locker-delivery.example	Parcel waiting in locker	Purchase a locker access code with a gift card and send us the code to retrieve the package.
+spam	parcel_customs	claims@damaged-parcel.example	Damaged shipment compensation	A damaged shipment qualifies for compensation. Enter complete card details including the PIN to receive it.
+spam	parcel_customs	customs@pet-transport.example	Pet transport crate delayed	A pet you never arranged is waiting at customs. Wire feeding and quarantine fees immediately.
+spam	parcel_customs	delivery@signature-required.example	Digital signature required	Sign in with your mailbox password through our form to authorize a package signature.
+spam	parcel_customs	tracking@holiday-gift.example	Holiday gift cannot be delivered	A secret gift is awaiting a 3.40 dollar insurance payment and identity document upload.
+spam	parcel_customs	notification@freight-terminal.example	Freight terminal notice	Unclaimed freight assigned to your email will be auctioned unless terminal charges are wired today.
+spam	parcel_customs	team@same-day-parcel.example	Same-day delivery exception	Resolve an exception by installing our tracking application from outside the official app store.
+spam	parcel_customs	service@shipping-survey.example	Delivery survey reward	Complete a three-question delivery survey, then enter payment credentials for the five-dollar reward.
+spam	parcel_customs	billing@postage-balance.example	Postage balance due	An online postage account you do not use has a negative balance. Pay through the attachment.
+spam	parcel_customs	customs@restricted-item.example	Restricted item in your parcel	Avoid a police report by paying our confidential customs agent with prepaid cards.
+spam	parcel_customs	courier@photo-confirmation.example	See who sent your package	Pay a verification charge to unlock the sender photo and parcel image.
+spam	parcel_customs	returns@failed-return.example	Return shipment failed	A return you never initiated needs your retail account password and a reshipping fee.
+spam	parcel_customs	tracking@international-mail.example	International mail fee	International mail in your name requires a customs payment through an unrelated domain.
+spam	parcel_customs	alerts@parcel-weight.example	Package weight discrepancy	The package weighs more than declared. Confirm the surcharge with your card and bank login.
+spam	parcel_customs	service@weekend-delivery.example	Weekend delivery upgrade	An urgent shipment can arrive Saturday after you submit a payment and social security number.
+spam	parcel_customs	dispatch@undeliverable-box.example	Undeliverable box notice	Download the attached address form and enable macros to prevent disposal of the box.
+spam	parcel_customs	courier@medical-package.example	Temperature-controlled package delayed	An unidentified medical delivery will spoil unless an emergency handling fee is paid now.
+spam	parcel_customs	warehouse@auction-warning.example	Parcel scheduled for auction	Stop an unknown parcel from being auctioned by wiring storage charges to an individual.
+spam	parcel_customs	service@label-refund.example	Shipping label refund	A label refund is waiting. Verify your debit card number and PIN to accept the credit.
+spam	parcel_customs	customs@duty-rebate.example	Customs duty rebate	Claim a duty rebate for a shipment you cannot identify by providing online banking credentials.
+spam	parcel_customs	tracking@express-route.example	Express route interrupted	The route can be restored only after a small cryptocurrency network payment.
+spam	parcel_customs	mailroom@office-parcel.example	Office parcel waiting	Your company mailroom allegedly needs your personal password before releasing a parcel.
+spam	parcel_customs	delivery@neighbor-package.example	Neighbor signed for your parcel	View the neighbor's signature at a link that first asks for payment card information.
+spam	parcel_customs	service@lost-package-fund.example	Lost package compensation fund	Register for compensation by paying an enrollment fee, even though no tracking number is provided.
+spam	parcel_customs	tracking@address-verification.example	Verify delivery address tonight	Enter identity and card data at an unfamiliar site or the parcel will be destroyed overnight.
+spam	parcel_customs	courier@oversized-item.example	Oversized item surcharge	A large item you never purchased requires a surcharge sent to the driver's personal account.
+spam	parcel_customs	customs@document-pouch.example	Document pouch detained	A diplomatic document pouch bearing your name needs confidential release funds.
+spam	parcel_customs	dispatch@drone-delivery.example	Drone delivery authorization	Install an unsigned application and submit a fee to authorize a drone shipment.
+spam	parcel_customs	service@collection-point.example	Collection point fee	A parcel at a distant collection point can be redirected after a gift card payment.
+spam	parcel_customs	tracking@barcode-expired.example	Shipping barcode expired	Renew an expired barcode by entering card details on a page unrelated to the named courier.
+spam	parcel_customs	warehouse@fragile-cargo.example	Fragile cargo insurance	Buy mandatory insurance for mysterious fragile cargo before staff will disclose its contents.
+spam	parcel_customs	courier@identity-check.example	Courier identity check	Upload both sides of your identity card and a bank statement to receive an ordinary envelope.
+spam	parcel_customs	service@tracking-membership.example	Tracking membership expired	Renew a tracking membership you never purchased to continue seeing an invented shipment.
+spam	parcel_customs	alerts@delivery-window.example	Choose a new delivery window	Every time slot requires a separate payment and full payment card verification.
+spam	tech_support_subscription	support@device-cleaner.example	Viruses found on your computer	Call our number and install the remote access tool immediately so a technician can remove five critical infections.
+spam	tech_support_subscription	billing@security-renewal.example	Antivirus renewal charged	Your account was charged 489 dollars for a subscription you never bought. Call the attached invoice number to cancel.
+spam	tech_support_subscription	service@computer-refund.example	Refund department response	To refund the mistaken charge, our technician must control your screen while you sign in to online banking.
+spam	tech_support_subscription	alerts@firewall-expired.example	Firewall protection expired	Your network is exposed. Pay the emergency renewal by gift card before hackers steal your files.
+spam	tech_support_subscription	help@printer-support.example	Printer license suspended	Install our remote utility and grant administrator access to restore a printer that needs no license.
+spam	tech_support_subscription	account@cloud-backup.example	Cloud backup auto-renewal	We will debit 699 dollars today unless you call the cancellation desk and read them a one-time bank code.
+spam	tech_support_subscription	care@phone-security.example	Mobile security warning	Your phone has been cloned. Install our application from the attached file and grant access to text messages.
+spam	tech_support_subscription	billing@geek-membership.example	Support membership invoice	A three-year technical support plan was renewed. Phone us within thirty minutes if you dispute the invoice.
+spam	tech_support_subscription	technician@router-fix.example	Router breached by foreign users	Download our controller and disclose the router password so we can remove unauthorized devices.
+spam	tech_support_subscription	service@software-license.example	Operating system license revoked	Pay a technician using prepaid cards to prevent your operating system from being remotely disabled.
+spam	tech_support_subscription	notice@storage-cleanup.example	Storage account full	Buy our unknown cleanup application or every photo in your account will be deleted tonight.
+spam	tech_support_subscription	billing@streaming-renewal.example	Premium streaming renewal	A costly annual plan is attached. Call the agent, who will ask you to install screen-sharing software for a refund.
+spam	tech_support_subscription	help@browser-security.example	Browser certificate damaged	Run the attached repair executable as administrator before visiting any website.
+spam	tech_support_subscription	alerts@network-monitor.example	Illegal activity from your address	Our monitoring service detected crimes on your connection. Pay a cleanup fee to avoid a police referral.
+spam	tech_support_subscription	support@smart-tv-fix.example	Smart television account blocked	Call this unofficial support desk and disclose your payment card to reactivate the television.
+spam	tech_support_subscription	billing@warranty-renewal.example	Device warranty renewal notice	An unknown device warranty will renew for 799 dollars unless you phone our cancellation specialist today.
+spam	tech_support_subscription	service@email-repair.example	Mailbox repair required	Let our technician remotely access your computer and email settings to repair imaginary delivery errors.
+spam	tech_support_subscription	care@identity-protection.example	Identity protection invoice	The attached invoice claims a new protection plan. Call to cancel and then move money to a so-called safe account.
+spam	tech_support_subscription	admin@server-maintenance.example	Server maintenance fee	Your personal laptop allegedly owes a server maintenance fee payable through cryptocurrency.
+spam	tech_support_subscription	support@camera-cloud.example	Security camera storage disabled	Install an unsigned viewer and enter the camera password to recover cloud recordings.
+spam	tech_support_subscription	notice@malware-team.example	Immediate malware removal	A pop-up report was emailed to you. Call our certified team and keep the computer turned on for remote access.
+spam	tech_support_subscription	billing@office-suite.example	Office suite family plan renewed	A family plan you never ordered costs 599 dollars. The only cancellation method is calling the listed mobile number.
+spam	tech_support_subscription	help@wifi-department.example	Wi-Fi infection detected	Purchase gift cards for the network security team and read the codes over the phone.
+spam	tech_support_subscription	service@data-recovery.example	Files encrypted warning	Pay our recovery subscription before checking whether any files are actually damaged.
+spam	tech_support_subscription	alerts@account-monitor.example	Five hackers using your account	Install a remote desktop tool so our agent can show you fabricated hacker connections.
+spam	tech_support_subscription	billing@photo-editor.example	Photo editor subscription receipt	A 429 dollar receipt includes a number where the caller is directed to online banking for a refund.
+spam	tech_support_subscription	support@laptop-care.example	Laptop protection terminated	We can restore protection only after you buy prepaid vouchers and share each redemption code.
+spam	tech_support_subscription	technician@modem-upgrade.example	Mandatory modem upgrade	Give our caller remote control and your internet account password to install a nonexistent modem update.
+spam	tech_support_subscription	service@crypto-antivirus.example	Pay antivirus fee in bitcoin	Your antivirus supposedly accepts only bitcoin today because its normal billing system is offline.
+spam	tech_support_subscription	notice@driver-update.example	Drivers dangerously outdated	Download an unsolicited driver updater that requests administrator privileges and disables security tools.
+spam	tech_support_subscription	billing@game-support.example	Gaming membership charged	Cancel the invented membership by calling an agent who asks for card PIN and one-time codes.
+spam	tech_support_subscription	help@tablet-repair.example	Tablet warranty problem	Install our profile from an unfamiliar link and trust a new root certificate to continue using the tablet.
+spam	tech_support_subscription	alerts@banking-trojan.example	Banking trojan detected	Phone our team before contacting your bank and let us watch as you log in to your accounts.
+spam	tech_support_subscription	support@email-quota.example	Email quota service invoice	An expensive quota add-on will renew unless you open the attachment and run its cancellation form.
+spam	tech_support_subscription	service@password-vault.example	Password vault corrupted	Send your master password and recovery file to our technician so the vault can be repaired.
+spam	tech_support_subscription	billing@music-license.example	Music service annual bill	A fake annual bill urges you to call quickly, install support software, and request a refund.
+spam	tech_support_subscription	help@social-media-care.example	Social account infected	Our unofficial care team requires remote access to your computer and the account recovery code.
+spam	tech_support_subscription	admin@domain-protection.example	Domain security package expired	A person without a website is told to pay for emergency domain protection by wire transfer.
+spam	tech_support_subscription	support@calendar-repair.example	Calendar synchronization failure	Install our unknown configuration program and enter the mailbox password to fix a fabricated sync issue.
+spam	tech_support_subscription	billing@vpn-renewal.example	VPN plan renewed for five years	Call the number in the PDF to dispute the charge, then follow instructions to purchase gift cards.
+spam	tech_support_subscription	service@smart-home-care.example	Smart home protection offline	Reveal the home account password and alarm code to an unsolicited remote technician.
+spam	tech_support_subscription	alerts@registry-cleaner.example	Registry errors threaten your files	Buy our cleaner immediately and ignore warnings from the operating system about the download.
+spam	tech_support_subscription	help@tax-software-care.example	Tax software data damaged	A fake support team wants remote access while your tax return and bank documents are open.
+spam	tech_support_subscription	billing@cloud-office.example	Cloud office cancellation request	A cancellation you never requested can be stopped only by calling a supposed billing engineer.
+spam	tech_support_subscription	support@bluetooth-fix.example	Bluetooth attack in progress	Install an attached executable and disable antivirus to remove an implausible Bluetooth attacker.
+spam	tech_support_subscription	service@internet-refund.example	Internet overpayment refund	The agent deliberately sends too much money on a fake screen and demands repayment with gift cards.
+spam	tech_support_subscription	notice@support-expiration.example	Lifetime support has expired	Renew the contradictory lifetime plan by giving a stranger control of the machine and access to banking.
+spam	tech_support_subscription	billing@backup-license.example	Backup license invoice	An unsolicited invoice for backup software threatens collections unless you phone the refund desk.
+spam	tech_support_subscription	help@webcam-security.example	Webcam secretly recording	Pay our privacy team in cryptocurrency and install their remote tool to stop a fabricated recording.
+spam	tech_support_subscription	service@account-recovery.example	Technical account recovery	The recovery agent asks for passwords, security answers, and remote access instead of using official support.
+spam	gift_card_bec	ceo@executive-request.example	Quick confidential favor	I am in a meeting. Buy ten gift cards, scratch the backs, and email every code without calling me.
+spam	gift_card_bec	principal@school-office.example	Need student rewards today	Purchase prepaid cards for an assembly and keep this request confidential until I return.
+spam	gift_card_bec	manager@urgent-task.example	Are you available right now	I need you to buy gift cards immediately. Reply only by email because I cannot answer the phone.
+spam	gift_card_bec	pastor@church-request.example	Discreet help for parishioner	Please purchase retail vouchers and send the codes privately; do not ask the treasurer.
+spam	gift_card_bec	director@board-travel.example	Board travel emergency	Wire funds to a new account for a confidential acquisition before today's meeting begins.
+spam	gift_card_bec	vendor@changed-banking.example	Updated payment account	Our bank details changed unexpectedly. Send the pending invoice to the new personal account attached.
+spam	gift_card_bec	attorney@closing-funds.example	Closing instructions revised	Disregard prior wire instructions and transfer the property funds to this newly supplied account.
+spam	gift_card_bec	owner@private-bonus.example	Employee surprise bonuses	Buy prepaid cards for the staff and send me photographs of the numbers before anyone hears about it.
+spam	gift_card_bec	finance@invoice-correction.example	Corrected supplier invoice	The original company account is under audit, so pay this invoice to an unrelated individual today.
+spam	gift_card_bec	president@conference-help.example	Urgent conference request	While I am speaking on stage, purchase gift cards and email the redemption codes to my assistant.
+spam	gift_card_bec	coach@team-rewards.example	Team reward cards	I need twenty gaming vouchers for the team. Do not call because this is meant to be a surprise.
+spam	gift_card_bec	hr@executive-assistance.example	CEO needs your help	The chief executive selected you to handle a private gift-card purchase outside normal expenses.
+spam	gift_card_bec	accounting@late-vendor.example	Avoid late fee today	Wire this supplier payment to the replacement account without independently confirming the change.
+spam	gift_card_bec	chair@nonprofit-board.example	Confidential donor thank-you	Purchase prepaid cards using organizational funds and send the codes directly to this unfamiliar address.
+spam	gift_card_bec	dean@campus-request.example	Campus recognition gifts	Buy gift vouchers now and bypass purchasing because the dean is supposedly traveling.
+spam	gift_card_bec	supervisor@client-emergency.example	Client emergency payment	Use your own card to buy vouchers; reimbursement will follow after you send readable photos of the codes.
+spam	gift_card_bec	partner@law-firm-task.example	Time-sensitive client task	Transfer funds to new escrow instructions supplied only in this email and tell no one until closing.
+spam	gift_card_bec	organizer@volunteer-thanks.example	Volunteer thank-you cards	Purchase fifty prepaid cards and respond with codes rather than physical delivery.
+spam	gift_card_bec	landlord@deposit-change.example	New rent payment instructions	Future rent and the security deposit must be wired to a different overseas account starting today.
+spam	gift_card_bec	broker@purchase-closing.example	Final wire destination	A last-minute change moves the entire purchase price to an account with a different beneficiary name.
+spam	gift_card_bec	founder@quiet-project.example	Keep this project quiet	Buy gift cards for a secret product test and avoid mentioning the task in company chat.
+spam	gift_card_bec	rector@staff-appreciation.example	Staff appreciation surprise	The rector needs retail vouchers now and cannot approve the transaction through normal channels.
+spam	gift_card_bec	captain@crew-reward.example	Crew reward request	Purchase digital gift cards and send codes while the captain is allegedly unreachable at sea.
+spam	gift_card_bec	buyer@purchase-order-change.example	Change beneficiary before payment	Pay an existing purchase order to an unrelated account based solely on this urgent message.
+spam	gift_card_bec	manager@holiday-gifts.example	Holiday gifts before noon	Buy multiple high-value cards and email the PINs before the supposed executive leaves a meeting.
+spam	gift_card_bec	consultant@tax-payment.example	Confidential tax settlement	Wire a tax settlement to a private account without contacting the tax authority or company counsel.
+spam	gift_card_bec	office@mayor-request.example	Mayor requests immediate assistance	A public official supposedly asks an employee to purchase gift cards and keep the purpose secret.
+spam	gift_card_bec	director@production-emergency.example	Production vendor must be paid	Send an emergency wire to changed banking details before verifying with the known vendor contact.
+spam	gift_card_bec	executive@personal-favor.example	Can you handle a favor	The executive asks for prepaid codes, stresses urgency, and refuses all voice confirmation.
+spam	gift_card_bec	treasurer@new-account.example	Treasury account migration	Move operating cash to a newly opened account using instructions that arrived without prior notice.
+spam	gift_card_bec	administrator@clinic-supplies.example	Urgent clinic supplies	Purchase gift cards allegedly required by a medical supplier rather than using normal invoicing.
+spam	gift_card_bec	producer@talent-payment.example	Private talent payment	Send a large payment to a newly substituted account before the contract is updated.
+spam	gift_card_bec	assistant@boss-traveling.example	Boss needs cards while traveling	The boss supposedly lost access to payments and wants card codes emailed during a flight.
+spam	gift_card_bec	operations@freight-wire.example	Freight wire correction	Redirect a legitimate freight bill to a bank in another country without calling the carrier.
+spam	gift_card_bec	chairperson@award-cards.example	Awards ceremony cards	Buy high-value vouchers for winners who are not named and transmit every redemption code.
+spam	gift_card_bec	owner@payroll-shortfall.example	Emergency payroll transfer	Wire company funds to a personal account that will supposedly distribute payroll later.
+spam	gift_card_bec	professor@research-incentives.example	Research participant incentives	A professor asks for dozens of gift cards outside the approved research purchasing process.
+spam	gift_card_bec	director@acquisition-secret.example	Secret acquisition deposit	Pay a confidential acquisition deposit immediately and bypass the finance team's dual approval.
+spam	gift_card_bec	manager@phone-broken.example	My phone is broken	Because the manager's phone is allegedly broken, all gift-card codes must be sent by email without confirmation.
+spam	gift_card_bec	secretary@committee-gifts.example	Committee appreciation request	Purchase vouchers using an organizational card and conceal the request from other committee members.
+spam	gift_card_bec	chief@emergency-purchase.example	Emergency purchase authorization	A senior officer demands an unusual prepaid-card purchase but provides no purchase order.
+spam	gift_card_bec	sales@rebate-payment.example	Customer rebate method changed	Issue a customer rebate to a new bank account that does not match the customer record.
+spam	gift_card_bec	contractor@materials-wire.example	Materials payment redirected	A contractor claims its regular bank is frozen and requests a wire to an employee's account.
+spam	gift_card_bec	administrator@library-prizes.example	Reading program prizes	Buy gift cards immediately for unnamed readers and email codes to the supposed administrator.
+spam	gift_card_bec	controller@audit-transfer.example	Auditor test transfer	An impostor controller requests a real wire as a secret test and tells staff not to record it.
+spam	gift_card_bec	general@deployment-support.example	Support deployed staff	A supposed commander asks civilians to purchase prepaid cards and share codes for deployed personnel.
+spam	gift_card_bec	president@client-thanks.example	Client thank-you request	Send digital gift-card codes to the president instead of shipping gifts to the named clients.
+spam	gift_card_bec	director@equipment-payment.example	Equipment deposit due	A new beneficiary and urgent deadline appear only in email for a large equipment deposit.
+spam	gift_card_bec	owner@reimbursement-promise.example	I will reimburse you tonight	Use personal funds for high-value vouchers and trust an emailed promise of later reimbursement.
+spam	gift_card_bec	finance@wire-test.example	Small wire test then full payment	Send a test transfer to unknown details followed immediately by the full invoice amount if it clears.
+spam	job_scam	recruiter@easy-remote-work.example	Remote assistant earning 900 weekly	Receive customer payments in your personal account, keep a commission, and forward the balance overseas.
+spam	job_scam	hiring@package-inspector.example	Work from home inspecting packages	Accept parcels at home, replace their labels, and ship them abroad for an unusually high salary.
+spam	job_scam	careers@instant-offer.example	You are hired without an interview	Buy equipment from our preferred vendor using a check we will email, then return the supposed overpayment.
+spam	job_scam	manager@crypto-payroll.example	Flexible data entry position	Pay a cryptocurrency training deposit before receiving access to this vague data entry job.
+spam	job_scam	recruiting@personal-shopper.example	Personal shopper needed	Purchase gift cards with transferred funds and send us the codes while keeping a portion as wages.
+spam	job_scam	jobs@survey-income.example	Earn 500 daily answering surveys	Pay a membership fee to unlock surveys that promise implausible daily earnings.
+spam	job_scam	team@mystery-shopper.example	Mystery shopper assignment	Deposit our fake cashier's check, buy prepaid cards, and report the codes as your first evaluation.
+spam	job_scam	hr@executive-assistant.example	Executive assistant opening	The employer conducts only text interviews and requests your banking password for direct deposit setup.
+spam	job_scam	staffing@home-assembly.example	Assemble products from home	Purchase an expensive starter kit before learning whether any finished products will be accepted.
+spam	job_scam	agent@talent-casting.example	Casting role guaranteed	Pay an upfront representation and photography fee for a role offered without an audition.
+spam	job_scam	recruiter@government-post.example	Government position preapproved	A supposed agency asks for a gift-card background check fee before issuing employment documents.
+spam	job_scam	careers@reshipping-center.example	Logistics coordinator from home	Receive merchandise bought with stolen cards and reship it under your name as a paid probation task.
+spam	job_scam	hiring@hotel-opportunity.example	Luxury hotel urgently hiring	Send passport scans and a visa processing payment to an unrelated travel agent before any interview.
+spam	job_scam	jobs@oil-rig-careers.example	Offshore role with high salary	An overseas recruiter offers a senior role without qualifications and demands a work permit fee.
+spam	job_scam	hr@payroll-setup.example	Complete payroll enrollment	Provide online banking credentials and one-time codes rather than ordinary routing details.
+spam	job_scam	manager@social-media-task.example	Social media promotion job	Use your accounts to post misleading ads and pay an activation charge before each assignment.
+spam	job_scam	recruiter@translation-project.example	Immediate translation contract	A client sends an oversized fake check and asks you to wire the excess to another translator.
+spam	job_scam	careers@medical-billing.example	Medical billing from home	Purchase proprietary training and software before receiving details about the nonexistent employer.
+spam	job_scam	jobs@warehouse-supervisor.example	Warehouse supervisor selected	The company requests identity documents and a security deposit despite never arranging an interview.
+spam	job_scam	staffing@virtual-payroll.example	Virtual payroll clerk	Move money through your bank account for clients and retain ten percent as your salary.
+spam	job_scam	recruiter@charity-processor.example	Charity donation processor	Receive donations personally and convert them into cryptocurrency for an unverifiable organization.
+spam	job_scam	hiring@film-production.example	Production assistant role	Pay for mandatory equipment from the producer's private payment account before reporting to a fake set.
+spam	job_scam	careers@cruise-employment.example	Cruise ship job confirmation	Wire medical and immigration fees to secure a cabin crew job offered without screening.
+spam	job_scam	jobs@cloud-mining-staff.example	Blockchain analyst trainee	Deposit funds into the company's token as a condition of employment and guaranteed bonus.
+spam	job_scam	hr@credit-check-job.example	Credit check required today	Enter sensitive identity and card data at an unfamiliar site before the recruiter will describe the job.
+spam	job_scam	recruiter@consulting-role.example	Consultant offer attached	Install an unknown messaging application and pay a registration charge to receive client assignments.
+spam	job_scam	hiring@school-tutor.example	Online tutor needed immediately	The family sends a fake advance check and asks you to pay a supposed driver from the excess.
+spam	job_scam	manager@cash-handler.example	Cash handling representative	Use your personal account to receive transfers and withdraw them as cash for anonymous customers.
+spam	job_scam	jobs@product-reviewer.example	Free products and high pay	Purchase products with your own money after paying a reviewer enrollment fee, with reimbursement merely promised.
+spam	job_scam	careers@airline-ground.example	Airline ground staff vacancy	A fake airline domain requests visa fees and passport details before any formal application.
+spam	job_scam	staffing@equipment-check.example	Home office equipment check	Deposit an emailed check and immediately send funds to the employer's chosen equipment vendor.
+spam	job_scam	recruiter@investment-assistant.example	Investment assistant opening	Recruit friends into an unlicensed investment scheme and earn commissions from their deposits.
+spam	job_scam	hiring@data-conversion.example	Simple document conversion	Pay to unlock batches of typing work that allegedly earn hundreds of dollars per hour.
+spam	job_scam	jobs@security-agent.example	Private security role abroad	Buy your own fictional clearance from the recruiter before receiving an employment contract.
+spam	job_scam	careers@delivery-driver.example	Independent delivery position	Purchase a vehicle decal and insurance through a strange payment link before seeing any routes.
+spam	job_scam	hr@interview-chat.example	Text interview starting now	A recruiter using a free chat account asks for social security and bank information during instant hiring.
+spam	job_scam	recruiter@art-assistant.example	Gallery assistant opportunity	Accept fraudulent payments for artwork and forward the difference to a supposed shipping agent.
+spam	job_scam	manager@ad-posting.example	Post ads and earn daily	Post rental ads for properties you do not control after paying for a list of assignments.
+spam	job_scam	jobs@franchise-starter.example	Run a business from home	Buy an overpriced starter inventory with guaranteed profits and no verifiable customers.
+spam	job_scam	careers@research-participant.example	Paid clinical research role	Send an enrollment fee and complete identity file to join a study with no institution or consent process.
+spam	job_scam	staffing@procurement-agent.example	Procurement agent selected	Buy electronics on personal credit and ship them to an overseas forwarding address.
+spam	job_scam	hiring@event-planner.example	Event planner contract	A fake client overpays by check and pressures you to wire a venue deposit before the check clears.
+spam	job_scam	recruiter@caregiver-role.example	Caregiver needed for relocating family	An unseen family sends a fraudulent check and asks you to pay a wheelchair supplier from it.
+spam	job_scam	jobs@mobile-app-tester.example	Test apps for 300 per hour	Install unsigned applications that request banking and message permissions as your first job task.
+spam	job_scam	hr@background-payment.example	Background screening invoice	Pay the recruiter directly for a background check before the employer's name is disclosed.
+spam	job_scam	careers@international-school.example	Teaching appointment overseas	A nonexistent school offers a job without interview and sends an immigration fee invoice.
+spam	job_scam	manager@account-rental.example	Rent your online account for income	Let strangers use your marketplace and payment accounts in exchange for weekly compensation.
+spam	job_scam	recruiter@courier-finance.example	Financial courier vacancy	Withdraw transfers as cash and deliver packages for clients whose identities are concealed.
+spam	job_scam	hiring@writing-contract.example	High-paying writing assignment	Purchase a certification from the hiring manager before receiving a copied project brief.
+spam	job_scam	jobs@instant-commission.example	Unlimited sales commission	Pay for leads, recruit more sellers, and earn primarily from their entry fees rather than products.
+spam	seo_leadgen	sales@search-rank.example	We found serious problems with your website	Our automated audit claims invisible errors and promises first place in every search engine after immediate payment.
+spam	seo_leadgen	team@guest-posts.example	Guest posts on premium sites	Buy bulk links on unnamed news sites with guaranteed rankings and no editorial review.
+spam	seo_leadgen	agency@traffic-boost.example	Ten thousand visitors tomorrow	Our bot network sends artificial traffic that allegedly converts into customers without any campaign details.
+spam	seo_leadgen	outreach@domain-listing.example	Your domain listing expires	Pay an invoice designed to resemble domain renewal but covering only an obscure directory listing.
+spam	seo_leadgen	consultant@page-one.example	Guaranteed first-page placement	We guarantee the top search result for every keyword despite having never reviewed your site.
+spam	seo_leadgen	marketing@review-growth.example	Remove every bad review	Pay our service to suppress legitimate reviews and add fabricated five-star ratings.
+spam	seo_leadgen	leads@exclusive-buyers.example	Exclusive buyers in your area	Purchase a list of supposedly exclusive leads that was mass-mailed to businesses across the country.
+spam	seo_leadgen	advisor@website-award.example	Your site won our business award	Buy a badge and annual membership to accept an unsolicited award with no judging process.
+spam	seo_leadgen	support@analytics-alert.example	Traffic dropped 83 percent	A fabricated analytics warning links to a sales page and requests your site administrator password.
+spam	seo_leadgen	partner@link-exchange.example	Mutual link opportunity	Join a massive reciprocal-link scheme that promises rankings while ignoring search quality rules.
+spam	seo_leadgen	broker@social-followers.example	Real followers delivered instantly	Purchase thousands of supposedly real followers that are actually automated accounts.
+spam	seo_leadgen	desk@map-listing.example	Business map listing unverified	Pay an unrelated company to fix an invented map listing emergency before customers supposedly disappear.
+spam	seo_leadgen	sales@voice-search.example	You are invisible to voice search	Our vague package guarantees assistants will recommend your business after one large fee.
+spam	seo_leadgen	agent@logo-register.example	Trademark your logo today	An unofficial service pressures you to pay for a questionable database entry rather than an actual trademark.
+spam	seo_leadgen	team@directory-renewal.example	Directory renewal invoice	An unsolicited directory sends an invoice that looks like a required renewal for a free listing.
+spam	seo_leadgen	consultant@broken-links.example	Urgent broken links detected	The report names no pages but demands payment for a repair subscription before showing evidence.
+spam	seo_leadgen	outreach@influencer-network.example	Influencers ready to promote you	Pay upfront for anonymous influencers with invented audience figures and no campaign agreement.
+spam	seo_leadgen	marketing@local-rank.example	Competitor stealing your customers	A fear-based pitch promises permanent local ranking dominance through undisclosed methods.
+spam	seo_leadgen	leads@executive-database.example	Verified executive email database	Buy a scraped contact list advertised as consented and exclusive to every recipient.
+spam	seo_leadgen	agency@press-release.example	Guaranteed major news coverage	A mass-distribution press release package falsely promises placement in respected publications.
+spam	seo_leadgen	sales@mobile-fix.example	Your website fails every phone	The sender never visited the site but offers an urgent redesign with payment by wire.
+spam	seo_leadgen	team@reputation-delete.example	Delete complaints permanently	Our service claims it can erase any truthful complaint from the internet for a prepaid fee.
+spam	seo_leadgen	advisor@keyword-secret.example	Secret keywords your rivals use	Buy a generic keyword spreadsheet presented as confidential competitor intelligence.
+spam	seo_leadgen	partner@podcast-booking.example	Guaranteed podcast appearances	Pay for interviews on unnamed shows with fabricated listener numbers and no host approval.
+spam	seo_leadgen	broker@aged-domain.example	High-authority domain available	An unrelated domain with manipulated metrics is offered at an inflated price under a false deadline.
+spam	seo_leadgen	outreach@article-placement.example	We loved your recent article	The mass email does not name any article and sells undisclosed sponsored links.
+spam	seo_leadgen	sales@conversion-audit.example	You are losing 72 customers daily	An invented precision estimate leads to an expensive audit requiring immediate card payment.
+spam	seo_leadgen	marketing@video-views.example	One million video views	Buy automated views that violate platform rules and provide no genuine audience.
+spam	seo_leadgen	agency@award-nomination.example	Business excellence nomination	Complete the nomination by buying an award package from the organization that selected you.
+spam	seo_leadgen	team@schema-fix.example	Critical schema penalty	A fake penalty notice uses technical jargon to sell a plugin and asks for administrator credentials.
+spam	seo_leadgen	consultant@ai-content.example	Publish five hundred articles monthly	Our automated service promises endless copied content and guaranteed search growth without editorial work.
+spam	seo_leadgen	leads@homeowners-list.example	Fresh homeowner leads	The same stale scraped records are marketed as fresh exclusive leads to multiple contractors.
+spam	seo_leadgen	partner@coupon-traffic.example	Coupon traffic partnership	Pay to list fake discounts on a low-quality site that promises impossible customer volume.
+spam	seo_leadgen	sales@ssl-warning.example	Customers see security warnings	The sender invents a certificate problem and offers an overpriced replacement without identifying the domain.
+spam	seo_leadgen	outreach@charity-directory.example	Join our trusted charity directory	An organization is pressured to buy a trust badge from a directory with no verification.
+spam	seo_leadgen	advisor@competitor-report.example	Confidential competitor report	The generic report contains no local competitors and is unlocked only after a subscription payment.
+spam	seo_leadgen	agency@search-removal.example	Remove your site from blacklist	A nonexistent search blacklist allegedly requires paying this private agency for removal.
+spam	seo_leadgen	team@business-profile.example	Your business profile will be deleted	An unofficial sender threatens deletion unless the owner pays a verification charge at once.
+spam	seo_leadgen	marketing@email-blast.example	Reach ten million opted-in buyers	A clearly indiscriminate mailing list is falsely described as fully consented and likely to convert.
+spam	seo_leadgen	broker@app-ratings.example	Five-star app launch package	Purchase fake ratings and copied reviews to manufacture a successful application launch.
+spam	seo_leadgen	sales@citation-cleanup.example	Hundreds of wrong citations	A report with no examples claims widespread errors and demands a recurring cleanup plan.
+spam	seo_leadgen	consultant@brand-wiki.example	Guaranteed encyclopedia page	Pay for a supposedly permanent promotional article despite independent editorial requirements.
+spam	seo_leadgen	outreach@newsletter-feature.example	Feature in our executive newsletter	A pay-to-play newsletter with no audience data claims an expiring editorial invitation.
+spam	seo_leadgen	agency@store-optimization.example	Your store cannot be found	A generic ecommerce pitch promises tripled sales within a week for an advance retainer.
+spam	seo_leadgen	leads@insurance-prospects.example	Exclusive insurance prospects	Recycled phone numbers of people who did not consent are sold as live exclusive inquiries.
+spam	seo_leadgen	team@domain-appraisal.example	Urgent buyer after domain appraisal	A fake buyer will proceed only if the owner purchases an appraisal from a designated site.
+spam	seo_leadgen	advisor@knowledge-panel.example	Guaranteed knowledge panel	An agency guarantees control of a search feature it cannot grant after a one-time payment.
+spam	seo_leadgen	marketing@viral-campaign.example	We guarantee your post goes viral	The campaign promises a precise audience size but supplies only bots and engagement farms.
+spam	seo_leadgen	sales@web-accessibility.example	Lawsuit imminent over your website	A threatening mass email claims immediate legal danger and sells an instant overlay as total compliance.
+spam	seo_leadgen	partner@reseller-rank.example	Resell our invisible marketing service	Pay for white-label ranking reports built from fabricated metrics and automated outreach.
+ham	personal_family	abigail@example.com	Dinner on Sunday	Would six o'clock work for dinner? I can bring the salad if you are making the soup.
+ham	personal_family	frank@example.com	Photos from the hike	I put the trail photos in our shared album. The fog over the lake turned out beautifully.
+ham	personal_family	mira@example.com	Train arrives at 4:20	My train is still on time. I will meet you by the north entrance after I collect my bag.
+ham	personal_family	uncle.jay@example.com	Recipe you asked for	Here is the lentil stew recipe from last weekend. Add the lemon only after taking the pot off the heat.
+ham	personal_family	nora@example.com	Can you water the plants	We will be away from Tuesday through Friday. Could you water the basil once while we are gone?
+ham	personal_family	dev@example.com	Board game night	We are starting around seven on Saturday. Bring any game that works well with six people.
+ham	personal_family	liam@example.com	Birthday idea for Mum	I found the out-of-print gardening book she mentioned. Want to split it with me?
+ham	personal_family	sana@example.com	Your blue scarf	You left your scarf at my place after the movie. I will bring it when we meet for coffee.
+ham	personal_family	marco@example.com	Camping dates	The riverside sites are open on the second weekend in June. Does that weekend fit your schedule?
+ham	personal_family	ruth@example.com	How did the appointment go	I was thinking about you this morning. No rush to reply, but I hope the appointment went smoothly.
+ham	personal_family	elliot@example.com	Spare key	I left the spare key with Dana next door, just in case you arrive before I get home.
+ham	personal_family	zoe@example.com	Concert was lovely	Thank you for inviting me. The final piece was my favorite, especially the quiet cello passage.
+ham	personal_family	iman@example.com	Lunch near the museum	There is a small noodle place across from the west gallery. Shall we meet there at noon?
+ham	personal_family	ben@example.com	The shelf dimensions	The alcove is 112 centimeters wide and about 30 deep. A narrow bookshelf should fit.
+ham	personal_family	aya@example.com	Garden seedlings	I have extra tomato and pepper seedlings. I can leave a tray on your porch tomorrow.
+ham	personal_family	owen@example.com	Airport pickup	Your flight lands at 9:35, right? Text me after baggage claim and I will circle back to arrivals.
+ham	personal_family	mae@example.com	Movie choice	I am happy with either the old comedy or the documentary. You choose this time.
+ham	personal_family	simon@example.com	Borrowing the drill	Could I borrow your drill for an hour this weekend? I need to mount one curtain rod.
+ham	personal_family	lucia@example.com	Thank you for the flowers	The flowers are opening today and the kitchen smells wonderful. That was very kind of you.
+ham	personal_family	noah@example.com	Walk tomorrow morning	The forecast looks dry before ten. Want to take the river path around eight thirty?
+ham	personal_family	priya@example.com	Book club notes	I finished the last chapter and wrote down a few questions. The ending changed how I read the first section.
+ham	personal_family	hana@example.com	Soup container	I still have your glass container from the soup. I washed it and will return it next week.
+ham	personal_family	cal@example.com	Bike route map	The construction blocks our usual route, so I mapped a quieter detour through the park.
+ham	personal_family	elena@example.com	Grandma called	She is doing well and wants everyone to visit in August. I said we would compare dates.
+ham	personal_family	ari@example.com	Coffee grinder recommendation	The hand grinder I use is quiet and easy to clean. I will show it to you next time.
+ham	personal_family	mina@example.com	Picnic moved indoors	It may rain, so we are moving the picnic to our apartment. Same time and plenty of room.
+ham	personal_family	jasper@example.com	Dog sitting details	Pepper eats one cup in the morning and one at night. Her leash is hanging beside the pantry.
+ham	personal_family	fatima@example.com	Congratulations again	I am so happy for both of you. The ceremony felt warm and completely like you.
+ham	personal_family	theo@example.com	Old family photographs	I scanned the photographs from the cedar box. A few names on the backs are hard to read.
+ham	personal_family	ivy@example.com	Tea on Thursday	I finish work at five and can be at the cafe by five thirty. Does that leave enough time?
+ham	personal_family	sam@example.com	Your umbrella	The green umbrella is in the stand by our front door. I can drop it off after work.
+ham	personal_family	leila@example.com	Holiday meal plan	I will make the rice and roasted vegetables. Can someone else bring dessert this year?
+ham	personal_family	gabe@example.com	Kayak reservation	I reserved two kayaks for Saturday morning. They provide life jackets and dry bags.
+ham	personal_family	mei@example.com	The ceramic bowl	I repaired the small crack and it seems solid now. Let the glue cure another day before washing it.
+ham	personal_family	jon@example.com	Change of address	We moved three streets over. The new place is 14 Willow Lane, apartment two.
+ham	personal_family	amara@example.com	Choir performance	Our concert is next Friday at seven. I saved two tickets at the front desk under your name.
+ham	personal_family	hugo@example.com	Bread experiment	The second loaf rose much better after I warmed the kitchen. I will bring you half tomorrow.
+ham	personal_family	yara@example.com	Saturday market	The orchard stand has pears again. Let me know if you want me to pick up a bag.
+ham	personal_family	adrian@example.com	Piano bench	I tightened the loose leg and replaced the missing felt pad. It should be stable now.
+ham	personal_family	ines@example.com	Museum membership	Our guest passes expire at the end of the month. Want to see the textile exhibit together?
+ham	personal_family	malik@example.com	Chess rematch	I have been studying that endgame you caught me with. Are you free for a rematch Wednesday?
+ham	personal_family	clara@example.com	The kittens found homes	Both kittens were adopted by neighbors, and they are settling in well. Thank you for sharing the notice.
+ham	personal_family	dan@example.com	Meet at the east gate	The main entrance is closed for repairs. I will wait by the east gate near the fountain.
+ham	personal_family	sol@example.com	Jam jars	I have eight clean jars in the basement. They are yours if you still plan to make plum jam.
+ham	personal_family	wendy@example.com	Call when you have time	Nothing urgent. I just wanted to catch up and hear how the new place is going.
+ham	personal_family	omar@example.com	Football this weekend	We have enough players for Sunday now. Kickoff is at ten on the lower field.
+ham	personal_family	nina@example.com	Plant identification	The plant in your photo looks like lemon balm. Crush one leaf and it should smell citrusy.
+ham	personal_family	paul@example.com	Workshop cleanup	Thanks for helping sort the tools. I found the missing wrench under the workbench afterward.
+ham	personal_family	kim@example.com	Leftovers in your fridge	There is a labeled container of curry on the middle shelf. It should be good through Tuesday.
+ham	personal_family	rosa@example.com	See you in October	We booked the morning train and should arrive before lunch. I cannot wait to see everyone.
+ham	workplace_project	alex@northwind.example	API review notes	I left comments on the pagination proposal. The cursor approach looks good, but we should document expiration behavior.
+ham	workplace_project	beatrice@northwind.example	Urgent client schedule update	The client moved the review to Thursday. Please finish the ordinary presentation today and tell me if the schedule needs another designer.
+ham	workplace_project	chen@northwind.example	Build 184 is ready	The new build includes the cache fix and updated translations. Please use the staging configuration for testing.
+ham	workplace_project	diego@northwind.example	Client deadline changed again	Delivery moved to next Tuesday. Finish the contract notes today if possible and tell me if legal needs more time.
+ham	workplace_project	esme@northwind.example	Customer interview summary	The customer likes bulk editing but found the save status unclear. My notes include the exact workflow they tried.
+ham	workplace_project	farah@northwind.example	Design handoff complete	The component measurements and empty states are now in the handoff file. Icons still need final review.
+ham	workplace_project	greg@northwind.example	Database migration window	Operations approved the migration for Thursday at 22:00 UTC. The rollback snapshot will be kept for seven days.
+ham	workplace_project	hiro@northwind.example	Localization strings due Friday	Please send any final copy changes by Friday morning so translators have a stable source file.
+ham	workplace_project	irene@northwind.example	Quarterly forecast workbook	I corrected the duplicate line in the services forecast. The revised total now matches the finance dashboard.
+ham	workplace_project	jules@northwind.example	Pairing on the parser	I can pair after lunch to trace the malformed-header case. I suspect we consume one delimiter too early.
+ham	workplace_project	kofi@northwind.example	Incident follow-up	The queue recovered at 14:12. We are adding an alert for oldest-message age and documenting the manual drain procedure.
+ham	workplace_project	laura@northwind.example	New hire equipment	Sam's laptop and security key are ready at reception. Their account activates Monday morning.
+ham	workplace_project	morgan@northwind.example	Research plan revision	I narrowed the study to two tasks and twelve participants. That should answer the navigation question without overloading sessions.
+ham	workplace_project	nadia@northwind.example	Vendor demo recording	The recording and transcript are in the shared project folder. The export feature begins around minute twenty-three.
+ham	workplace_project	otto@northwind.example	Urgent proof needed today	The client needs the ordinary PDF proof before five. Please tell me if another illustrator should finish the final page.
+ham	workplace_project	parker@northwind.example	Updated architecture diagram	The diagram now separates the ingestion workers from query serving and shows ownership of each data store.
+ham	workplace_project	quinn@northwind.example	Budget code for travel	Use project code NW-204 for the conference train and hotel. Meals remain under the normal daily policy.
+ham	workplace_project	ravi@northwind.example	Search benchmark results	Indexing improved after batching commits. Query latency stayed flat across the three smaller test collections.
+ham	workplace_project	sora@northwind.example	Workshop room changed	Tomorrow's workshop moved from Cedar to Maple because we need more wall space. The start time is unchanged.
+ham	workplace_project	tariq@northwind.example	Security review questions	Could you document how tokens are revoked and which audit events retain the actor identity?
+ham	workplace_project	ursula@northwind.example	Prototype feedback	Keyboard navigation feels much better. The focus indicator disappears only inside the date selector.
+ham	workplace_project	vic@northwind.example	Data import sample	I uploaded a sanitized sample with the three date formats we see in production. No customer identifiers are included.
+ham	workplace_project	willow@northwind.example	On-call schedule swap	I can cover your Thursday shift if you take my Saturday morning next month.
+ham	workplace_project	xavier@northwind.example	Meeting notes and decisions	We chose the smaller launch scope and postponed custom reports. Owners and dates are listed at the bottom.
+ham	workplace_project	yasmin@northwind.example	Accessibility audit booked	The external audit starts on the eighteenth. They need a stable staging URL and test accounts by the week before.
+ham	workplace_project	zane@northwind.example	Dependency update proposal	The new version fixes two parser bugs but raises the minimum compiler version. I opened a compatibility branch for evaluation.
+ham	workplace_project	amy@northwind.example	Copy review complete	I simplified the error messages and replaced three internal terms. The onboarding pages are ready for another pass.
+ham	workplace_project	boris@northwind.example	Capacity estimate	At current growth, the existing cluster has about nine months of headroom. The attached sheet shows the assumptions.
+ham	workplace_project	celine@northwind.example	Client kickoff Thursday	The client confirmed their technical lead and product owner. I sent a calendar invitation for ten o'clock.
+ham	workplace_project	darius@northwind.example	Test fixture cleanup	I removed obsolete fixtures and renamed the remaining accounts by scenario. The test behavior is unchanged.
+ham	workplace_project	emma@northwind.example	Documentation preview	The new guide is deployed to the preview site. Code samples were tested against the current release candidate.
+ham	workplace_project	felix@northwind.example	Procurement status	Purchasing approved the server quote. Delivery is expected in six to eight business days.
+ham	workplace_project	gia@northwind.example	Metrics definition	I wrote a definition for active workspace and added examples of accounts that should be excluded.
+ham	workplace_project	hassan@northwind.example	Maintenance reminder	Staging will restart at 16:00 UTC for operating system updates. Expected downtime is under five minutes.
+ham	workplace_project	isabel@northwind.example	Usability session clips	I clipped the three moments where participants looked for filters. Each clip is under two minutes.
+ham	workplace_project	jamal@northwind.example	Partner API credentials	The sandbox credentials are in the approved secrets manager. I sent access to the two named developers.
+ham	workplace_project	karin@northwind.example	Roadmap wording	I changed guaranteed delivery to target delivery in the external roadmap and clarified the dependency note.
+ham	workplace_project	leo@northwind.example	Query plan investigation	The slow request scans the events table before applying tenant scope. I am testing a composite index locally.
+ham	workplace_project	marta@northwind.example	Translation review	The Spanish reviewer resolved all but two product-name questions. I tagged marketing on those comments.
+ham	workplace_project	nikhil@northwind.example	Service ownership update	The notifications service now has a primary and secondary owner. The runbook links passed the weekly check.
+ham	workplace_project	opal@northwind.example	Demo data reset	The demo environment was reset with the November sample set. Please avoid adding real customer information.
+ham	workplace_project	pavel@northwind.example	Retrospective themes	The strongest themes were smaller changes, earlier review, and better staging parity. I grouped the notes without names.
+ham	workplace_project	rachel@northwind.example	Support escalation resolved	The customer's export completed after we removed the malformed row. Support will share the corrected input requirements.
+ham	workplace_project	steve@northwind.example	Feature flag retirement	Usage of the old dashboard flag reached zero. I plan to remove it in next Tuesday's cleanup release.
+ham	workplace_project	talia@northwind.example	Thursday delivery update	Please finish your part today because the client moved delivery to Thursday. Tell the lead if that conflicts with your schedule.
+ham	workplace_project	uma@northwind.example	Audit evidence uploaded	I added the deployment approvals and access-review report to the auditor's portal. Both cover the requested quarter.
+ham	workplace_project	viktor@northwind.example	Mobile crash reproduction	The crash occurs only when rotating during attachment upload. I added a minimal reproduction to the issue.
+ham	workplace_project	wen@northwind.example	Policy draft ready	The retention policy draft distinguishes backups from active data and includes the approved exception process.
+ham	workplace_project	yuki@northwind.example	Sprint goal proposal	I suggest making reliable offline editing the single sprint goal. The three supporting stories are already estimated.
+ham	workplace_project	zara@northwind.example	Client asks for an earlier proof	The ordinary PDF proof is now due today. If you cannot finish it, tell me and I will assign another illustrator.
+ham	receipts_invoices	receipts@corner-books.example	Receipt for your bookstore order	Thank you for your purchase of two paperbacks. The total charged to your saved card was 31.80 dollars.
+ham	receipts_invoices	billing@city-water.example	November water statement	Your statement is ready in the customer portal. The 42.16 dollar balance is due on December fifth.
+ham	receipts_invoices	invoices@oak-studio.example	Invoice for portrait framing	Attached is invoice OS-184 for the walnut frame we delivered Friday. Payment terms remain thirty days.
+ham	receipts_invoices	orders@harbor-hardware.example	Order confirmation HH-9021	We received your order for shelf brackets and screws. You can review it from your account order history.
+ham	receipts_invoices	receipts@green-grocer.example	Your market receipt	Today's pickup included apples, oats, and yogurt. The final total was 24.09 dollars after the member discount.
+ham	receipts_invoices	billing@metro-transit.example	Monthly transit pass receipt	Your December transit pass was renewed for 68 dollars. It is already available on your usual travel card.
+ham	receipts_invoices	accounts@river-electric.example	Electric bill available	Your usage was lower than last month. Sign in through the bookmarked customer portal to view the itemized bill.
+ham	receipts_invoices	invoice@maple-plumbing.example	Invoice MP-447 after sink repair	This invoice covers the replacement valve and one hour of labor from Monday's scheduled repair.
+ham	receipts_invoices	orders@loom-fabric.example	Fabric order shipped	Your linen and cotton thread shipped together. The receipt remains available under purchases in your account.
+ham	receipts_invoices	billing@community-gym.example	Membership payment receipt	We received the regular monthly membership payment. No action is needed and your renewal date is unchanged.
+ham	receipts_invoices	receipts@station-cafe.example	Cafe receipt from Tuesday	Your card was charged 8.75 dollars for one lunch special and tea at Station Cafe.
+ham	receipts_invoices	accounts@sunrise-childcare.example	Childcare invoice for November	The invoice includes sixteen regular days and one late pickup. Please use the payment route you normally use.
+ham	receipts_invoices	billing@pine-hosting.example	Hosting renewal completed	Your existing monthly plan renewed at 12 dollars. We did not change your domain or service options.
+ham	receipts_invoices	invoice@bright-window.example	Window cleaning invoice	Thank you for having us. The invoice reflects the quoted exterior cleaning and no additional charges.
+ham	receipts_invoices	orders@meadow-seeds.example	Seed order confirmed	We reserved the six seed varieties in your basket. Shipment is planned for early February.
+ham	receipts_invoices	receipts@museum-shop.example	Museum shop purchase	Your receipt lists the exhibition catalog and postcard set purchased at the west desk.
+ham	receipts_invoices	billing@lakeside-internet.example	Internet service statement	Your current statement is 54 dollars and scheduled for automatic payment on the third.
+ham	receipts_invoices	accounts@copper-roof.example	Deposit receipt for roof work	We received the agreed project deposit by bank transfer. The installation date remains March twelfth.
+ham	receipts_invoices	orders@paper-supply.example	Office paper order PO-118	The requested recycled paper and envelopes will arrive Thursday under the existing purchase order.
+ham	receipts_invoices	billing@orchard-energy.example	Solar credit applied	This month's bill includes a 19.40 dollar generation credit. The remaining balance will be paid automatically.
+ham	receipts_invoices	invoice@hillside-lessons.example	Piano lesson invoice	This invoice covers four December lessons at our usual rate. The holiday week is not included.
+ham	receipts_invoices	receipts@railway-tickets.example	Rail ticket purchase confirmation	Two off-peak return tickets were charged to the card ending in the familiar last four digits.
+ham	receipts_invoices	orders@kitchen-coop.example	Co-op order ready for collection	Your bulk rice and olive oil are ready at the member pickup desk through Saturday.
+ham	receipts_invoices	billing@cedar-insurance.example	Policy payment received	We received your scheduled home policy installment. Coverage and the next due date have not changed.
+ham	receipts_invoices	invoice@freelance-editing.example	Editing invoice for chapter review	The attached PDF itemizes the agreed review of chapters four through seven and the delivery date.
+ham	receipts_invoices	receipts@cinema-house.example	Cinema booking receipt	Your two seats for Friday's 19:30 screening are confirmed. The booking code also appears in the official app.
+ham	receipts_invoices	billing@city-library.example	Replacement fee paid	We received the 15 dollar replacement fee for the lost travel guide. Your library account now has no balance.
+ham	receipts_invoices	orders@bike-parts.example	Bicycle parts order update	The brake pads are in stock, but the cable set will ship next week at no extra charge.
+ham	receipts_invoices	accounts@valley-rentals.example	November rent receipt	Your usual rent payment was received on time. This message is a receipt and does not change future instructions.
+ham	receipts_invoices	invoice@willow-catering.example	Final catering invoice	The final invoice subtracts your deposit and includes the additional twelve lunches approved on event day.
+ham	receipts_invoices	billing@language-school.example	Course payment confirmation	Payment for the winter intermediate course was accepted. Classes begin January ninth in room six.
+ham	receipts_invoices	receipts@pharmacy-coop.example	Pharmacy purchase receipt	This receipt records the nonprescription items collected today. Medical details are available only in the secure portal.
+ham	receipts_invoices	orders@tea-merchant.example	Your tea order is packed	The jasmine, breakfast blend, and sample tin are packed in one parcel with the total shown below.
+ham	receipts_invoices	billing@parking-permits.example	Resident parking permit renewed	Your existing vehicle permit renewed for the coming year. The registration number on file is unchanged.
+ham	receipts_invoices	invoice@garden-care.example	Autumn garden work invoice	The invoice covers leaf collection and hedge trimming completed at the quoted price last Wednesday.
+ham	receipts_invoices	receipts@art-supply.example	Art supply receipt 7714	The receipt includes watercolor paper, two brushes, and masking tape from your in-store purchase.
+ham	receipts_invoices	accounts@school-meals.example	School meal balance statement	The account has 18.60 dollars remaining after this week's lunches. You can add funds through the school portal.
+ham	receipts_invoices	billing@phone-service.example	Mobile plan bill ready	Your monthly charge matches the previous statement. There are no roaming or equipment fees this period.
+ham	receipts_invoices	orders@bakery-preorder.example	Saturday cake preorder confirmed	Your lemon cake will be ready at ten Saturday morning. Payment was collected when the order was placed.
+ham	receipts_invoices	invoice@translation-work.example	Translation invoice TW-63	This invoice covers the twelve pages delivered on the agreed date. The client reference is shown on the first line.
+ham	receipts_invoices	receipts@ferry-service.example	Ferry booking receipt	Your car and two passenger places are confirmed for the morning sailing on the fourteenth.
+ham	receipts_invoices	billing@storage-unit.example	Storage payment processed	The regular monthly storage charge was processed successfully. Your unit and access code remain the same.
+ham	receipts_invoices	orders@pet-food.example	Subscription order dispatched	The usual pet food subscription has shipped. You can pause future orders from the account page you already use.
+ham	receipts_invoices	accounts@neighborhood-coop.example	Annual cooperative dues receipt	We received your annual member dues. The receipt lists the meeting-vote portion separately.
+ham	receipts_invoices	billing@news-journal.example	Digital subscription renewed	Your standard digital subscription renewed for another month at the existing price.
+ham	receipts_invoices	invoice@camera-repair.example	Camera repair completed	The invoice includes a shutter replacement and sensor cleaning, both authorized in last week's estimate.
+ham	receipts_invoices	receipts@botanical-garden.example	Garden membership receipt	Your household membership is active through next November. Guest passes appear in the official member portal.
+ham	receipts_invoices	orders@record-store.example	Record preorder confirmed	We reserved the album for release day and charged only the stated deposit. The balance is due at pickup.
+ham	receipts_invoices	billing@waste-collection.example	Waste collection bill	The quarterly bill is available. Service dates and the payment account match your previous statement.
+ham	receipts_invoices	invoice@roof-survey.example	Roof survey report and invoice	The PDF contains the completed inspection report followed by the invoice for the amount quoted.
+ham	account_security	security@northwind.example	Password reset requested	A password reset was requested for your work account. If this was you, return to the app or type the known company address yourself; do not copy links from email.
+ham	account_security	alerts@community-bank.example	Sign-in from a new browser	We noticed a sign-in from Firefox on Linux. Open the banking app directly to review recent activity if you do not recognize it.
+ham	account_security	security@photo-library.example	Two-step verification enabled	Two-step verification was successfully enabled on your photo account. Recovery codes are available only after signing in normally.
+ham	account_security	notice@code-forge.example	New SSH key added	A new key named work-laptop was added to your developer account. Visit the service from your bookmark to remove it if unexpected.
+ham	account_security	security@health-portal.example	Your password was changed	The password for your patient portal changed at 14:08 UTC. Contact the clinic using the number on its official site if this was not you.
+ham	account_security	alerts@city-library.example	Library account email updated	The contact email on your library account was updated at the front desk. You can confirm it in your normal account page.
+ham	account_security	security@marketplace.example	New device signed in	A new device signed in near Bristol. Open the marketplace app yourself and review devices if you do not recognize it.
+ham	account_security	account@university.example	Recovery address confirmed	Your university recovery address was confirmed. No password or payment information is requested in this message.
+ham	account_security	security@cloud-notes.example	Backup codes generated	New backup codes were generated after a successful password check. Old codes can no longer be used.
+ham	account_security	alerts@transit-card.example	Transit card moved to a new phone	Your pass was added to a new phone. Use the official transit app to freeze it if you did not make this change.
+ham	account_security	security@video-service.example	Account signed out everywhere	Your request to sign out all sessions completed. You will need to sign in again on each trusted device.
+ham	account_security	notice@tax-portal.example	Security key registered	A hardware security key was registered for your tax portal account. Type the government portal address yourself to review it.
+ham	account_security	security@domain-host.example	API token revoked	The token named deploy-preview was revoked by an administrator. Existing sessions were not affected.
+ham	account_security	alerts@payment-wallet.example	Payment wallet passcode changed	The passcode changed from the official mobile app. Support will never ask you to send the new passcode by email.
+ham	account_security	security@school-portal.example	Parent account invitation accepted	The invitation for the known secondary email was accepted. School staff can verify the change by phone.
+ham	account_security	account@music-service.example	Email address change canceled	The requested email change was canceled because it was not confirmed within the allowed time.
+ham	account_security	security@retirement-fund.example	Annual security reminder	Review beneficiaries and contact details by opening the fund's app or entering its familiar address, not by following emailed links.
+ham	account_security	alerts@hosting-console.example	Root login blocked	A login attempt was blocked after repeated security-key failures. The source address is recorded in the console audit log.
+ham	account_security	security@chat-service.example	Session approved on tablet	You approved a session on a tablet at 18:32. Devices can be reviewed from settings inside the app.
+ham	account_security	notice@electric-utility.example	Online account locked	Your utility account was locked after unsuccessful attempts. Call the number printed on your bill to restore access.
+ham	account_security	security@document-vault.example	Recovery phrase viewed	The recovery phrase was displayed after biometric confirmation. It was not included in this email.
+ham	account_security	alerts@travel-booking.example	Profile phone number changed	The phone number on your travel profile changed. Open the official application directly if you need to undo it.
+ham	account_security	security@news-journal.example	Unusual subscription sign-in	A sign-in occurred from a new location. This alert contains no cancellation number or request for payment.
+ham	account_security	account@professional-network.example	Third-party access removed	You removed calendar access for Schedule Helper. The application can no longer read profile information.
+ham	account_security	security@game-platform.example	Parental PIN reset completed	The parental PIN reset completed on the console. The new PIN is shown only on the device.
+ham	account_security	alerts@insurance-portal.example	Policy document downloaded	A policy document was downloaded after a verified sign-in. Contact your assigned agent through known details if unexpected.
+ham	account_security	security@source-control.example	Personal access token created	A token named local-test was created with repository read permission and expires in seven days.
+ham	account_security	notice@county-services.example	Online services account created	An account was created using this address. Visit the county website by a known route if you did not register.
+ham	account_security	security@bookshop.example	Saved payment card removed	The saved card ending in the expected digits was removed. No financial information is shown here.
+ham	account_security	alerts@mobile-carrier.example	SIM transfer protection enabled	Extra protection now blocks number transfers without an account PIN and in-store identity check.
+ham	account_security	security@research-lab.example	VPN certificate renewed	The managed laptop renewed its VPN certificate automatically. No installation or password reply is required.
+ham	account_security	account@food-delivery.example	All active sessions reviewed	You marked every listed session as recognized. Future new-device alerts remain enabled.
+ham	account_security	security@credit-union.example	Card-not-present alert preferences changed	Alerts for online card purchases were enabled from secure banking settings. Open the bank app to review preferences.
+ham	account_security	notice@calendar-service.example	Application password deleted	The application password for old-mail-client was deleted and cannot be recovered.
+ham	account_security	security@medical-clinic.example	Portal access temporarily suspended	The clinic suspended portal access after too many attempts. Call the clinic using your appointment paperwork for help.
+ham	account_security	alerts@online-grocer.example	Delivery address added	A new delivery address was added after successful authentication. Review it from order settings in the official app.
+ham	account_security	security@pension-service.example	Paper statement preference changed	Your preference changed from paper to electronic statements. The next statement will appear in the secure portal.
+ham	account_security	account@conference-platform.example	Organizer role granted	An existing administrator granted your account organizer access for the spring conference workspace.
+ham	account_security	security@wifi-provider.example	Router administrator password changed	The home router password was changed from the local settings page. The password is not repeated here.
+ham	account_security	alerts@auction-service.example	Bid placed after verification	A bid was placed after your security key was used. Open the known auction site to see the listing if needed.
+ham	account_security	security@language-app.example	Account deletion scheduled	You scheduled account deletion in thirty days. Cancel only from settings in the installed application.
+ham	account_security	notice@parking-service.example	Vehicle removed from account	The old vehicle was removed from your resident parking profile. Current permits remain active.
+ham	account_security	security@work-chat.example	Single sign-on policy updated	Your organization now requires a hardware key for administrators. The change begins next Monday.
+ham	account_security	alerts@rail-service.example	Passenger profile edited	The accessibility assistance preference was updated. Sign in through the usual booking site if this is incorrect.
+ham	account_security	security@charity-platform.example	Payout account review complete	The previously submitted payout account passed review. No bank password or one-time code is needed.
+ham	account_security	account@smart-home.example	Guest access expired	Temporary guest access for Pat expired as scheduled. Door codes created separately are unchanged.
+ham	account_security	security@education-cloud.example	Class roster export recorded	An administrator exported a class roster. The event and actor are available in the audit log.
+ham	account_security	alerts@storage-provider.example	Large download completed	A large archive download completed from your recognized desktop. Review activity from the official client if surprising.
+ham	account_security	security@pharmacy-portal.example	Trusted browser removed	The trusted-browser record expired after ninety days. You may be asked for a security code next time.
+ham	account_security	notice@local-council.example	Council account password expires soon	Your password expires in ten days. Change it by typing the council portal address yourself or visiting the office kiosk.
+ham	shipping_travel	tracking@corner-books.example	Book order dispatched	Your two books left our warehouse by standard post. The expected delivery window is Tuesday through Thursday.
+ham	shipping_travel	updates@rail-service.example	Platform change for tomorrow	The 08:14 service will depart from platform six instead of platform four. Your ticket remains valid.
+ham	shipping_travel	reservations@harbor-hotel.example	Hotel reservation confirmed	We confirmed your three-night stay beginning May twelfth. Check-in starts at three in the afternoon.
+ham	shipping_travel	orders@meadow-seeds.example	Seed parcel on the way	The seed packet shipped by ordinary mail and does not require a customs or redelivery payment.
+ham	shipping_travel	alerts@regional-air.example	Flight time moved by twenty minutes	Flight RA218 now departs at 17:40. Open the airline app directly for the latest gate information.
+ham	shipping_travel	booking@ferry-service.example	Vehicle check-in details	Arrive forty-five minutes before sailing and follow the signs for prepaid vehicle reservations.
+ham	shipping_travel	tracking@bike-parts.example	Brake pads delivered	The carrier marked your parcel delivered at 13:08 near the side entrance, as requested.
+ham	shipping_travel	reservations@forest-cabins.example	Cabin arrival instructions	The office closes at six. If you arrive later, your labeled key envelope will be in the secure box.
+ham	shipping_travel	updates@city-transit.example	Weekend route diversion	Buses on route twelve will use Oak Street this weekend while the bridge is closed.
+ham	shipping_travel	orders@tea-merchant.example	Tea order delivery estimate	Your parcel is expected Friday. There are no additional postage or import fees due.
+ham	shipping_travel	booking@museum-tours.example	Walking tour meeting point	Meet your guide beside the museum's north steps at 10:15. The tour lasts about ninety minutes.
+ham	shipping_travel	alerts@mountain-rail.example	Snow timetable in effect	Trains will run hourly tomorrow because of snow. Existing reservations can use any departure that day.
+ham	shipping_travel	tracking@camera-repair.example	Repaired camera returned	Your camera was collected by the carrier and is insured for the return trip at no added cost.
+ham	shipping_travel	reservations@lake-camp.example	Campsite booking details	Site 24 is reserved for two adults and one tent. Quiet hours begin at ten.
+ham	shipping_travel	updates@coastal-air.example	Online check-in is open	Check in using the installed airline app or the address printed on your booking confirmation.
+ham	shipping_travel	orders@record-store.example	Album ready for pickup	Your preorder is ready at the downtown shop. Bring the original order receipt to collect it.
+ham	shipping_travel	booking@car-share.example	Car reservation tomorrow	The blue hatchback is reserved from nine until five at the library parking bay.
+ham	shipping_travel	tracking@art-supply.example	Art supplies arriving separately	Paper arrives Wednesday and the brushes Thursday. Both shipments are covered by your original payment.
+ham	shipping_travel	alerts@metro-transit.example	Lift out of service	The lift at Central Station is unavailable. Step-free travelers should change at River Street.
+ham	shipping_travel	reservations@valley-inn.example	Your booking request accepted	The inn reserved a quiet room facing the courtyard. Breakfast is included in the quoted rate.
+ham	shipping_travel	orders@pet-food.example	Subscription shipment delayed one day	The regular shipment will arrive Thursday rather than Wednesday due to weather at the depot.
+ham	shipping_travel	booking@conference-travel.example	Conference shuttle schedule	The shuttle leaves the station every hour from noon until eight. Show your attendee badge when boarding.
+ham	shipping_travel	tracking@loom-fabric.example	Fabric parcel available at reception	Your building reception signed for the fabric parcel this morning under the usual delivery instructions.
+ham	shipping_travel	updates@city-bike.example	Dock temporarily closed	The dock near Market Square is closed for repairs. The nearest open dock is two blocks east.
+ham	shipping_travel	reservations@river-kayak.example	Kayak booking reminder	Your two kayaks are booked for Saturday at nine. Life jackets and paddles are included.
+ham	shipping_travel	alerts@national-rail.example	Seat reservation changed	Your train is using a shorter carriage set, so your new assigned seat is coach B, seat 18.
+ham	shipping_travel	orders@bakery-preorder.example	Cake pickup reminder	Your prepaid cake will be ready at the shop after ten Saturday. No delivery fee is required.
+ham	shipping_travel	booking@walking-holidays.example	Final itinerary available	The itinerary lists each hotel, walking distance, and baggage transfer. Keep a downloaded copy during the trip.
+ham	shipping_travel	tracking@paper-supply.example	Office delivery completed	Reception accepted six boxes under purchase order 118. The proof of delivery is stored in your supplier account.
+ham	shipping_travel	updates@airport-bus.example	Airport stop relocated	The airport bus now stops outside terminal two while construction continues at terminal one.
+ham	shipping_travel	reservations@seaside-hostel.example	Hostel booking receipt	Your bed is reserved in the four-person room. The front desk accepts arrivals until midnight.
+ham	shipping_travel	orders@garden-tools.example	Replacement handle shipped	The warranty replacement shipped free of charge. You do not need to return the broken handle.
+ham	shipping_travel	alerts@island-ferry.example	Sailing canceled due to wind	The 16:00 sailing is canceled. Your booking was moved automatically to tomorrow morning.
+ham	shipping_travel	booking@bike-rental.example	Bicycle collection information	Collect the touring bicycle from the staffed shop and bring the identification named in your booking.
+ham	shipping_travel	tracking@pharmacy-coop.example	Pharmacy order ready at store	The nonprescription order is ready for counter pickup. No medical information is included in this message.
+ham	shipping_travel	updates@regional-coach.example	Coach service rest break changed	Tomorrow's coach will stop at Hill Services rather than Lake Services; arrival time is unchanged.
+ham	shipping_travel	reservations@orchard-stay.example	Farm stay directions	The final mile is a narrow gravel road. Use the west entrance marked Orchard Stay, not the service gate.
+ham	shipping_travel	orders@kitchen-coop.example	Bulk order collected	Your cooperative order was marked collected by the named household member at 17:12.
+ham	shipping_travel	alerts@city-airport.example	Terminal renovation notice	Domestic departures use the temporary east security hall this month. Allow an extra fifteen minutes.
+ham	shipping_travel	booking@heritage-rail.example	Steam train tickets attached	The attached PDF contains the two tickets you purchased from the official booking office.
+ham	shipping_travel	tracking@museum-shop.example	Catalog shipment accepted	Your building mailroom accepted the catalog parcel at 11:46. It was shipped without signature service.
+ham	shipping_travel	updates@travel-insurance.example	Policy documents ready	Your travel policy documents are available inside the insurer's official app and mailed as a PDF copy.
+ham	shipping_travel	reservations@hill-cottage.example	Cottage checkout reminder	Checkout is by eleven. Please leave the key in the kitchen bowl and close the garden gate.
+ham	shipping_travel	orders@plant-nursery.example	Live plant delivery planned	The nursery scheduled delivery for Wednesday morning and will leave the plants in the shaded porch area.
+ham	shipping_travel	alerts@cross-border-rail.example	Passport checks before boarding	Arrive thirty minutes early for the normal passport check. No fee or document upload is requested by email.
+ham	shipping_travel	booking@canal-boats.example	Boat hire safety briefing	The safety briefing begins at 13:00 beside the lock office. Every adult in the booking should attend.
+ham	shipping_travel	tracking@repair-workshop.example	Watch repair returned	The repaired watch is being delivered with signature service under the tracking number on your receipt.
+ham	shipping_travel	updates@trail-service.example	Trail closure near mile eight	A fallen tree closes the east loop. Rangers marked a two-kilometer detour using the lower path.
+ham	shipping_travel	reservations@airport-parking.example	Parking reservation QR code	Your reservation covers Monday morning through Friday evening in long-stay lot C.
+ham	shipping_travel	orders@ceramic-studio.example	Ceramic order packed	The studio packed each bowl separately and will send the parcel tomorrow using the delivery you already paid for.
+ham	medical_education	appointments@riverside-clinic.example	Appointment reminder for Thursday	Your appointment begins at 10:40. Please arrive ten minutes early and bring the medication list discussed by phone.
+ham	medical_education	teacher@oak-school.example	Class reading for next week	Students should read chapters five and six before Tuesday. We will discuss how the narrator changes.
+ham	medical_education	portal@health-center.example	Lab result available in portal	A new result is available. Open the clinic portal from your bookmark; this email does not contain the result or request payment.
+ham	medical_education	registrar@city-college.example	Course registration confirmed	You are registered for Introduction to Statistics on Monday and Wednesday afternoons in room 214.
+ham	medical_education	nurse@family-practice.example	Blood pressure follow-up	Please bring a week of morning readings to your follow-up. Call the practice if any reading is unusually high.
+ham	medical_education	library@university.example	Reserved book ready	The requested anatomy atlas is ready at the science library desk and will be held for five days.
+ham	medical_education	appointments@dental-care.example	Dental cleaning reminder	Your routine cleaning is scheduled for June third at two. Reply or call the office if you need to reschedule.
+ham	medical_education	advisor@city-college.example	Degree plan notes	I added the laboratory prerequisite and moved the elective to spring. The plan now fits the expected graduation date.
+ham	medical_education	pharmacy@health-center.example	Prescription ready for collection	Your prescribed medicine is ready at the clinic pharmacy. Identification is required at pickup.
+ham	medical_education	teacher@oak-school.example	Field trip permission form	The class visits the history museum on Friday. Return the signed paper form by Wednesday.
+ham	medical_education	clinic@vision-care.example	Updated eyeglass prescription	Your prescription is available in the patient portal and a printed copy can be collected at reception.
+ham	medical_education	registrar@language-institute.example	Placement result and class time	Your placement result is intermediate two. Classes meet Tuesday evenings beginning next month.
+ham	medical_education	appointments@therapy-center.example	Session moved to 3:30	Your therapist needs to move Tuesday's session thirty minutes later. Call reception if that does not work.
+ham	medical_education	professor@university.example	Office hours moved this week	Thursday office hours will be in the library seminar room because my office is being painted.
+ham	medical_education	lab@community-hospital.example	Specimen received	The laboratory received the specimen ordered by your clinician. Results will go to the secure portal after review.
+ham	medical_education	coach@adult-learning.example	Writing workshop feedback	Your revised opening is clearer and the examples now support the main claim. I left two questions in the margin.
+ham	medical_education	appointments@hearing-clinic.example	Hearing test confirmation	The test is booked for 09:20 next Wednesday. Avoid loud sound for several hours beforehand if possible.
+ham	medical_education	bursar@city-college.example	Tuition payment applied	Your scheduled payment was applied to the autumn term balance. The receipt is available in the student portal.
+ham	medical_education	practice@pediatric-care.example	Vaccination record updated	The vaccination given at yesterday's visit now appears in the patient record. No further dose is due this month.
+ham	medical_education	teacher@music-school.example	Recital rehearsal schedule	The beginner group rehearses at four and performs at six. Please bring the marked music folder.
+ham	medical_education	appointments@physio-clinic.example	Physiotherapy exercise sheet	The attached PDF repeats the three exercises demonstrated today. Stop and call the clinic if pain increases sharply.
+ham	medical_education	advisor@technical-college.example	Internship credit approved	The department approved your placement for six credits after reviewing the supervisor's description.
+ham	medical_education	nurse@community-clinic.example	Flu clinic information	Walk-in vaccinations are available Saturday from nine until noon. Bring your usual patient card.
+ham	medical_education	library@medical-school.example	Journal access restored	Access to the requested journal was restored through the university library. Sign in from the library homepage.
+ham	medical_education	appointments@nutrition-center.example	Dietitian appointment details	Your video appointment is at eleven Friday. Join through the known patient portal rather than an emailed meeting link.
+ham	medical_education	teacher@evening-school.example	Homework clarification	For question four, compare the two sources rather than summarizing each one separately.
+ham	medical_education	clinic@dermatology-practice.example	Biopsy follow-up booked	The clinician scheduled a follow-up for next Monday to discuss the report in person.
+ham	medical_education	registrar@arts-academy.example	Studio assignment	Your painting class has been assigned studio three, with storage shelf B12 for materials.
+ham	medical_education	appointments@imaging-center.example	Imaging appointment preparation	Do not eat for four hours before the scan. Water and prescribed morning medicine are permitted.
+ham	medical_education	professor@university.example	Seminar paper comments	The evidence is strong, but the conclusion introduces a new argument. I suggest moving that section earlier.
+ham	medical_education	portal@dental-care.example	Treatment estimate available	The estimate discussed during your visit is available after normal sign-in to the patient portal.
+ham	medical_education	teacher@oak-school.example	Parent conference times	Your conference is booked for 16:20 on Wednesday in classroom seven. Each meeting is fifteen minutes.
+ham	medical_education	clinic@allergy-center.example	Food diary reminder	Please bring the two-week food diary to Monday's visit. Do not intentionally repeat a reaction before the appointment.
+ham	medical_education	registrar@community-school.example	Ceramics course waitlist update	A place opened in Saturday ceramics. Respond by noon Friday if you still want to enroll.
+ham	medical_education	appointments@cardiology-practice.example	Monitor return reminder	Please return the heart monitor to reception before five tomorrow using the labeled case provided.
+ham	medical_education	advisor@university.example	Research ethics revision	The board needs clearer language about recording and withdrawal. I marked the two affected consent paragraphs.
+ham	medical_education	pharmacy@community-hospital.example	Refill request sent to clinician	The pharmacy sent your refill request to the prescribing clinician. You will receive another notice when reviewed.
+ham	medical_education	teacher@language-institute.example	Conversation group topic	This week's conversation topic is public transportation. Bring one short example from your city.
+ham	medical_education	appointments@women-health.example	Annual visit confirmation	Your annual visit is confirmed for August ninth. Complete the standard history form in the portal beforehand.
+ham	medical_education	library@city-college.example	Loan renewal successful	The two textbooks were renewed through October second. One requested title could not be renewed.
+ham	medical_education	clinic@sleep-center.example	Sleep study arrival information	Arrive at the north entrance at eight in the evening. Comfortable sleepwear and regular medicine are allowed.
+ham	medical_education	professor@technical-college.example	Lab report correction	The data table uses milliseconds while the graph label says seconds. Correct that unit before resubmitting.
+ham	medical_education	appointments@occupational-care.example	Workstation assessment booked	The assessment is scheduled at your office Tuesday morning and should take about forty minutes.
+ham	medical_education	teacher@music-school.example	Lesson practice notes	Practice the left hand slowly through measure twenty, then add the melody without increasing tempo.
+ham	medical_education	clinic@travel-health.example	Travel consultation summary	The portal summary lists the vaccines discussed and the dates for any follow-up doses.
+ham	medical_education	registrar@university.example	Transcript request completed	The official transcript was sent to the institution named in your request through the approved exchange.
+ham	medical_education	appointments@eye-hospital.example	Clinic location changed	Your appointment will be in building B, second floor, while the main eye clinic is renovated.
+ham	medical_education	advisor@adult-learning.example	Study plan for certification	The plan spreads four units over eight weeks and leaves the final week for practice questions.
+ham	medical_education	practice@family-care.example	Routine test reminder	Your clinician ordered a routine test due next month. Schedule it using the clinic number on your patient card.
+ham	medical_education	teacher@oak-school.example	Science fair setup	Projects can be set up Thursday between three and five. Power is available only along the west wall.
+ham	newsletters_marketing	newsletter@botanical-garden.example	November at the garden	Winter glasshouse tours begin this month, and members can reserve places from the official events page. Unsubscribe from newsletters in your member settings.
+ham	newsletters_marketing	updates@corner-books.example	New fiction arriving Friday	This week's shelf includes three translated novels and a local short-story collection. Manage or unsubscribe from mail in your bookstore account.
+ham	newsletters_marketing	bulletin@city-museum.example	Exhibitions and talks this month	The textile exhibition opens Saturday, followed by a curator talk on Thursday evening.
+ham	newsletters_marketing	news@community-gym.example	December class timetable	We added an early yoga class and moved Saturday cycling to the larger studio. Update newsletter preferences in the member portal.
+ham	newsletters_marketing	digest@local-library.example	Library events weekly digest	This week includes a repair workshop, children's story hour, and an evening poetry reading.
+ham	newsletters_marketing	hello@tea-merchant.example	Autumn tea notes	Our new oolong comes from a small hillside garden and has a toasted pear aroma. Unsubscribe using the preference link in your account.
+ham	newsletters_marketing	newsletter@railway-society.example	Railway history society update	Volunteers restored the signal cabin roof and cataloged forty new photographs from the northern branch.
+ham	newsletters_marketing	updates@art-supply.example	Watercolor paper guide	Our staff compared four paper weights and explained when stretching a sheet makes a visible difference.
+ham	newsletters_marketing	bulletin@neighborhood-coop.example	Cooperative bulletin for November	Member voting closes Sunday, the repair cafe needs volunteers, and bulk orders arrive next week.
+ham	newsletters_marketing	news@record-store.example	Friday releases and listening night	Five new releases arrive Friday. The free listening session begins at seven in the back room.
+ham	newsletters_marketing	digest@science-center.example	Night sky guide	Look southeast after sunset for the bright planets. The observatory opens late on the clearest Friday this month.
+ham	newsletters_marketing	hello@bakery.example	Weekend bread list	Saturday's list includes rye, olive rolls, and cardamom buns. Preorders close Thursday afternoon.
+ham	newsletters_marketing	newsletter@cycling-club.example	Club rides for next month	The family ride is eight kilometers and the hill route is forty-two. Routes and meeting points are on the club site.
+ham	newsletters_marketing	updates@language-school.example	Free conversation evenings	Current students can join Tuesday conversation tables without registration. Topics rotate each week.
+ham	newsletters_marketing	bulletin@heritage-trust.example	Restoration diary: the west window	Conservators removed the temporary supports and began matching replacement stone from the original quarry.
+ham	newsletters_marketing	news@cinema-house.example	Classic comedy season	Four restored comedies screen on Sunday afternoons. Members receive the normal ticket discount.
+ham	newsletters_marketing	digest@garden-society.example	Jobs for the winter garden	This month's notes cover pruning currants, protecting pots, and leaving seed heads for birds.
+ham	newsletters_marketing	hello@fabric-shop.example	Natural dye workshop announced	The workshop covers onion skin, madder, and indigo on small cotton samples. Places are limited to twelve.
+ham	newsletters_marketing	newsletter@city-orchestra.example	Program notes before Saturday	Saturday's program pairs a recent local work with two nineteenth-century symphonies.
+ham	newsletters_marketing	updates@coffee-roaster.example	Roastery notes: washed and natural coffees	We explain how drying methods change flavor and share brewing settings used at our tasting counter.
+ham	newsletters_marketing	bulletin@makerspace.example	Makerspace tool training dates	Laser cutter orientation is Tuesday and woodshop refresher training is Saturday morning.
+ham	newsletters_marketing	news@independent-press.example	Three essays from our winter issue	Read essays about public parks, coastal maps, and the craft of repairing old instruments.
+ham	newsletters_marketing	digest@farm-market.example	Saturday market vendors	The orchard returns with late pears, and two new stalls will sell mushrooms and handmade soap.
+ham	newsletters_marketing	hello@camera-shop.example	A practical guide to winter photographs	Our guide covers battery life, condensation, and exposing bright snow without losing detail.
+ham	newsletters_marketing	newsletter@history-group.example	Local history notes	A newly indexed diary describes the 1912 flood and the temporary footbridge built afterward.
+ham	newsletters_marketing	updates@outdoor-store.example	Repair your waterproof jacket	The latest article shows how to clean, patch, and reproof a jacket rather than replace it.
+ham	newsletters_marketing	bulletin@public-radio.example	Programs worth hearing this week	The schedule includes a live chamber concert and a documentary about disappearing wetlands.
+ham	newsletters_marketing	news@ceramic-studio.example	Open studio and kiln calendar	Members can book December shelves now. The glaze test tiles are displayed beside kiln two.
+ham	newsletters_marketing	digest@book-club.example	Reading group selections	Next month's groups chose a family novel, a history of maps, and a short science collection.
+ham	newsletters_marketing	hello@museum-shop.example	Member gift guide	The shop selected locally printed cards, exhibition books, and small studio ceramics for the season.
+ham	newsletters_marketing	newsletter@food-coop.example	Co-op recipes and supplier news	This issue has a squash stew recipe and an interview with the mill that supplies our oats.
+ham	newsletters_marketing	updates@theater.example	Rehearsal room journal	The director discusses the set model and why the final scene now happens in near darkness.
+ham	newsletters_marketing	bulletin@astronomy-club.example	Meteor watch moved to Saturday	Cloud is expected Friday, so the club watch moves to Saturday at the same hillside location.
+ham	newsletters_marketing	news@local-park.example	Park volunteer day	Volunteers will clear the pond path and plant native hedge seedlings. Tools and lunch are provided.
+ham	newsletters_marketing	digest@recipe-journal.example	Five soups for cold evenings	The new collection includes lentil, mushroom, tomato, squash, and a quick noodle broth.
+ham	newsletters_marketing	hello@stationery-shop.example	New notebooks from a small bindery	The notebooks use recycled paper and lie flat when open. Three cover colors are now in stock.
+ham	newsletters_marketing	newsletter@architecture-center.example	Public lecture: homes after heatwaves	Thursday's speaker studies passive cooling and shaded public space in dense neighborhoods.
+ham	newsletters_marketing	updates@choir.example	Winter concert news	Rehearsals move to the main hall next week, and advance audience tickets are now available.
+ham	newsletters_marketing	bulletin@repair-cafe.example	What we fixed in October	Volunteers repaired lamps, radios, two coats, and a surprisingly stubborn mechanical clock.
+ham	newsletters_marketing	news@walking-group.example	Three November walks	Choose a canal route, a woodland loop, or a gentle town history walk with frequent stops.
+ham	newsletters_marketing	digest@poetry-press.example	A poem and interview for Sunday	This week's note pairs one new poem with a short interview about revision and sound.
+ham	newsletters_marketing	hello@plant-nursery.example	Bare-root tree season begins	Bare-root apples and plums arrive next week. Our guide explains choosing a rootstock for small gardens.
+ham	newsletters_marketing	newsletter@folk-club.example	November sessions and workshops	The singing session remains free, while the fiddle workshop asks participants to reserve a chair.
+ham	newsletters_marketing	updates@design-journal.example	Making error messages more useful	Our latest essay looks at concrete wording, recovery steps, and respectful handling of user mistakes.
+ham	newsletters_marketing	bulletin@community-kitchen.example	Community kitchen menu	Wednesday's meal is vegetable pie with apple crumble. Pay what you can; no booking is required.
+ham	newsletters_marketing	news@conservation-group.example	River survey results	Volunteers recorded more kingfishers this year and fewer invasive plants along the restored bank.
+ham	newsletters_marketing	digest@woodworking-school.example	Workshop notes on sharp tools	This month's note explains safer sharpening angles and how to test an edge without touching it.
+ham	newsletters_marketing	hello@independent-grocer.example	Citrus season at the shop	Mandarins and blood oranges arrived this week, alongside the usual local winter vegetables.
+ham	newsletters_marketing	newsletter@dance-center.example	Spring course preview	The spring schedule includes beginner swing, contemporary basics, and an accessible seated class.
+ham	newsletters_marketing	updates@city-zoo.example	Keeper journal: red pandas	The keepers describe a new climbing structure and how they hide food to encourage foraging.
+ham	security_training	security-training@northwind.example	Gift card and password phishing examples	Tomorrow's security workshop quotes urgent password links, fake invoices, and secret gift card requests so staff learn not to follow them.
+ham	security_training	awareness@northwind.example	Examples of gift card phishing	The lesson quotes fake invoices, urgent password warnings, and secret gift card requests. These are examples only; do not follow them.
+ham	security_training	security@university.example	Password and gift-card scam workshop	The workshop uses harmless examples of urgent password links and gift card codes so employees can practice reporting phishing.
+ham	security_training	training@community-bank.example	Recognizing bank impersonation	A logo and familiar colors do not prove an email came from the bank. Open the official app independently to check alerts.
+ham	security_training	awareness@city-hospital.example	Remote support scam reminder	Real support staff will not ask you to install remote-control software and then sign in to personal banking.
+ham	security_training	security-training@northwind.example	Invoice fraud exercise results	Most teams spotted the changed bank account. Always confirm payment-detail changes with the vendor through a known contact.
+ham	security_training	security@local-council.example	Report suspicious messages with one click	Use the report button for unexpected password, parcel, payment, or account messages. The security team will review them.
+ham	security_training	awareness@charity-network.example	Protect donations from payment diversion	If a supplier changes bank details by email, pause and call the number already stored in your records.
+ham	security_training	training@school-district.example	Phishing examples for staff	Training examples include a principal requesting secret gift cards and a fake password page. Employees should report both messages.
+ham	security_training	security@research-lab.example	Safe handling of unexpected attachments	Do not run executable files or enable macros from unsolicited mail. Contact the sender separately when a document is unexpected.
+ham	security_training	awareness@northwind.example	What a signed domain tells you	A valid domain signature supports where mail came from, but it does not make every claim or link trustworthy.
+ham	security_training	training@public-library.example	Library privacy and email links	Patrons should open the library site from a bookmark when a message claims an account is locked or a fee is due.
+ham	security_training	security@community-college.example	Credential theft practice scenario	The sample login page copies school branding but uses an unrelated domain. Never enter a password there.
+ham	security_training	awareness@utility.example	Utility shutoff scams increase in winter	Scammers threaten immediate shutoff and demand unusual payment. Call the number printed on your regular bill.
+ham	security_training	training@health-center.example	Patient portal message safety	Clinic email may say a result is ready, but results and forms should be viewed through the known patient portal.
+ham	security_training	security@northwind.example	Malicious archive demonstration	The training archive contains harmless text only. It illustrates how double extensions can disguise an executable attachment.
+ham	security_training	awareness@travel-company.example	Fake booking change messages	Fraudulent notices may invent canceled flights and refund fees. Check the reservation in the official airline app.
+ham	security_training	training@credit-union.example	One-time codes are not for callers	A fraudster may ask for a security code while pretending to reverse a charge. Never read the code to them.
+ham	security_training	security@museum.example	Security minute: QR codes in email	Treat an emailed QR code as a link. Check where it leads and avoid entering credentials on unfamiliar sites.
+ham	security_training	awareness@northwind.example	Security workshop quotes common scams	Tomorrow's workshop quotes secret gift card requests, fake invoices, and urgent password messages. No real payment or login is involved.
+ham	security_training	training@nonprofit.example	Donation refund scam example	An attacker overpays with a fake check and asks the charity to return the difference before the check fails.
+ham	security_training	security@city-transit.example	Password manager refresher	Use a unique generated password for each service so a stolen password cannot unlock other accounts.
+ham	security_training	awareness@university.example	Unexpected research invitations	Fake conferences often promise publication, request immediate fees, and provide no credible review committee.
+ham	security_training	training@northwind.example	Gift cards are a phishing example	This exercise includes photographs of fake redemption codes and password pages only to teach employees what not to follow.
+ham	security_training	security@regional-air.example	Travel account security tips	Type the airline address yourself when a message claims your booking changed. Do not copy an email link into the browser.
+ham	security_training	awareness@city-hospital.example	Protecting patient records from phishing	Stop when a message asks for a mailbox password, record export, or urgent attachment outside established workflows.
+ham	security_training	training@school-district.example	Fake invoice and password examples	The course quotes an urgent invoice, a false password link, and a gift card request so staff can identify the warning signs.
+ham	security_training	security@northwind.example	Reporting does not notify the sender	Using the report action sends the message to the internal security queue and does not reply to the suspected attacker.
+ham	security_training	awareness@small-business.example	Search advertisement support scams	Do not trust a phone number merely because it appears above search results. Use support details from the product itself.
+ham	security_training	training@county-services.example	Tax refund scam warning	Government services do not require gift cards, cryptocurrency, or a password emailed to an agent to issue a refund.
+ham	security_training	security@community-gym.example	Member-data handling refresher	Send member exports only through the approved encrypted service, never as an attachment to an unexpected request.
+ham	security_training	awareness@northwind.example	Practice reporting gift-card mail	The harmless sample asks for a secret gift card and an email password. Report it rather than replying or following its link.
+ham	security_training	training@retail-coop.example	Supplier impersonation drill	The exercise changes one letter in a supplier domain and asks for an urgent wire to a new beneficiary.
+ham	security_training	security@medical-school.example	Macro-enabled documents blocked	Office documents that request macros are quarantined by default. Contact IT through the help desk for legitimate exceptions.
+ham	security_training	awareness@pension-service.example	Investment scam warning	Guaranteed returns, secret opportunities, and pressure to move retirement savings are strong fraud signals.
+ham	security_training	training@northwind.example	Safe account recovery	Begin account recovery from the application or a known bookmark. Never send recovery codes or seed phrases by email.
+ham	security_training	security@arts-academy.example	Protecting event payments	Verify late changes to artist or venue payment details by calling the contact already listed in the signed contract.
+ham	security_training	awareness@mobile-carrier.example	SIM swap impersonation	Carrier staff will not ask you to forward a login code or disable account protection for an unsolicited caller.
+ham	security_training	training@community-bank.example	Card alert versus card theft message	A legitimate alert can still be used as bait in a separate scam. Review activity inside the official banking app.
+ham	security_training	security@northwind.example	Email display names are untrusted	A message can claim any display name. Check the actual address and rely on your address book for known contacts.
+ham	security_training	awareness@public-radio.example	Protecting social media accounts	Beware copyright notices that lead to fake login pages. Open creator tools directly to review any real complaint.
+ham	security_training	training@local-library.example	Parcel text and email scams	A small redelivery fee can be bait for stealing a full card number. Check expected parcels through the retailer.
+ham	security_training	security@northwind.example	Security-key enrollment workshop	Bring your issued key to the help desk. Staff will show enrollment but will never ask for your password by email.
+ham	security_training	awareness@food-coop.example	Executive impersonation without executives	Small organizations are targeted too. Fraudsters may impersonate a manager, treasurer, board chair, or familiar supplier.
+ham	security_training	training@technical-college.example	Student phishing examples	Examples cover fake job invoices, password forms, and gift card equipment payments. They are quoted for training and require no action.
+ham	security_training	security@northwind.example	When to call the security team	Call through the directory when a message combines urgency, secrecy, unexpected payment, credentials, or software installation.
+ham	security_training	awareness@insurance-provider.example	Claims attachment safety	Real claims documents can be verified in the policy portal. Do not install a special viewer from an unsolicited message.
+ham	security_training	training@municipal-office.example	Public records request impersonation	Confirm unusual bulk exports with the records officer before releasing files, even when the request looks official.
+ham	security_training	security@northwind.example	Password phishing practice results	Employees correctly reported the fake password link and secret gift card request used in yesterday's authorized exercise.
+ham	security_training	awareness@pharmacy-coop.example	Medication refund fraud	The pharmacy will not ask for a card PIN or online-banking login to issue a normal purchase refund.
+ham	freelance_payments	avery@example.com	Invoice for November illustrations	Attached is my invoice for the four illustrations delivered this month. The total and our agreed payment details are unchanged.
+ham	freelance_payments	client@small-press.example	Illustration invoice approved	We approved invoice 48 for the cover artwork. Accounts will send payment through the same method used last quarter.
+ham	freelance_payments	mina@example.com	Deposit received, thank you	I received the project deposit through PayPal. I will send the first character sketches by Wednesday.
+ham	freelance_payments	producer@audio-studio.example	Payment schedule for editing work	The contract uses half on booking and half after final delivery. Please invoice the studio at the usual address.
+ham	freelance_payments	devon@example.com	Commission slot and pricing	A half-body color commission is 140 dollars. If that works, I can start after the written brief is approved.
+ham	freelance_payments	accounts@design-client.example	Invoice DC-221 scheduled	Your invoice is scheduled for Friday's payment run using the bank details already on file.
+ham	freelance_payments	kai@example.com	Receipt for animation deposit	Thank you for the 25 percent deposit. This receipt records the payment and the agreed delivery date.
+ham	freelance_payments	editor@journal.example	Copyediting fee confirmation	We can approve the quoted fee for fifteen thousand words. Please begin after the author sends the clean manuscript.
+ham	freelance_payments	riley@example.com	Final files and remaining balance	The final logo files are in the shared folder. The remaining balance is due under the original invoice terms.
+ham	freelance_payments	studio@indie-game.example	Concept art milestone accepted	The team accepted the environment milestone without revisions. Submit your invoice against purchase order IG-73.
+ham	freelance_payments	sasha@example.com	PayPal address for the commission	You can send the agreed payment to the PayPal address on my signed estimate. I will confirm when it arrives.
+ham	freelance_payments	accounts@local-theater.example	Costume design invoice received	We received your invoice and matched it to the production budget. Payment is due within fourteen days.
+ham	freelance_payments	jamie@example.com	Revised quote for mural work	The revised quote includes the additional wall preparation and removes the unused equipment rental.
+ham	freelance_payments	client@architecture-firm.example	Rendering revision approved	The client approved the extra rendering revision at the hourly rate in your contract. Add it to the final invoice.
+ham	freelance_payments	noor@example.com	Commission sketch ready	The initial sketch is ready for review. No further payment is due until you approve the composition.
+ham	freelance_payments	payments@magazine.example	Contributor payment processed	Payment for your essay was processed through the contributor account already on file. The remittance note is attached.
+ham	freelance_payments	ellis@example.com	Photography day rate	My day rate covers eight hours and basic color correction. Travel outside the city is billed separately at cost.
+ham	freelance_payments	producer@documentary.example	Interview transcript invoice	Please invoice for the three completed transcripts and list each recording date on a separate line.
+ham	freelance_payments	lee@example.com	Thanks for the commission payment	The payment arrived this morning. I will package the finished piece and send tracking after collection.
+ham	freelance_payments	accounts@museum.example	Freelance workshop payment	Your workshop fee and approved material expenses will be included in next Tuesday's transfer.
+ham	freelance_payments	marin@example.com	Website maintenance invoice	This month's invoice covers the accessibility fixes and routine dependency updates described in the work log.
+ham	freelance_payments	client@bakery.example	Product photos selected	We selected twelve final images. Please send the remaining invoice using the billing address in our agreement.
+ham	freelance_payments	jordan@example.com	Character commission revision	I incorporated the jacket and hairstyle notes. One minor revision remains included in the quoted price.
+ham	freelance_payments	accounts@research-group.example	Consulting hours approved	The principal investigator approved twenty-two consulting hours. Use grant code RG-19 on your invoice.
+ham	freelance_payments	casey@example.com	Translation project quote	The quote is 680 dollars for the complete document, including one proofreading pass by Friday.
+ham	freelance_payments	publisher@small-press.example	Royalty statement for spring	The attached statement lists print and electronic sales separately. The payment matches the contract percentage.
+ham	freelance_payments	emery@example.com	Final portrait approval	Thank you for approving the portrait. The final high-resolution file will be released after the scheduled balance clears.
+ham	freelance_payments	client@coffee-shop.example	Menu design deposit sent	We sent the agreed deposit to the account on your original invoice. Please confirm before starting production files.
+ham	freelance_payments	robin@example.com	Editing invoice 17	Invoice 17 covers the structural edit delivered Monday. Payment can use the same route as the previous two projects.
+ham	freelance_payments	accounts@film-coop.example	Sound mix payment confirmation	The cooperative issued payment for the final sound mix and the one approved pickup session.
+ham	freelance_payments	drew@example.com	Commission queue update	Your commission is third in the current queue. I expect to send a rough sketch near the end of next week.
+ham	freelance_payments	client@nonprofit.example	Annual report layout approved	The board approved the layout and the additional chart work. Please include both line items on the final invoice.
+ham	freelance_payments	sky@example.com	Ceramic commission shipping cost	The packed piece weighs just under three kilograms. Insured shipping is 28 dollars, exactly as estimated.
+ham	freelance_payments	accounts@music-label.example	Session musician payment	Your session fee was submitted with the correct tax form. The transfer should arrive within five business days.
+ham	freelance_payments	taylor@example.com	Storyboard milestone invoice	The milestone invoice covers sequences one through six, which were approved in yesterday's review.
+ham	freelance_payments	client@farm-coop.example	Packaging copy final payment	We approved the final packaging copy. Accounts will pay the remaining half under the contract's thirty-day terms.
+ham	freelance_payments	morgan@example.com	Custom jewelry deposit receipt	This confirms the deposit for the silver pendant. I will send a wax model photograph before casting.
+ham	freelance_payments	accounts@education-studio.example	Course video invoice accepted	Your invoice for editing modules three and four passed review and entered the normal payment queue.
+ham	freelance_payments	quinn@example.com	Voiceover usage fee	The quote includes the recording session and one year of regional web advertising usage.
+ham	freelance_payments	client@event-planner.example	Calligraphy place cards count	The final count is 86 cards. Please revise the invoice from the preliminary estimate of 80.
+ham	freelance_payments	rowan@example.com	Final payment received	The final payment cleared through the agreed platform. Your files are now available in the project folder.
+ham	freelance_payments	accounts@city-gallery.example	Artist talk honorarium	The gallery will pay the honorarium and local train fare together after receiving your travel receipt.
+ham	freelance_payments	alexis@example.com	Commission cancellation refund	I issued the deposit refund through the same payment service because I cannot meet the revised deadline.
+ham	freelance_payments	client@community-radio.example	Podcast music license fee	We approved the nonexclusive license fee for twelve episodes. Send an invoice referencing the signed agreement.
+ham	freelance_payments	bailey@example.com	Monthly support retainer	The retainer invoice covers up to ten support hours in December, with unused hours rolling over once.
+ham	freelance_payments	accounts@craft-market.example	Vendor photography payment	Payment for the market photographs will be released after the final web-sized gallery is delivered.
+ham	freelance_payments	cameron@example.com	Book cover commission terms	The fee includes ebook and one print edition usage. Additional language editions would require a separate license.
+ham	freelance_payments	client@local-band.example	Poster files approved	The band approved both poster sizes. Send your final invoice to the same contact copied on the estimate.
+ham	freelance_payments	dana@example.com	Accessibility audit invoice	The invoice covers the audit, written findings, and one follow-up call, all at the quoted fixed price.
+ham	freelance_payments	accounts@food-journal.example	Recipe development payment	We accepted the three tested recipes and submitted your contributor payment for processing.
+ham	community_open_source	maintainer@forge-project.example	Security release 2.4.1 available	The project fixed two parser vulnerabilities. Download from the established project website and verify the published package signature.
+ham	community_open_source	issues@forge-project.example	Issue 418 reproduced	I reproduced the crash with an empty multipart boundary and added a minimal sample message to the issue.
+ham	community_open_source	review@forge-project.example	Review comments on parser cleanup	The state-machine simplification looks good. Please add one test for a folded header ending at EOF.
+ham	community_open_source	list@rust-mail.example	Meeting notes from the mail working group	We discussed streaming bodies, cancellation semantics, and how to report partial parsing without losing raw data.
+ham	community_open_source	maintainer@terminal-ui.example	Contributor guide updated	The guide now documents the snapshot workflow and how to run keyboard tests without a graphical session.
+ham	community_open_source	issues@search-engine.example	Benchmark data for large indexes	I uploaded the raw query timings and hardware description so others can reproduce the comparison.
+ham	community_open_source	review@database-driver.example	Transaction retry patch	The retry boundary should stay above the user callback to avoid running application side effects twice.
+ham	community_open_source	list@local-linux.example	Saturday install workshop	Volunteers will help with backups, installation media, and hardware questions at the library meeting room.
+ham	community_open_source	maintainer@crypto-library.example	Security release candidate available	This release fixes parser and signature vulnerabilities. Download the package from the established project website for testing.
+ham	community_open_source	issues@accessibility-tool.example	Screen reader label missing	The settings toggle announces only checked state. I proposed a label and included output from two screen readers.
+ham	community_open_source	review@forge-project.example	Review the security release notes	The notes describe two parser vulnerabilities and tell users to download from the project website and verify its package signature.
+ham	community_open_source	list@open-maps.example	Mapping party next Sunday	We will survey crossings and bicycle parking around the station. New contributors can borrow equipment.
+ham	community_open_source	maintainer@image-codec.example	Security release fixes decoder vulnerability	Version 3.2 is available from the established project website with a signed package and published checksum.
+ham	community_open_source	issues@calendar-app.example	Recurring event skips leap day	A yearly event created on February 29 moves incorrectly after editing its reminder. Steps are attached.
+ham	community_open_source	review@web-framework.example	Documentation example correction	The example needs to await the server handle before shutdown; otherwise it can exit before flushing responses.
+ham	community_open_source	list@community-network.example	Neighborhood network maintenance	The rooftop relay will reboot at 06:00 Sunday. Expected interruption is under ten minutes.
+ham	community_open_source	maintainer@font-project.example	New glyph contribution merged	The added glyphs match the existing stroke weight and include anchors for the supported combining marks.
+ham	community_open_source	issues@backup-tool.example	Restore progress stalls at 99 percent	The restore completes successfully, but the progress denominator omits the final metadata phase.
+ham	community_open_source	review@database-driver.example	Prepared statement cache limits	A count limit alone is vulnerable to a few huge statements. Could we also bound the total key bytes?
+ham	community_open_source	list@language-tools.example	Translation sprint summary	Contributors completed the navigation strings and flagged six technical terms for maintainer review.
+ham	community_open_source	maintainer@package-index.example	Namespace policy proposal	The draft favors transparent ownership history and a documented appeal when an abandoned name is reassigned.
+ham	community_open_source	issues@terminal-ui.example	Focus lost after closing dialog	Pressing Escape closes the dialog but returns focus to the document root instead of the launching button.
+ham	community_open_source	review@search-engine.example	Tokenizer benchmark methodology	Please separate warm and cold runs and publish the indexed byte count alongside document count.
+ham	community_open_source	list@free-hardware.example	Open hardware evening	This month's talks cover repairable keyboards and a low-cost air-quality sensor built from common parts.
+ham	community_open_source	maintainer@http-client.example	Security release 5.0.2 available	The project corrected request parser vulnerabilities. Packages and signatures are published on the established project website.
+ham	community_open_source	issues@note-app.example	Export drops nested checklist state	A nested checked item becomes an ordinary bullet in Markdown export. The sample notebook is synthetic.
+ham	community_open_source	review@forge-project.example	Avoid holding lock across await	The current branch holds the index guard while reading the network stream. Moving parsing outside should prevent starvation.
+ham	community_open_source	list@civic-data.example	Transit dataset schema discussion	The proposal adds elevator status and separates scheduled accessibility from real-time outages.
+ham	community_open_source	maintainer@audio-editor.example	Beta testers needed for waveform cache	The new cache reduces startup time on long recordings. Test with copies because the file format is still experimental.
+ham	community_open_source	issues@compiler-tools.example	Diagnostic points to wrong token	For a missing comma in a generic list, the error highlights the following closing bracket instead.
+ham	community_open_source	review@archive-library.example	Extraction budget names	Could we name the limits compressed bytes, expanded bytes, entry count, and nesting depth so callers cannot confuse them?
+ham	community_open_source	list@privacy-group.example	Minutes from the privacy engineering call	Topics included telemetry defaults, data retention, and testing that deletion reaches derived indexes.
+ham	community_open_source	maintainer@text-editor.example	Plugin API deprecation schedule	The old command registration API remains supported for two releases, with warnings beginning next month.
+ham	community_open_source	issues@mail-tool.example	Quoted printable line ending bug	A soft line break followed by a lone carriage return is preserved incorrectly in the decoded body.
+ham	community_open_source	review@crypto-library.example	Constant-time comparison test	The functional test is useful, but timing guarantees should come from the primitive rather than a noisy wall-clock assertion.
+ham	community_open_source	list@repair-community.example	Repair manual translation help	We need reviewers for appliance safety terminology in the new Spanish translation.
+ham	community_open_source	maintainer@data-format.example	Security update for the parser	The new release rejects duplicate keys that could bypass validation. Verify the package signature from the project website.
+ham	community_open_source	issues@window-manager.example	Pointer jumps between mixed-scale monitors	The pointer position is multiplied twice when crossing from the high-density display to the standard display.
+ham	community_open_source	review@web-framework.example	Cancellation behavior looks correct	Dropping the response future now cancels the body producer and releases the connection permit.
+ham	community_open_source	list@open-science.example	Reproducibility clinic Thursday	Bring a small analysis and its environment description. Volunteers will help turn it into a repeatable workflow.
+ham	community_open_source	maintainer@package-manager.example	Security release 8.1 published	This project release resolves archive parser vulnerabilities. Download through the established website and check the signed manifest.
+ham	community_open_source	issues@screen-reader.example	Table header announced twice	The first column header is repeated when moving backward from the second data cell.
+ham	community_open_source	review@image-codec.example	Integer conversion needs explicit check	The image dimension is unsigned in the format but converted to a platform size before the allocation bound.
+ham	community_open_source	list@community-garden.example	Tool shed inventory morning	We will label shared tools and repair two wheelbarrows. Please bring work gloves if you have them.
+ham	community_open_source	maintainer@database-driver.example	Security release candidate 4.2.1	The candidate fixes two protocol parser vulnerabilities. Download from the normal project website and verify the package signature.
+ham	community_open_source	issues@documentation-site.example	Search results ignore headings	A query matching only a section heading does not return the page unless the phrase also occurs in body text.
+ham	community_open_source	review@terminal-ui.example	Color is not the only status signal	The proposed icons make success and failure distinguishable in monochrome terminals as well.
+ham	community_open_source	list@mesh-network.example	Firmware testing this weekend	We will test roaming between three access points and collect logs only from volunteer devices.
+ham	community_open_source	maintainer@forge-project.example	Security release announcement	A new release fixes parser vulnerabilities reported last month. The official project website lists signed downloads and checksums.
+ham	community_open_source	issues@search-engine.example	Phrase query with stop words	Searching for a phrase containing two stop words returns extra documents because positions collapse during analysis.

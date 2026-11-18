@@ -12,8 +12,9 @@ use crate::{
     ImapFetchedHeaders, ImapFetchedMessage, ImapSettings, InboxClass, IngestMessage, Message,
     MessageContentAvailability, MessageContentStatus, MessageFilter, MessageId, MessageInstance,
     MessageLink, MessageLinkSource, MessageSort, MessageSummary, NewAccount, NewContact, NewFolder,
-    Page, RemoteMessageIdentity, Result, SearchPage, SearchRequest, SyncBatchResult,
-    ThreadMembership, UserClassification,
+    Page, ProviderSpamAssessment, ProviderSpamEvidence, ProviderSpamEvidenceSource,
+    ProviderSpamVerdict, RemoteMessageIdentity, Result, SearchPage, SearchRequest,
+    SpamEvidenceVerdict, SyncBatchResult, ThreadMembership, UserClassification,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use chrono::Utc;
@@ -223,6 +224,7 @@ impl Backend {
             .await?;
         let mut connection = database.connect()?;
         schema::migrate(&connection).await?;
+        crate::spam::initialize(&mut connection).await?;
         let search_index = prepare_search_index(&config.profile_dir, &mut connection).await?;
         let blobs = BlobStore::open(config.profile_dir.join("blobs")).await?;
         let dkim_verifier = DkimVerifier::new(config.dkim_dns).map_err(|error| {
@@ -245,7 +247,26 @@ impl Backend {
         backend.recover_interrupted_downloads().await?;
         backend.backfill_thread_projection().await?;
         backend.backfill_mime_projection().await?;
+        let initial_spam = backend.spam_classifier().reclassify_pending(256).await?;
+        if initial_spam.remaining > 0 {
+            backend.schedule_spam_reclassification();
+        }
         Ok(backend)
+    }
+
+    fn schedule_spam_reclassification(&self) {
+        let backend = self.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok(batch) = backend.spam_classifier().reclassify_pending(128).await else {
+                    break;
+                };
+                if batch.processed == 0 || batch.remaining == 0 {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        });
     }
 
     async fn recover_interrupted_downloads(&self) -> Result<()> {
@@ -355,6 +376,10 @@ impl Backend {
 
     pub fn heuristics(&self) -> crate::Heuristics {
         crate::Heuristics::new(self.clone())
+    }
+
+    pub fn spam_classifier(&self) -> crate::SpamClassifier {
+        crate::SpamClassifier::new(self.clone())
     }
 
     pub fn sync(&self) -> Sync {
@@ -1016,6 +1041,9 @@ impl Backend {
                 )
                 .await?;
         }
+        let spam_model_changed =
+            crate::spam::refresh_training_and_classification_on(&transaction, message_id, now)
+                .await?;
         enqueue_search_on(&transaction, message_id).await?;
         let event = insert_event(
             &transaction,
@@ -1030,6 +1058,11 @@ impl Backend {
         self.flush_search_projection().await?;
         let _ = self.inner.events.send(event);
         self.evaluate_automation(&[message_id]).await?;
+        drop(_search_guard);
+        if spam_model_changed {
+            self.spam_classifier().reclassify_pending(64).await?;
+            self.schedule_spam_reclassification();
+        }
         let connection = self.inner.connection.lock().await;
         load_content_status_on(&connection, message_id).await
     }
@@ -1202,6 +1235,9 @@ impl Backend {
                             ],
                         )
                         .await?;
+                    refresh_provider_spam_evidence_in_transaction(&transaction, existing, remote)
+                        .await?;
+                    enqueue_search_on(&transaction, existing).await?;
                     let is_read = remote
                         .flags
                         .iter()
@@ -1370,7 +1406,11 @@ impl Backend {
                         ],
                     )
                     .await?;
+                refresh_provider_spam_evidence_in_transaction(&transaction, message.id, remote)
+                    .await?;
             }
+            crate::spam::classify_message_on(&transaction, message.id, Utc::now().timestamp())
+                .await?;
             events.push(
                 insert_event(
                     &transaction,
@@ -1881,7 +1921,7 @@ impl Messages {
         let mut rows = connection
             .query(
                 &format!(
-                    "SELECT {}, rfc_message_id, to_addresses, cc_addresses, bcc_addresses, delivered_to_addresses, list_id, body_text, body_html, dkim_json, in_reply_to_json, references_json, reply_to_addresses, parent_message_id, threading_source, sender_trust FROM messages m WHERE m.id = ?1",
+                    "SELECT {}, rfc_message_id, to_addresses, cc_addresses, bcc_addresses, delivered_to_addresses, list_id, body_text, body_html, dkim_json, in_reply_to_json, references_json, reply_to_addresses, parent_message_id, threading_source, sender_trust, user_classification FROM messages m WHERE m.id = ?1",
                     SUMMARY_COLUMNS
                 ),
                 (id.to_string(),),
@@ -1908,6 +1948,10 @@ impl Messages {
         let source = crate::thread::parse_source(&row.get::<String>(SUMMARY_COLUMN_COUNT + 13)?)?;
         let sender_trust =
             crate::thread::parse_sender_trust(&row.get::<String>(SUMMARY_COLUMN_COUNT + 14)?)?;
+        let user_classification = row
+            .get::<Option<String>>(SUMMARY_COLUMN_COUNT + 15)?
+            .map(|value| parse_user_classification(&value))
+            .transpose()?;
         drop(rows);
 
         let mut rows = connection
@@ -1996,6 +2040,8 @@ impl Messages {
             local_folder_ids.push(parse_id(row.get::<String>(0)?, "folder")?);
         }
         drop(rows);
+        let provider_spam = load_provider_spam_assessment_on(&connection, id).await?;
+        let local_spam = crate::spam::load_assessment_on(&connection, id).await?;
         let mut rows = connection
             .query(
                 "SELECT hf.id, hf.message_id, hf.heuristic_id, hf.heuristic_version, hf.code, hf.presentation, hf.severity, hf.target_kind, hf.target_id, hf.text, hf.evidence_json, hf.source_kind, hf.created_at, responses.dismissed_at FROM heuristic_findings hf JOIN heuristics h ON h.id = hf.heuristic_id AND h.version = hf.heuristic_version AND h.enabled = 1 AND h.deleted_at IS NULL LEFT JOIN heuristic_finding_responses responses ON responses.finding_id = hf.id WHERE hf.message_id = ?1 ORDER BY CASE hf.severity WHEN 'danger' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END, hf.presentation, hf.id",
@@ -2047,6 +2093,9 @@ impl Messages {
             links,
             instances,
             local_folder_ids,
+            user_classification,
+            provider_spam,
+            local_spam,
             dkim,
             findings,
         })
@@ -2127,6 +2176,9 @@ impl Messages {
             transaction.rollback().await?;
             return Err(not_found("message", id));
         }
+        let model_changed =
+            crate::spam::sync_user_training_on(&transaction, id, classification, now).await?;
+        crate::spam::classify_message_on(&transaction, id, now).await?;
         let event = insert_event(
             &transaction,
             now,
@@ -2140,6 +2192,14 @@ impl Messages {
         drop(connection);
         self.0.flush_search_projection().await?;
         let _ = self.0.inner.events.send(event);
+        drop(_search_guard);
+        if model_changed {
+            // Keep feedback latency bounded while making immediate progress on
+            // the durable reclassification queue. Hosts can drain the rest
+            // through `SpamClassifier::reclassify_pending` while idle.
+            self.0.spam_classifier().reclassify_pending(64).await?;
+            self.0.schedule_spam_reclassification();
+        }
         Ok(())
     }
 
@@ -3004,10 +3064,10 @@ fn optional_database_u32(value: Option<i64>, field: &str) -> Result<Option<u32>>
         .transpose()
 }
 
-const WARM_PREDICATE: &str = "m.user_classification IS NOT 'spam' AND m.from_address IS NOT NULL AND EXISTS (SELECT 1 FROM contact_addresses ca WHERE ca.address = m.from_address COLLATE NOCASE)";
-const COLD_PREDICATE: &str = "m.user_classification IS NOT 'spam' AND (m.from_address IS NULL OR NOT EXISTS (SELECT 1 FROM contact_addresses ca WHERE ca.address = m.from_address COLLATE NOCASE))";
-const SPAM_PREDICATE: &str = "COALESCE(m.user_classification = 'spam', 0)";
-const SUMMARY_COLUMNS: &str = "m.id, m.subject, m.from_address, m.from_name, m.preview, m.sent_at, m.received_at, m.size_bytes, m.has_attachment, m.is_read, m.is_starred, CASE WHEN m.user_classification = 'spam' THEN 'spam' WHEN m.from_address IS NOT NULL AND EXISTS (SELECT 1 FROM contact_addresses ca WHERE ca.address = m.from_address COLLATE NOCASE) THEN 'warm' ELSE 'cold' END, m.content_state, m.thread_id, m.content_availability";
+pub(crate) const WARM_PREDICATE: &str = "NOT (COALESCE(m.user_classification = 'spam', 0) OR (m.user_classification IS NULL AND ((EXISTS (SELECT 1 FROM provider_spam_evidence pse WHERE pse.message_id = m.id AND pse.verdict = 'spam') AND NOT EXISTS (SELECT 1 FROM provider_spam_evidence pse WHERE pse.message_id = m.id AND pse.verdict = 'not_spam')) OR EXISTS (SELECT 1 FROM local_spam_assessments lsa WHERE lsa.message_id = m.id AND lsa.verdict = 'spam')))) AND m.from_address IS NOT NULL AND EXISTS (SELECT 1 FROM contact_addresses ca WHERE ca.address = m.from_address COLLATE NOCASE)";
+pub(crate) const COLD_PREDICATE: &str = "NOT (COALESCE(m.user_classification = 'spam', 0) OR (m.user_classification IS NULL AND ((EXISTS (SELECT 1 FROM provider_spam_evidence pse WHERE pse.message_id = m.id AND pse.verdict = 'spam') AND NOT EXISTS (SELECT 1 FROM provider_spam_evidence pse WHERE pse.message_id = m.id AND pse.verdict = 'not_spam')) OR EXISTS (SELECT 1 FROM local_spam_assessments lsa WHERE lsa.message_id = m.id AND lsa.verdict = 'spam')))) AND (m.from_address IS NULL OR NOT EXISTS (SELECT 1 FROM contact_addresses ca WHERE ca.address = m.from_address COLLATE NOCASE))";
+pub(crate) const SPAM_PREDICATE: &str = "(COALESCE(m.user_classification = 'spam', 0) OR (m.user_classification IS NULL AND ((EXISTS (SELECT 1 FROM provider_spam_evidence pse WHERE pse.message_id = m.id AND pse.verdict = 'spam') AND NOT EXISTS (SELECT 1 FROM provider_spam_evidence pse WHERE pse.message_id = m.id AND pse.verdict = 'not_spam')) OR EXISTS (SELECT 1 FROM local_spam_assessments lsa WHERE lsa.message_id = m.id AND lsa.verdict = 'spam'))))";
+const SUMMARY_COLUMNS: &str = "m.id, m.subject, m.from_address, m.from_name, m.preview, m.sent_at, m.received_at, m.size_bytes, m.has_attachment, m.is_read, m.is_starred, CASE WHEN (COALESCE(m.user_classification = 'spam', 0) OR (m.user_classification IS NULL AND ((EXISTS (SELECT 1 FROM provider_spam_evidence pse WHERE pse.message_id = m.id AND pse.verdict = 'spam') AND NOT EXISTS (SELECT 1 FROM provider_spam_evidence pse WHERE pse.message_id = m.id AND pse.verdict = 'not_spam')) OR EXISTS (SELECT 1 FROM local_spam_assessments lsa WHERE lsa.message_id = m.id AND lsa.verdict = 'spam')))) THEN 'spam' WHEN m.from_address IS NOT NULL AND EXISTS (SELECT 1 FROM contact_addresses ca WHERE ca.address = m.from_address COLLATE NOCASE) THEN 'warm' ELSE 'cold' END, m.content_state, m.thread_id, m.content_availability";
 const SUMMARY_COLUMN_COUNT: usize = 15;
 
 async fn query_page_on(
@@ -3172,7 +3232,22 @@ async fn load_queued_search_documents(
                 m.rfc_message_id, m.received_at, m.size_bytes, m.has_attachment,
                 m.is_read, m.is_starred,
                 CASE
-                    WHEN m.user_classification = 'spam' THEN 'spam'
+                    WHEN (m.user_classification = 'spam' OR (
+                        m.user_classification IS NULL
+                        AND (
+                            (EXISTS (
+                                SELECT 1 FROM provider_spam_evidence pse
+                                WHERE pse.message_id = m.id AND pse.verdict = 'spam'
+                            ) AND NOT EXISTS (
+                                SELECT 1 FROM provider_spam_evidence pse
+                                WHERE pse.message_id = m.id AND pse.verdict = 'not_spam'
+                            ))
+                            OR EXISTS (
+                                SELECT 1 FROM local_spam_assessments lsa
+                                WHERE lsa.message_id = m.id AND lsa.verdict = 'spam'
+                            )
+                        )
+                    )) THEN 'spam'
                     WHEN m.from_address IS NOT NULL AND EXISTS (
                         SELECT 1 FROM contact_addresses ca
                         WHERE ca.address = m.from_address COLLATE NOCASE
@@ -3390,6 +3465,48 @@ async fn load_content_status_on(
     })
 }
 
+async fn load_provider_spam_assessment_on(
+    connection: &Connection,
+    message_id: MessageId,
+) -> Result<ProviderSpamAssessment> {
+    let mut rows = connection
+        .query(
+            "SELECT account_id, folder_id, uid_validity, imap_uid, source, verdict, observed_at FROM provider_spam_evidence WHERE message_id = ?1 ORDER BY account_id, folder_id, uid_validity, imap_uid, source",
+            (message_id.to_string(),),
+        )
+        .await?;
+    let mut evidence = Vec::new();
+    let mut has_spam = false;
+    let mut has_not_spam = false;
+    while let Some(row) = rows.next().await? {
+        let verdict = parse_spam_evidence_verdict(&row.get::<String>(5)?)?;
+        has_spam |= verdict == SpamEvidenceVerdict::Spam;
+        has_not_spam |= verdict == SpamEvidenceVerdict::NotSpam;
+        evidence.push(ProviderSpamEvidence {
+            account_id: parse_id(row.get::<String>(0)?, "account")?,
+            folder_id: parse_id(row.get::<String>(1)?, "folder")?,
+            uid_validity: u32::try_from(row.get::<i64>(2)?).map_err(|_| {
+                BackendError::InvalidInput(
+                    "database contains invalid provider-evidence UIDVALIDITY".into(),
+                )
+            })?,
+            uid: u32::try_from(row.get::<i64>(3)?).map_err(|_| {
+                BackendError::InvalidInput("database contains invalid provider-evidence UID".into())
+            })?,
+            source: parse_provider_spam_source(&row.get::<String>(4)?)?,
+            verdict,
+            observed_at: row.get(6)?,
+        });
+    }
+    let verdict = match (has_spam, has_not_spam) {
+        (false, false) => ProviderSpamVerdict::Unknown,
+        (true, false) => ProviderSpamVerdict::Spam,
+        (false, true) => ProviderSpamVerdict::NotSpam,
+        (true, true) => ProviderSpamVerdict::Conflicting,
+    };
+    Ok(ProviderSpamAssessment { verdict, evidence })
+}
+
 async fn lookup_sent_reconciliation_on(
     connection: &Connection,
     account_id: AccountId,
@@ -3434,6 +3551,120 @@ async fn lookup_sent_reconciliation_on(
         ));
     }
     Ok(first)
+}
+
+pub(crate) async fn refresh_provider_spam_evidence_in_transaction(
+    connection: &Connection,
+    message_id: MessageId,
+    remote: &RemoteMessageIdentity,
+) -> Result<()> {
+    connection
+        .execute(
+            "DELETE FROM provider_spam_evidence WHERE folder_id = ?1 AND uid_validity = ?2 AND imap_uid = ?3",
+            (
+                remote.folder_id.to_string(),
+                i64::from(remote.uid_validity),
+                i64::from(remote.uid),
+            ),
+        )
+        .await?;
+
+    let mut rows = connection
+        .query(
+            "SELECT attributes_json FROM imap_mailbox_state WHERE folder_id = ?1",
+            (remote.folder_id.to_string(),),
+        )
+        .await?;
+    let junk_mailbox = if let Some(row) = rows.next().await? {
+        let attributes: Vec<String> = serde_json::from_str(&row.get::<String>(0)?)?;
+        attributes
+            .iter()
+            .any(|attribute| attribute.eq_ignore_ascii_case("\\Junk"))
+    } else {
+        false
+    };
+    drop(rows);
+
+    let mut observations = Vec::with_capacity(3);
+    if junk_mailbox {
+        observations.push(("imap_junk_mailbox", "spam"));
+    }
+    if remote
+        .flags
+        .iter()
+        .any(|flag| flag.eq_ignore_ascii_case("$Junk"))
+    {
+        observations.push(("imap_junk_keyword", "spam"));
+    }
+    if remote
+        .flags
+        .iter()
+        .any(|flag| flag.eq_ignore_ascii_case("$NotJunk"))
+    {
+        observations.push(("imap_not_junk_keyword", "not_spam"));
+    }
+    let now = Utc::now().timestamp();
+    for (source, verdict) in observations {
+        connection
+            .execute(
+                "INSERT INTO provider_spam_evidence(message_id, account_id, folder_id, uid_validity, imap_uid, source, verdict, observed_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                turso::params![
+                    message_id.to_string(),
+                    remote.account_id.to_string(),
+                    remote.folder_id.to_string(),
+                    i64::from(remote.uid_validity),
+                    i64::from(remote.uid),
+                    source,
+                    verdict,
+                    now,
+                ],
+            )
+            .await?;
+    }
+    Ok(())
+}
+
+pub(crate) async fn refresh_junk_mailbox_evidence_in_transaction(
+    connection: &Connection,
+    folder_id: FolderId,
+    is_junk: bool,
+    observed_at: i64,
+) -> Result<Vec<MessageId>> {
+    let mut rows = connection
+        .query(
+            "SELECT DISTINCT message_id FROM message_instances WHERE folder_id = ?1 ORDER BY message_id",
+            (folder_id.to_string(),),
+        )
+        .await?;
+    let mut message_ids = Vec::new();
+    while let Some(row) = rows.next().await? {
+        message_ids.push(parse_id(row.get::<String>(0)?, "message")?);
+    }
+    drop(rows);
+    connection
+        .execute(
+            "DELETE FROM provider_spam_evidence WHERE folder_id = ?1 AND source = 'imap_junk_mailbox'",
+            (folder_id.to_string(),),
+        )
+        .await?;
+    if is_junk {
+        connection
+            .execute(
+                r#"INSERT INTO provider_spam_evidence (
+                    message_id, account_id, folder_id, uid_validity, imap_uid,
+                    source, verdict, observed_at
+                )
+                SELECT message_id, account_id, folder_id, uid_validity, imap_uid,
+                    'imap_junk_mailbox', 'spam', ?1
+                FROM message_instances WHERE folder_id = ?2"#,
+                (observed_at, folder_id.to_string()),
+            )
+            .await?;
+    }
+    for message_id in &message_ids {
+        enqueue_search_on(connection, *message_id).await?;
+    }
+    Ok(message_ids)
 }
 
 pub(crate) async fn refresh_remote_in_transaction(
@@ -3487,6 +3718,7 @@ pub(crate) async fn refresh_remote_in_transaction(
             (is_read, is_starred, id.to_string()),
         )
         .await?;
+    refresh_provider_spam_evidence_in_transaction(connection, id, remote).await?;
     enqueue_search_on(connection, id).await?;
     let event = insert_event(
         connection,
@@ -3679,6 +3911,37 @@ fn classification_text(classification: UserClassification) -> &'static str {
     match classification {
         UserClassification::Spam => "spam",
         UserClassification::NotSpam => "not_spam",
+    }
+}
+
+fn parse_user_classification(value: &str) -> Result<UserClassification> {
+    match value {
+        "spam" => Ok(UserClassification::Spam),
+        "not_spam" => Ok(UserClassification::NotSpam),
+        _ => Err(BackendError::InvalidInput(
+            "invalid user classification in database".into(),
+        )),
+    }
+}
+
+fn parse_provider_spam_source(value: &str) -> Result<ProviderSpamEvidenceSource> {
+    match value {
+        "imap_junk_mailbox" => Ok(ProviderSpamEvidenceSource::ImapJunkMailbox),
+        "imap_junk_keyword" => Ok(ProviderSpamEvidenceSource::ImapJunkKeyword),
+        "imap_not_junk_keyword" => Ok(ProviderSpamEvidenceSource::ImapNotJunkKeyword),
+        _ => Err(BackendError::InvalidInput(
+            "invalid provider spam evidence source in database".into(),
+        )),
+    }
+}
+
+fn parse_spam_evidence_verdict(value: &str) -> Result<SpamEvidenceVerdict> {
+    match value {
+        "spam" => Ok(SpamEvidenceVerdict::Spam),
+        "not_spam" => Ok(SpamEvidenceVerdict::NotSpam),
+        _ => Err(BackendError::InvalidInput(
+            "invalid provider spam evidence verdict in database".into(),
+        )),
     }
 }
 

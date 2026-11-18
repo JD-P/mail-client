@@ -25,6 +25,7 @@ mod schema;
 mod search_index;
 mod sending;
 mod smtp;
+mod spam;
 mod thread;
 mod types;
 
@@ -48,5 +49,6 @@ pub use mime_api::{Mime, SandboxedDocumentExtractor};
 pub use query::{parse_query, QueryExpr, QueryParseError, QueryTerm};
 pub use sending::{Drafts, Outbox, Sending};
 pub use smtp::{SmtpEngine, SmtpEngineConfig};
+pub use spam::SpamClassifier;
 pub use thread::Threads;
 pub use types::*;
