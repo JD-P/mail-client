@@ -11,7 +11,7 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 version INTEGER NOT NULL
             );
             INSERT INTO schema_meta(version)
-                SELECT 13 WHERE NOT EXISTS (SELECT 1 FROM schema_meta);
+                SELECT 14 WHERE NOT EXISTS (SELECT 1 FROM schema_meta);
 
             CREATE TABLE IF NOT EXISTS accounts (
                 id TEXT PRIMARY KEY,
@@ -19,6 +19,7 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 kind TEXT NOT NULL,
                 credential_ref TEXT,
                 settings_json TEXT,
+                trusted_authserv_ids_json TEXT NOT NULL DEFAULT '[]',
                 created_at INTEGER NOT NULL
             );
 
@@ -86,6 +87,7 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 content_state TEXT NOT NULL,
                 search_metadata TEXT NOT NULL,
                 dkim_json TEXT NOT NULL,
+                delivery_auth_json TEXT NOT NULL,
                 mime_state TEXT NOT NULL DEFAULT 'complete',
                 mime_detail TEXT,
                 content_availability TEXT NOT NULL DEFAULT 'complete',
@@ -817,7 +819,44 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
             .await?;
         version = 13;
     }
-    if version != 13 {
+    if version == 13 {
+        // Version fourteen separates trusted delivery-time observations from
+        // attacker-supplied Authentication-Results copies. Existing messages
+        // are reparsed from immutable raw bytes after the blob store opens.
+        let mut rows = connection.query("PRAGMA table_info(accounts)", ()).await?;
+        let mut account_columns = HashSet::new();
+        while let Some(row) = rows.next().await? {
+            account_columns.insert(row.get::<String>(1)?);
+        }
+        drop(rows);
+        if !account_columns.contains("trusted_authserv_ids_json") {
+            connection
+                .execute(
+                    "ALTER TABLE accounts ADD COLUMN trusted_authserv_ids_json TEXT NOT NULL DEFAULT '[]'",
+                    (),
+                )
+                .await?;
+        }
+        let mut rows = connection.query("PRAGMA table_info(messages)", ()).await?;
+        let mut message_columns = HashSet::new();
+        while let Some(row) = rows.next().await? {
+            message_columns.insert(row.get::<String>(1)?);
+        }
+        drop(rows);
+        if !message_columns.contains("delivery_auth_json") {
+            connection
+                .execute(
+                    "ALTER TABLE messages ADD COLUMN delivery_auth_json TEXT",
+                    (),
+                )
+                .await?;
+        }
+        connection
+            .execute("UPDATE schema_meta SET version = 14", ())
+            .await?;
+        version = 14;
+    }
+    if version != 14 {
         return Err(crate::BackendError::InvalidInput(format!(
             "unsupported database schema version {version}"
         )));
@@ -874,6 +913,7 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 content_state TEXT NOT NULL,
                 search_metadata TEXT NOT NULL,
                 dkim_json TEXT NOT NULL,
+                delivery_auth_json TEXT NOT NULL,
                 mime_state TEXT NOT NULL,
                 mime_detail TEXT,
                 content_availability TEXT NOT NULL,
@@ -959,7 +999,7 @@ mod tests {
             .await
             .unwrap();
         let row = rows.next().await.unwrap().unwrap();
-        assert_eq!(row.get::<i64>(0).unwrap(), 13);
+        assert_eq!(row.get::<i64>(0).unwrap(), 14);
         assert_eq!(row.get::<String>(1).unwrap(), r#"{"received_at":123}"#);
         drop(rows);
 
@@ -1002,7 +1042,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap(),
-            13
+            14
         );
         drop(rows);
 

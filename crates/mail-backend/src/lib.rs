@@ -11,6 +11,7 @@ mod authentication;
 mod automation;
 mod backend;
 mod blob;
+mod delivery_auth;
 mod error;
 mod event;
 mod heuristic;

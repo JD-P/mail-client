@@ -8,8 +8,9 @@ mod support;
 
 use base64::Engine;
 use lizard_mail_backend::{
-    AccountKind, Backend, BackendConfig, ContactAddress, DkimAuthenticationStatus, FolderKind,
-    ImapSecurity, ImapSettings, InboxClass, NewAccount, NewContact, NewFolder,
+    AccountKind, AuthenticationMethodKind, AuthenticationResultsTrust, Backend, BackendConfig,
+    ContactAddress, DkimAuthenticationStatus, FolderKind, ImapSecurity, ImapSettings, InboxClass,
+    NewAccount, NewContact, NewFolder,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Cursor, Write};
@@ -182,7 +183,12 @@ fn security_fixtures() -> Vec<SecurityFixture> {
         message(
             "missing-aligned-dkim",
             "Security <security@example.com>",
-            "",
+            concat!(
+                "Authentication-Results: mx.fixture.test; dkim=pass header.d=example.com;\r\n",
+                " dmarc=pass header.from=example.com; spf=pass smtp.mailfrom=security@example.com\r\n",
+                "Authentication-Results: attacker.invalid; dkim=pass header.d=evil.example\r\n",
+                "ARC-Authentication-Results: i=1; forwarder.fixture.test; dkim=pass header.d=example.com\r\n"
+            ),
             "text/plain; charset=utf-8",
             "A deliberately unsigned domain-claim fixture.",
             &[RedFlag::MissingAlignedDkim],
@@ -417,6 +423,11 @@ async fn receives_every_security_warning_fixture_through_dovecot() {
         })
         .await
         .unwrap();
+    backend
+        .accounts()
+        .set_trusted_authserv_ids(account.id, vec!["mx.fixture.test".into()])
+        .await
+        .unwrap();
     let inbox = backend
         .folders()
         .add(NewFolder {
@@ -434,6 +445,34 @@ async fn receives_every_security_warning_fixture_through_dovecot() {
         .await
         .unwrap();
     assert_eq!(sync.message_ids.len(), fixtures.len());
+
+    let mut saw_header_first_authentication = false;
+    for message_id in &sync.message_ids {
+        let stored = backend.messages().get(*message_id).await.unwrap();
+        if stored.summary.subject.as_deref() == Some("Security fixture missing-aligned-dkim") {
+            let headers = &stored.delivery_authentication.observations[0].headers;
+            assert_eq!(headers.len(), 3);
+            assert_eq!(headers[0].trust, AuthenticationResultsTrust::Trusted);
+            assert!(headers[0]
+                .methods
+                .iter()
+                .any(|method| method.kind == AuthenticationMethodKind::Dmarc));
+            assert!(headers[0]
+                .methods
+                .iter()
+                .any(|method| method.kind == AuthenticationMethodKind::Spf));
+            assert_eq!(
+                headers[1].trust,
+                AuthenticationResultsTrust::AuthservIdNotTrusted
+            );
+            assert_eq!(
+                headers[2].trust,
+                AuthenticationResultsTrust::ArcChainUnverified
+            );
+            saw_header_first_authentication = true;
+        }
+    }
+    assert!(saw_header_first_authentication);
 
     let fixtures_by_subject = fixtures
         .iter()

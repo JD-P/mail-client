@@ -388,8 +388,11 @@ The backend/API should expose structured evidence, not finalized prose:
 - DKIM signatures, exact signing domains, alignment and verification result;
 - OpenPGP signature/encryption results, fingerprints, protected content and
   locally established contact/key bindings;
-- the trustworthy source and time of any receiving-server authentication
-  result;
+- the receiving account, configured `authserv-id`, trust reason and typed
+  delivery-time DKIM/DMARC result for receiving-server authentication;
+- SPF only as low-level diagnostic evidence, never as a normal identity UI
+  input, and ARC evidence explicitly marked unverified until its chain is
+  independently validated;
 - parsed links, displayed link text, schemes, hosts, registrable domains and
   Unicode-confusable findings;
 - Reply-To and Sender differences;

@@ -100,6 +100,10 @@ pub struct Account {
     pub kind: AccountKind,
     pub credential_ref: Option<String>,
     pub imap: Option<ImapSettings>,
+    /// Exact, case-insensitive RFC 8601 authserv-ids which this account's
+    /// authenticated delivery provider is configured to own.
+    #[serde(default)]
+    pub trusted_authserv_ids: Vec<String>,
     pub created_at: i64,
 }
 
@@ -539,6 +543,10 @@ pub struct Message {
     pub local_spam: Option<LocalSpamAssessment>,
     /// DKIM evidence captured from the exact bytes stored for this message.
     pub dkim: DkimAuthentication,
+    /// Delivery-time Authentication-Results evidence. Trust is scoped to the
+    /// receiving account and never inferred from the header alone.
+    #[serde(default)]
+    pub delivery_authentication: DeliveryAuthentication,
     /// Active, materialized heuristic results. Clients render these through
     /// the finite [`FindingPresentation`] vocabulary; they never execute code.
     pub findings: Vec<HeuristicFinding>,
@@ -877,6 +885,109 @@ pub struct DkimAuthentication {
     pub signatures: Vec<DkimSignatureEvidence>,
     pub evaluated_at: i64,
     pub detail: Option<String>,
+}
+
+/// Bounded delivery-time authentication observations grouped by the account
+/// through which the exact message bytes were received.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DeliveryAuthentication {
+    pub observations: Vec<DeliveryAuthenticationObservation>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DeliveryAuthenticationObservation {
+    pub account_id: Option<AccountId>,
+    pub headers: Vec<AuthenticationResultsHeader>,
+    /// More matching headers existed than the parser's fixed work budget.
+    pub limited: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthenticationResultsHeaderKind {
+    AuthenticationResults,
+    ArcAuthenticationResults,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthenticationResultsParseStatus {
+    Complete,
+    Malformed,
+    Limited,
+}
+
+/// Why a physical authentication-results header is or is not authoritative.
+/// ARC-AAR remains diagnostic until its enclosing ARC chain is verified.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthenticationResultsTrust {
+    Trusted,
+    NoReceivingAccount,
+    NoTrustedAuthservConfigured,
+    AuthservIdNotTrusted,
+    DuplicateTrustedAuthservId,
+    Malformed,
+    Limited,
+    ArcChainUnverified,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AuthenticationResultsHeader {
+    /// Zero-based position among all RFC 5322 fields in document order.
+    pub header_index: u32,
+    pub kind: AuthenticationResultsHeaderKind,
+    pub arc_instance: Option<u32>,
+    pub authserv_id: Option<String>,
+    pub authserv_version: Option<u32>,
+    pub parse_status: AuthenticationResultsParseStatus,
+    pub trust: AuthenticationResultsTrust,
+    pub methods: Vec<AuthenticationMethodEvidence>,
+    /// Bounded unfolded value for diagnostics. This is untrusted plain text.
+    pub raw_header_value: String,
+    pub detail: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthenticationMethodKind {
+    Dkim,
+    Dmarc,
+    Spf,
+    Arc,
+    Other,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthenticationMethodResult {
+    None,
+    Pass,
+    Fail,
+    SoftFail,
+    Neutral,
+    Policy,
+    TemporaryError,
+    PermanentError,
+    Unknown,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AuthenticationMethodEvidence {
+    pub kind: AuthenticationMethodKind,
+    pub method: String,
+    pub version: Option<u32>,
+    pub result: AuthenticationMethodResult,
+    pub raw_result: String,
+    pub reason: Option<String>,
+    pub properties: Vec<AuthenticationProperty>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AuthenticationProperty {
+    pub namespace: Option<String>,
+    pub name: String,
+    pub value: String,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]

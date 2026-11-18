@@ -15,10 +15,11 @@ boundary, discovers mailboxes, negotiates capabilities, reconciles UID state
 and routes bounded body streams through the same idempotent ingestion path as
 local imports.
 
-The current slice does **not** yet run OpenPGP verification, trust provider
-`Authentication-Results`, or expose inter-process transport. It does run a
-mandatory bounded native security-evidence pass; later requirements are not a
-claim that every possible heuristic is implemented.
+The current slice does **not** yet run OpenPGP verification, independently
+verify ARC chains, or expose inter-process transport. It does ingest bounded
+provider `Authentication-Results` under an explicit per-account trust policy
+and runs a mandatory bounded native security-evidence pass; later requirements
+are not a claim that every possible heuristic is implemented.
 
 Related frontend requirements: [security-ui.md](security-ui.md).
 
@@ -589,11 +590,32 @@ pre-verifier messages `not_evaluated`; it never invents a clean verdict.
 
 An IMAP client usually learns delivery-time SPF/DKIM/DMARC results through
 `Authentication-Results`. That header is attacker-forgeable outside the
-receiving provider's trust boundary. The backend must identify trusted
-`authserv-id` values per account/provider or mark the result untrusted. Fresh
-independent DKIM verification is useful, but later verification can fail after
-DNS key rotation and cannot reconstruct delivery-time SPF. Never convert an
-unknown result into a failure or a clean verdict.
+receiving provider's trust boundary. The backend therefore stores an exact
+`authserv-id` allowlist on each receiving account. It preserves every physical
+`Authentication-Results` copy, but trusts only the first syntactically complete
+copy whose normalized `authserv-id` exactly matches that account's policy.
+Later matching copies are marked as duplicates rather than inheriting trust;
+nonmatching, malformed, over-budget and locally imported copies carry explicit
+untrusted reasons. Changing account policy re-evaluates trust on read without
+changing the immutable parsed evidence.
+
+This rule depends on the receiving provider satisfying RFC 8601: it must add
+its result above attacker-controlled fields and remove or rename forged copies
+of its own `authserv-id`. Raw message text cannot prove that operational fact,
+so an account has no trusted delivery evidence until the provider identity is
+configured. The parser is bounded by header count, per-header and aggregate
+bytes, method/property count, property size and comment nesting.
+
+Trusted delivery-time DKIM and DMARC are exposed as account-scoped evidence;
+they do not overwrite `Message::dkim`, which is independently verified from
+the stored bytes. Later independent verification can fail after DNS key
+rotation, while delivery-time evidence records what the trusted receiver saw.
+SPF is retained as low-level diagnostic/policy evidence and must not drive the
+normal identity UI. `ARC-Authentication-Results` fields are parsed with their
+instance number but remain `arc_chain_unverified`; a trusted receiver's
+top-level `arc=...` method is only that receiver's delivery-time assessment,
+not independent ARC validation. Never convert an unknown result into a failure
+or a clean verdict.
 
 Signature checks and heuristic extractors produce structured evidence for the
 frontend rules in `security-ui.md`; they do not produce application prose.

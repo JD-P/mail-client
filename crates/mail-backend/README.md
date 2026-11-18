@@ -36,6 +36,13 @@ Current invariants:
   signature, DNS-query and wall-clock budgets, then persisted as typed evidence;
 - the default DKIM resolver uses Quad9 DNS-over-TLS with local DNSSEC
   validation; system DNS is an explicit configuration policy;
+- every physical `Authentication-Results` and `ARC-Authentication-Results`
+  field is parsed under fixed work and storage limits; only the first complete
+  result from an exact, per-account configured `authserv-id` is trusted, while
+  all other copies remain explicitly untrusted evidence;
+- trusted delivery-time DKIM and DMARC remain distinct from independent DKIM
+  verification, SPF is retained only as low-level evidence, and ARC results
+  remain diagnostic until the ARC chain is independently verified;
 - a remote identity is `(folder, UIDVALIDITY, UID)`, never RFC `Message-ID`;
 - contacts are the single source of truth for Warm versus Cold; explicit user
   Spam/NotSpam corrections are authoritative, while RFC 6154 `\Junk` mailbox
@@ -194,5 +201,5 @@ security-evidence pass covers identity contradictions, DKIM alignment, hostile
 navigation, UTS #39 domain confusables, remote resources, credential forms,
 attachment magic/filenames and bounded ZIP directory metadata. It performs no
 network loads, script execution or archive expansion. OpenPGP and
-trusted-provider `Authentication-Results` remain future work. See
+independent ARC-chain verification remain future work. See
 `../../spec/mail-backend.md` for the authority and presentation model.

@@ -144,6 +144,7 @@ struct StagedMessage {
     content_state: String,
     search_metadata: String,
     dkim_json: String,
+    delivery_auth_json: String,
     mime_state: String,
     mime_detail: Option<String>,
     content_availability: String,
@@ -170,6 +171,7 @@ impl StagedMessage {
             + self.attachment_names.len()
             + self.search_metadata.len()
             + self.dkim_json.len()
+            + self.delivery_auth_json.len()
             + self.mime_detail.as_ref().map_or(0, String::len)
             + self.download_error.as_ref().map_or(0, String::len)
     }
@@ -249,6 +251,7 @@ impl Backend {
         };
         backend.recover_interrupted_downloads().await?;
         backend.backfill_sender_projection().await?;
+        backend.backfill_delivery_authentication().await?;
         backend.backfill_thread_projection().await?;
         backend.backfill_mime_projection().await?;
         let (_, security_remaining) = backend.heuristics().backfill_builtin(64).await?;
@@ -321,6 +324,93 @@ impl Backend {
             }
             transaction.commit().await?;
         }
+    }
+
+    /// Version fourteen materializes every Authentication-Results copy from
+    /// immutable bytes. Account policy is applied separately so a header can
+    /// never become trusted merely because it exists in the message.
+    async fn backfill_delivery_authentication(&self) -> Result<()> {
+        loop {
+            let missing = {
+                let connection = self.inner.connection.lock().await;
+                let mut rows = connection
+                    .query(
+                        "SELECT id, blob_hash FROM messages WHERE delivery_auth_json IS NULL ORDER BY id LIMIT 100",
+                        (),
+                    )
+                    .await?;
+                let mut missing = Vec::new();
+                while let Some(row) = rows.next().await? {
+                    missing.push((
+                        parse_id::<MessageId>(row.get(0)?, "message")?,
+                        row.get::<String>(1)?,
+                    ));
+                }
+                missing
+            };
+            if missing.is_empty() {
+                return Ok(());
+            }
+            let mut projected = Vec::with_capacity(missing.len());
+            for (message_id, blob_hash) in missing {
+                let account_ids = {
+                    let connection = self.inner.connection.lock().await;
+                    let mut rows = connection
+                        .query(
+                            "SELECT DISTINCT account_id FROM message_instances WHERE message_id = ?1 ORDER BY account_id",
+                            (message_id.to_string(),),
+                        )
+                        .await?;
+                    let mut values = Vec::new();
+                    while let Some(row) = rows.next().await? {
+                        values.push(parse_id::<AccountId>(row.get(0)?, "account")?);
+                    }
+                    values
+                };
+                let raw = self.inner.blobs.get(&blob_hash).await?;
+                let evidence = self.delivery_authentication_for(&raw, &account_ids).await?;
+                projected.push((message_id, serde_json::to_string(&evidence)?));
+            }
+            let mut connection = self.inner.connection.lock().await;
+            let transaction = connection.transaction().await?;
+            for (message_id, evidence) in projected {
+                transaction
+                    .execute(
+                        "UPDATE messages SET delivery_auth_json = ?1 WHERE id = ?2 AND delivery_auth_json IS NULL",
+                        (evidence, message_id.to_string()),
+                    )
+                    .await?;
+            }
+            transaction.commit().await?;
+        }
+    }
+
+    async fn delivery_authentication_for(
+        &self,
+        raw: &[u8],
+        account_ids: &[AccountId],
+    ) -> Result<crate::DeliveryAuthentication> {
+        let mut sources = Vec::with_capacity(account_ids.len());
+        if !account_ids.is_empty() {
+            let connection = self.inner.connection.lock().await;
+            for account_id in account_ids {
+                let mut rows = connection
+                    .query(
+                        "SELECT trusted_authserv_ids_json FROM accounts WHERE id = ?1",
+                        (account_id.to_string(),),
+                    )
+                    .await?;
+                let row = rows
+                    .next()
+                    .await?
+                    .ok_or_else(|| not_found("account", account_id))?;
+                sources.push((
+                    Some(*account_id),
+                    serde_json::from_str(&row.get::<String>(0)?)?,
+                ));
+            }
+        }
+        Ok(crate::delivery_auth::parse(raw, &sources))
     }
 
     fn schedule_spam_reclassification(&self) {
@@ -564,6 +654,16 @@ impl Backend {
     async fn prepare_ingest(&self, request: IngestMessage) -> Result<PreparedIngest> {
         let size_bytes = request.raw.len() as i64;
         let parsed = mime::parse(&request.raw, &self.inner.config.limits)?;
+        let source_accounts = request
+            .remote
+            .as_ref()
+            .map(|remote| vec![remote.account_id])
+            .unwrap_or_default();
+        let delivery_auth_json = serde_json::to_string(
+            &self
+                .delivery_authentication_for(&request.raw, &source_accounts)
+                .await?,
+        )?;
         let blob_hash = self.inner.blobs.put(&request.raw).await?;
         let id = MessageId::new();
         let now = Utc::now().timestamp();
@@ -674,6 +774,7 @@ impl Backend {
             content_state: content_state_text(parsed.content_state).to_owned(),
             search_metadata: json!({"received_at": received_at}).to_string(),
             dkim_json,
+            delivery_auth_json,
             mime_state: mime_parse_state_text(parsed.mime_state).to_owned(),
             mime_detail: parsed.mime_detail,
             content_availability: content_availability_text(MessageContentAvailability::Complete)
@@ -710,6 +811,11 @@ impl Backend {
             });
         }
         let parsed = mime::parse(&message.headers, &self.inner.config.limits)?;
+        let delivery_auth_json = serde_json::to_string(
+            &self
+                .delivery_authentication_for(&message.headers, &[account_id])
+                .await?,
+        )?;
         let blob_hash = self.inner.blobs.put(&message.headers).await?;
         let id = MessageId::new();
         let now = Utc::now().timestamp();
@@ -779,6 +885,7 @@ impl Backend {
             content_state: content_state_text(crate::ContentState::Complete).to_owned(),
             search_metadata: json!({"received_at": received_at}).to_string(),
             dkim_json,
+            delivery_auth_json,
             mime_state: mime_parse_state_text(crate::MimeParseState::Limited).to_owned(),
             mime_detail: Some(
                 "MIME tree is unavailable until message content is downloaded".into(),
@@ -919,7 +1026,7 @@ impl Backend {
                 raw.len()
             )));
         }
-        let received_at = {
+        let (received_at, account_ids) = {
             let connection = self.inner.connection.lock().await;
             let mut rows = connection
                 .query(
@@ -927,11 +1034,26 @@ impl Backend {
                     (message_id.to_string(),),
                 )
                 .await?;
-            rows.next()
+            let received_at = rows
+                .next()
                 .await?
                 .ok_or_else(|| not_found("message", message_id))?
-                .get::<i64>(0)?
+                .get::<i64>(0)?;
+            drop(rows);
+            let mut rows = connection
+                .query(
+                    "SELECT DISTINCT account_id FROM message_instances WHERE message_id = ?1 ORDER BY account_id",
+                    (message_id.to_string(),),
+                )
+                .await?;
+            let mut account_ids = Vec::new();
+            while let Some(row) = rows.next().await? {
+                account_ids.push(parse_id::<AccountId>(row.get(0)?, "account")?);
+            }
+            (received_at, account_ids)
         };
+        let delivery_auth_json =
+            serde_json::to_string(&self.delivery_authentication_for(&raw, &account_ids).await?)?;
         let mut prepared = self
             .prepare_ingest(IngestMessage {
                 raw,
@@ -940,6 +1062,11 @@ impl Backend {
                 user_classification: None,
             })
             .await?;
+        let stage = prepared
+            .stage
+            .as_mut()
+            .expect("complete projection has staged message data");
+        stage.delivery_auth_json = delivery_auth_json;
         let stage = prepared
             .stage
             .take()
@@ -959,11 +1086,12 @@ impl Backend {
                     body_text = ?13, body_html = ?14, preview = ?15,
                     sent_at = ?16, has_attachment = ?17,
                     attachment_names = ?18, content_state = ?19,
-                    search_metadata = ?20, dkim_json = ?21, mime_state = ?22,
-                    mime_detail = ?23, content_availability = 'complete',
+                    search_metadata = ?20, dkim_json = ?21,
+                    delivery_auth_json = ?22, mime_state = ?23,
+                    mime_detail = ?24, content_availability = 'complete',
                     downloaded_bytes = size_bytes, download_error = NULL,
-                    download_updated_at = ?24
-                WHERE id = ?25 AND content_availability != 'complete' AND size_bytes = ?26"#,
+                    download_updated_at = ?25
+                WHERE id = ?26 AND content_availability != 'complete' AND size_bytes = ?27"#,
                 turso::params![
                     stage.blob_hash,
                     stage.rfc_message_id,
@@ -986,6 +1114,7 @@ impl Backend {
                     stage.content_state,
                     stage.search_metadata,
                     stage.dkim_json,
+                    stage.delivery_auth_json,
                     stage.mime_state,
                     stage.mime_detail,
                     now,
@@ -1195,14 +1324,14 @@ impl Backend {
                         preview, sent_at, received_at, size_bytes,
                         has_attachment, attachment_names, is_read, is_starred,
                         user_classification, content_state, search_metadata, dkim_json,
-                        mime_state, mime_detail, content_availability,
+                        delivery_auth_json, mime_state, mime_detail, content_availability,
                         downloaded_bytes, download_error, download_updated_at,
                         created_at
                     ) VALUES (
                         ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
                         ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22,
                         ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32,
-                        ?33, ?34, ?35, ?36
+                        ?33, ?34, ?35, ?36, ?37
                     )"#,
                     turso::params![
                         batch_id.clone(),
@@ -1234,6 +1363,7 @@ impl Backend {
                         stage.content_state,
                         stage.search_metadata,
                         stage.dkim_json,
+                        stage.delivery_auth_json,
                         stage.mime_state,
                         stage.mime_detail,
                         stage.content_availability,
@@ -1256,7 +1386,7 @@ impl Backend {
                         body_text, body_html, preview, sent_at, received_at,
                         size_bytes, has_attachment, attachment_names, is_read, is_starred,
                         user_classification, content_state, search_metadata, dkim_json,
-                        mime_state, mime_detail, content_availability,
+                        delivery_auth_json, mime_state, mime_detail, content_availability,
                         downloaded_bytes, download_error, download_updated_at,
                         created_at
                     )
@@ -1266,7 +1396,7 @@ impl Backend {
                         body_text, body_html, preview, sent_at, received_at,
                         size_bytes, has_attachment, attachment_names, is_read, is_starred,
                         user_classification, content_state, search_metadata, dkim_json,
-                        mime_state, mime_detail, content_availability,
+                        delivery_auth_json, mime_state, mime_detail, content_availability,
                         downloaded_bytes, download_error, download_updated_at,
                         created_at
                     FROM ingest_message_stage
@@ -1822,19 +1952,21 @@ impl Accounts {
             kind: account.kind,
             credential_ref: account.credential_ref,
             imap: account.imap,
+            trusted_authserv_ids: Vec::new(),
             created_at: Utc::now().timestamp(),
         };
         let mut connection = self.0.inner.connection.lock().await;
         let transaction = connection.transaction().await?;
         transaction
             .execute(
-                "INSERT INTO accounts(id, name, kind, credential_ref, settings_json, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                "INSERT INTO accounts(id, name, kind, credential_ref, settings_json, trusted_authserv_ids_json, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 turso::params![
                     value.id.to_string(),
                     value.name.clone(),
                     account_kind_text(value.kind),
                     value.credential_ref.clone(),
                     value.imap.as_ref().map(serde_json::to_string).transpose()?,
+                    serde_json::to_string(&value.trusted_authserv_ids)?,
                     value.created_at,
                 ],
             )
@@ -1856,7 +1988,7 @@ impl Accounts {
         let connection = self.0.inner.connection.lock().await;
         let mut rows = connection
             .query(
-                "SELECT id, name, kind, credential_ref, settings_json, created_at FROM accounts ORDER BY created_at, id",
+                "SELECT id, name, kind, credential_ref, settings_json, trusted_authserv_ids_json, created_at FROM accounts ORDER BY created_at, id",
                 (),
             )
             .await?;
@@ -1871,7 +2003,8 @@ impl Accounts {
                     .get::<Option<String>>(4)?
                     .map(|value| serde_json::from_str(&value))
                     .transpose()?,
-                created_at: row.get(5)?,
+                trusted_authserv_ids: serde_json::from_str(&row.get::<String>(5)?)?,
+                created_at: row.get(6)?,
             });
         }
         Ok(values)
@@ -1881,7 +2014,7 @@ impl Accounts {
         let connection = self.0.inner.connection.lock().await;
         let mut rows = connection
             .query(
-                "SELECT id, name, kind, credential_ref, settings_json, created_at FROM accounts WHERE id = ?1",
+                "SELECT id, name, kind, credential_ref, settings_json, trusted_authserv_ids_json, created_at FROM accounts WHERE id = ?1",
                 (id.to_string(),),
             )
             .await?;
@@ -1897,8 +2030,50 @@ impl Accounts {
                 .get::<Option<String>>(4)?
                 .map(|value| serde_json::from_str(&value))
                 .transpose()?,
-            created_at: row.get(5)?,
+            trusted_authserv_ids: serde_json::from_str(&row.get::<String>(5)?)?,
+            created_at: row.get(6)?,
         })
+    }
+
+    /// Replaces the exact RFC 8601 authserv-id allowlist for one receiving
+    /// account. Merely observing the same string in a message never adds it.
+    pub async fn set_trusted_authserv_ids(
+        &self,
+        id: AccountId,
+        values: Vec<String>,
+    ) -> Result<Account> {
+        if self.get(id).await?.kind != AccountKind::Imap {
+            return Err(BackendError::InvalidInput(
+                "trusted authserv-ids may only be configured for receiving IMAP accounts".into(),
+            ));
+        }
+        let values = crate::delivery_auth::normalize_trusted_authserv_ids(values)?;
+        let now = Utc::now().timestamp();
+        let mut connection = self.0.inner.connection.lock().await;
+        let transaction = connection.transaction().await?;
+        if transaction
+            .execute(
+                "UPDATE accounts SET trusted_authserv_ids_json = ?1 WHERE id = ?2",
+                (serde_json::to_string(&values)?, id.to_string()),
+            )
+            .await?
+            == 0
+        {
+            transaction.rollback().await?;
+            return Err(not_found("account", id));
+        }
+        let event = insert_event(
+            &transaction,
+            now,
+            "account_authentication_policy_updated",
+            id.to_string(),
+            json!({"account_id": id, "trusted_authserv_ids": values}),
+        )
+        .await?;
+        transaction.commit().await?;
+        drop(connection);
+        let _ = self.0.inner.events.send(event);
+        self.get(id).await
     }
 }
 
@@ -1998,7 +2173,7 @@ impl Messages {
         let mut rows = connection
             .query(
                 &format!(
-                    "SELECT {}, rfc_message_id, to_addresses, cc_addresses, bcc_addresses, sender_addresses, delivered_to_addresses, list_id, body_text, body_html, dkim_json, in_reply_to_json, references_json, reply_to_addresses, parent_message_id, threading_source, sender_trust, user_classification FROM messages m WHERE m.id = ?1",
+                    "SELECT {}, rfc_message_id, to_addresses, cc_addresses, bcc_addresses, sender_addresses, delivered_to_addresses, list_id, body_text, body_html, dkim_json, delivery_auth_json, in_reply_to_json, references_json, reply_to_addresses, parent_message_id, threading_source, sender_trust, user_classification FROM messages m WHERE m.id = ?1",
                     SUMMARY_COLUMNS
                 ),
                 (id.to_string(),),
@@ -2016,21 +2191,24 @@ impl Messages {
         let body_text = row.get(SUMMARY_COLUMN_COUNT + 7)?;
         let body_html = row.get(SUMMARY_COLUMN_COUNT + 8)?;
         let dkim = serde_json::from_str(&row.get::<String>(SUMMARY_COLUMN_COUNT + 9)?)?;
-        let in_reply_to = serde_json::from_str(&row.get::<String>(SUMMARY_COLUMN_COUNT + 10)?)?;
-        let references = serde_json::from_str(&row.get::<String>(SUMMARY_COLUMN_COUNT + 11)?)?;
-        let reply_to_addresses = json_addresses(row.get(SUMMARY_COLUMN_COUNT + 12)?)?;
+        let mut delivery_authentication =
+            serde_json::from_str(&row.get::<String>(SUMMARY_COLUMN_COUNT + 10)?)?;
+        let in_reply_to = serde_json::from_str(&row.get::<String>(SUMMARY_COLUMN_COUNT + 11)?)?;
+        let references = serde_json::from_str(&row.get::<String>(SUMMARY_COLUMN_COUNT + 12)?)?;
+        let reply_to_addresses = json_addresses(row.get(SUMMARY_COLUMN_COUNT + 13)?)?;
         let parent_message_id = row
-            .get::<Option<String>>(SUMMARY_COLUMN_COUNT + 13)?
+            .get::<Option<String>>(SUMMARY_COLUMN_COUNT + 14)?
             .map(|value| parse_id(value, "message"))
             .transpose()?;
-        let source = crate::thread::parse_source(&row.get::<String>(SUMMARY_COLUMN_COUNT + 14)?)?;
+        let source = crate::thread::parse_source(&row.get::<String>(SUMMARY_COLUMN_COUNT + 15)?)?;
         let sender_trust =
-            crate::thread::parse_sender_trust(&row.get::<String>(SUMMARY_COLUMN_COUNT + 15)?)?;
+            crate::thread::parse_sender_trust(&row.get::<String>(SUMMARY_COLUMN_COUNT + 16)?)?;
         let user_classification = row
-            .get::<Option<String>>(SUMMARY_COLUMN_COUNT + 16)?
+            .get::<Option<String>>(SUMMARY_COLUMN_COUNT + 17)?
             .map(|value| parse_user_classification(&value))
             .transpose()?;
         drop(rows);
+        refresh_delivery_auth_trust_on(&connection, &mut delivery_authentication).await?;
 
         let mut rows = connection
             .query(
@@ -2176,6 +2354,7 @@ impl Messages {
             provider_spam,
             local_spam,
             dkim,
+            delivery_authentication,
             findings,
         })
     }
@@ -2704,7 +2883,7 @@ impl Sync {
             let mut fetches = session
                 .uid_fetch(
                     uid_set,
-                    "(UID FLAGS INTERNALDATE RFC822.SIZE BODYSTRUCTURE BODY.PEEK[HEADER.FIELDS (DATE FROM TO CC BCC REPLY-TO DELIVERED-TO LIST-ID MESSAGE-ID IN-REPLY-TO REFERENCES SUBJECT CONTENT-TYPE MIME-VERSION)])",
+                    "(UID FLAGS INTERNALDATE RFC822.SIZE BODYSTRUCTURE BODY.PEEK[HEADER.FIELDS (DATE FROM SENDER TO CC BCC REPLY-TO DELIVERED-TO LIST-ID MESSAGE-ID IN-REPLY-TO REFERENCES SUBJECT CONTENT-TYPE MIME-VERSION AUTHENTICATION-RESULTS ARC-AUTHENTICATION-RESULTS)])",
                 )
                 .await
                 .map_err(imap_error)?;
@@ -3496,6 +3675,32 @@ fn summary_from_row(row: &turso::Row) -> Result<MessageSummary> {
         content_state: parse_content_state(&row.get::<String>(12)?)?,
         content_availability: parse_content_availability(&row.get::<String>(14)?)?,
     })
+}
+
+async fn refresh_delivery_auth_trust_on(
+    connection: &Connection,
+    evidence: &mut crate::DeliveryAuthentication,
+) -> Result<()> {
+    let account_ids = evidence
+        .observations
+        .iter()
+        .filter_map(|observation| observation.account_id)
+        .collect::<HashSet<_>>();
+    for account_id in account_ids {
+        let mut rows = connection
+            .query(
+                "SELECT trusted_authserv_ids_json FROM accounts WHERE id = ?1",
+                (account_id.to_string(),),
+            )
+            .await?;
+        let trusted_authserv_ids = match rows.next().await? {
+            Some(row) => serde_json::from_str::<Vec<String>>(&row.get::<String>(0)?)?,
+            None => Vec::new(),
+        };
+        drop(rows);
+        crate::delivery_auth::refresh_trust(evidence, account_id, &trusted_authserv_ids);
+    }
+    Ok(())
 }
 
 async fn lookup_remote_on(
