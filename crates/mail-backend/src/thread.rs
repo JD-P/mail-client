@@ -1,8 +1,9 @@
-use crate::backend::{COLD_PREDICATE, SPAM_PREDICATE, WARM_PREDICATE};
+use crate::backend::{insert_event, COLD_PREDICATE, SPAM_PREDICATE, WARM_PREDICATE};
 use crate::{
     Backend, BackendError, CompositionKind, InboxClass, MessageComposition, MessageId, MessageSort,
     Page, ReplyAudience, Result, Thread, ThreadFilter, ThreadId, ThreadMembership,
-    ThreadSenderTrust, ThreadSummary, ThreadingSource,
+    ThreadSenderTrust, ThreadSummary, ThreadWorkState, ThreadWorkStatus, ThreadingSource,
+    WorkflowView,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use mail_parser::thread_name;
@@ -106,6 +107,12 @@ impl Threads {
         let page_size = filter.page_size.clamp(1, 200);
         let cursor = filter.cursor.as_deref().map(decode_cursor).transpose()?;
         let connection = self.0.inner.connection.lock().await;
+        connection
+            .execute(
+                "UPDATE thread_work_state SET status = 'active', snoozed_until = NULL, updated_at = unixepoch() WHERE status = 'snoozed' AND snoozed_until <= unixepoch()",
+                (),
+            )
+            .await?;
         let mut clauses = vec!["m.thread_id IS NOT NULL".to_owned()];
         let mut parameters = Vec::new();
         if let Some(account_id) = filter.account_id {
@@ -117,7 +124,9 @@ impl Threads {
             parameters.push(Value::Text(folder_id.to_string()));
             parameters.push(Value::Text(folder_id.to_string()));
         }
-        if let Some(class) = filter.inbox_class {
+        if let Some(workflow) = filter.workflow {
+            clauses.push(workflow_predicate(workflow).into());
+        } else if let Some(class) = filter.inbox_class {
             clauses.push(
                 match class {
                     InboxClass::Warm => WARM_PREDICATE,
@@ -168,6 +177,129 @@ impl Threads {
             None
         };
         Ok(Page { items, next_cursor })
+    }
+
+    pub async fn work_state(&self, id: ThreadId) -> Result<ThreadWorkState> {
+        let connection = self.0.inner.connection.lock().await;
+        let mut thread_rows = connection
+            .query("SELECT 1 FROM threads WHERE id = ?1", (id.to_string(),))
+            .await?;
+        if thread_rows.next().await?.is_none() {
+            return Err(BackendError::NotFound {
+                entity: "thread",
+                id: id.to_string(),
+            });
+        }
+        drop(thread_rows);
+        load_work_state_on(&connection, id).await
+    }
+
+    pub async fn set_work_state(
+        &self,
+        id: ThreadId,
+        status: ThreadWorkStatus,
+        snoozed_until: Option<i64>,
+    ) -> Result<ThreadWorkState> {
+        if status == ThreadWorkStatus::Snoozed {
+            if snoozed_until.is_none_or(|value| value <= chrono::Utc::now().timestamp()) {
+                return Err(BackendError::InvalidInput(
+                    "a snoozed conversation requires a future Unix timestamp".into(),
+                ));
+            }
+        } else if snoozed_until.is_some() {
+            return Err(BackendError::InvalidInput(
+                "only a snoozed conversation may have a wake timestamp".into(),
+            ));
+        }
+        let now = chrono::Utc::now().timestamp();
+        let mut connection = self.0.inner.connection.lock().await;
+        let transaction = connection.transaction().await?;
+        let mut rows = transaction
+            .query("SELECT 1 FROM threads WHERE id = ?1", (id.to_string(),))
+            .await?;
+        if rows.next().await?.is_none() {
+            drop(rows);
+            transaction.rollback().await?;
+            return Err(BackendError::NotFound {
+                entity: "thread",
+                id: id.to_string(),
+            });
+        }
+        drop(rows);
+        transaction
+            .execute(
+                r#"INSERT INTO thread_work_state(
+                    thread_id, status, snoozed_until, actionable_once, updated_at
+                ) VALUES (?1, ?2, ?3, 0, ?4)
+                ON CONFLICT(thread_id) DO UPDATE SET
+                    status = excluded.status,
+                    snoozed_until = excluded.snoozed_until,
+                    updated_at = excluded.updated_at"#,
+                turso::params![id.to_string(), work_status_text(status), snoozed_until, now,],
+            )
+            .await?;
+        let event = insert_event(
+            &transaction,
+            now,
+            "thread_work_state_changed",
+            id.to_string(),
+            serde_json::json!({
+                "thread_id": id,
+                "status": status,
+                "snoozed_until": snoozed_until,
+            }),
+        )
+        .await?;
+        transaction.commit().await?;
+        drop(connection);
+        let _ = self.0.inner.events.send(event);
+        self.work_state(id).await
+    }
+
+    pub async fn set_actionable_once(
+        &self,
+        id: ThreadId,
+        actionable: bool,
+    ) -> Result<ThreadWorkState> {
+        let now = chrono::Utc::now().timestamp();
+        let mut connection = self.0.inner.connection.lock().await;
+        let transaction = connection.transaction().await?;
+        let mut rows = transaction
+            .query("SELECT 1 FROM threads WHERE id = ?1", (id.to_string(),))
+            .await?;
+        if rows.next().await?.is_none() {
+            drop(rows);
+            transaction.rollback().await?;
+            return Err(BackendError::NotFound {
+                entity: "thread",
+                id: id.to_string(),
+            });
+        }
+        drop(rows);
+        transaction
+            .execute(
+                r#"INSERT INTO thread_work_state(
+                    thread_id, status, snoozed_until, actionable_once, updated_at
+                ) VALUES (?1, 'active', NULL, ?2, ?3)
+                ON CONFLICT(thread_id) DO UPDATE SET
+                    status = 'active', snoozed_until = NULL,
+                    actionable_once = excluded.actionable_once,
+                    updated_at = excluded.updated_at"#,
+                (id.to_string(), actionable, now),
+            )
+            .await?;
+        let event = insert_event(
+            &transaction,
+            now,
+            "thread_actionable_once_changed",
+            id.to_string(),
+            serde_json::json!({"thread_id": id, "actionable_once": actionable}),
+        )
+        .await?;
+        transaction.commit().await?;
+        drop(connection);
+        let _ = self.0.inner.events.send(event);
+        self.work_state(id).await
     }
 
     pub async fn reply(
@@ -361,6 +493,24 @@ pub(crate) async fn assign_message_on(
             id: message_id.to_string(),
         });
     }
+    if input
+        .from_address
+        .as_deref()
+        .is_some_and(|address| !address.trim().is_empty())
+    {
+        connection
+            .execute(
+                r#"UPDATE thread_work_state
+                SET status = 'active', snoozed_until = NULL, updated_at = ?1
+                WHERE thread_id = ?2 AND status IN ('done', 'waiting')
+                  AND NOT EXISTS (
+                    SELECT 1 FROM account_identities ai
+                    WHERE ai.email_address = ?3 COLLATE NOCASE
+                  )"#,
+                turso::params![now, thread_id.to_string(), input.from_address.clone(),],
+            )
+            .await?;
+    }
     for address in &input.participants {
         connection
             .execute(
@@ -531,6 +681,7 @@ async fn load_summary_on(connection: &Connection, id: ThreadId) -> Result<Thread
     while let Some(row) = rows.next().await? {
         participants.push(row.get(0)?);
     }
+    let work_state = load_work_state_on(connection, id).await?;
     Ok(ThreadSummary {
         id,
         subject,
@@ -544,7 +695,69 @@ async fn load_summary_on(connection: &Connection, id: ThreadId) -> Result<Thread
         latest_preview,
         sender_trust,
         openpgp_encryption_required,
+        work_state,
     })
+}
+
+async fn load_work_state_on(connection: &Connection, id: ThreadId) -> Result<ThreadWorkState> {
+    let mut rows = connection
+        .query(
+            "SELECT status, snoozed_until, actionable_once, updated_at FROM thread_work_state WHERE thread_id = ?1",
+            (id.to_string(),),
+        )
+        .await?;
+    let Some(row) = rows.next().await? else {
+        return Ok(ThreadWorkState::default());
+    };
+    Ok(ThreadWorkState {
+        status: parse_work_status(&row.get::<String>(0)?)?,
+        snoozed_until: row.get(1)?,
+        actionable_once: row.get(2)?,
+        updated_at: row.get(3)?,
+    })
+}
+
+fn workflow_predicate(view: WorkflowView) -> String {
+    const ACTIVE: &str = "COALESCE((SELECT tws.status FROM thread_work_state tws WHERE tws.thread_id = m.thread_id), 'active') = 'active'";
+    const HAS_INBOUND: &str = "EXISTS (SELECT 1 FROM messages inbound WHERE inbound.thread_id = m.thread_id AND inbound.from_address IS NOT NULL AND trim(inbound.from_address) != '' AND NOT EXISTS (SELECT 1 FROM account_identities own_identity WHERE own_identity.email_address = inbound.from_address COLLATE NOCASE))";
+    match view {
+        WorkflowView::WarmAction => format!(
+            "({WARM_PREDICATE} OR COALESCE((SELECT tws.actionable_once FROM thread_work_state tws WHERE tws.thread_id = m.thread_id), 0) = 1) AND {ACTIVE} AND {HAS_INBOUND} AND (COALESCE((SELECT tws.actionable_once FROM thread_work_state tws WHERE tws.thread_id = m.thread_id), 0) = 1 OR EXISTS (SELECT 1 FROM messages tm JOIN contact_addresses ca ON ca.address = tm.from_address COLLATE NOCASE JOIN contact_relationships cr ON cr.contact_id = ca.contact_id WHERE tm.thread_id = m.thread_id AND cr.may_create_obligations = 1))"
+        ),
+        WorkflowView::WarmFyi => format!(
+            "{WARM_PREDICATE} AND {ACTIVE} AND {HAS_INBOUND} AND COALESCE((SELECT tws.actionable_once FROM thread_work_state tws WHERE tws.thread_id = m.thread_id), 0) = 0 AND EXISTS (SELECT 1 FROM messages tm JOIN contact_addresses ca ON ca.address = tm.from_address COLLATE NOCASE JOIN contact_relationships cr ON cr.contact_id = ca.contact_id WHERE tm.thread_id = m.thread_id AND cr.may_create_obligations = 0) AND NOT EXISTS (SELECT 1 FROM messages tm JOIN contact_addresses ca ON ca.address = tm.from_address COLLATE NOCASE JOIN contact_relationships cr ON cr.contact_id = ca.contact_id WHERE tm.thread_id = m.thread_id AND cr.may_create_obligations = 1)"
+        ),
+        WorkflowView::ColdReview => format!(
+            "{COLD_PREDICATE} AND {ACTIVE} AND {HAS_INBOUND} AND COALESCE((SELECT tws.actionable_once FROM thread_work_state tws WHERE tws.thread_id = m.thread_id), 0) = 0"
+        ),
+        WorkflowView::SpamQuarantine => {
+            format!("{SPAM_PREDICATE} AND {ACTIVE} AND {HAS_INBOUND}")
+        }
+        WorkflowView::Waiting => "COALESCE((SELECT tws.status FROM thread_work_state tws WHERE tws.thread_id = m.thread_id), 'active') = 'waiting'".into(),
+        WorkflowView::Snoozed => "COALESCE((SELECT tws.status FROM thread_work_state tws WHERE tws.thread_id = m.thread_id), 'active') = 'snoozed' AND (SELECT tws.snoozed_until FROM thread_work_state tws WHERE tws.thread_id = m.thread_id) > unixepoch()".into(),
+        WorkflowView::Done => "COALESCE((SELECT tws.status FROM thread_work_state tws WHERE tws.thread_id = m.thread_id), 'active') = 'done'".into(),
+    }
+}
+
+fn work_status_text(value: ThreadWorkStatus) -> &'static str {
+    match value {
+        ThreadWorkStatus::Active => "active",
+        ThreadWorkStatus::Waiting => "waiting",
+        ThreadWorkStatus::Snoozed => "snoozed",
+        ThreadWorkStatus::Done => "done",
+    }
+}
+
+fn parse_work_status(value: &str) -> Result<ThreadWorkStatus> {
+    match value {
+        "active" => Ok(ThreadWorkStatus::Active),
+        "waiting" => Ok(ThreadWorkStatus::Waiting),
+        "snoozed" => Ok(ThreadWorkStatus::Snoozed),
+        "done" => Ok(ThreadWorkStatus::Done),
+        _ => Err(BackendError::InvalidInput(
+            "database contains invalid thread work state".into(),
+        )),
+    }
 }
 
 fn stable_thread_id(trust: ThreadSenderTrust, anchor: &str) -> ThreadId {

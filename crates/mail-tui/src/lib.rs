@@ -4,8 +4,10 @@
 //! access, or image decoder.  It turns untrusted HTML bytes into owned Ratatui
 //! lines which the caller may place in any widget or viewport.
 
+pub mod app;
 mod parser;
 mod render;
+pub mod ui;
 
 pub use parser::{HtmlDocument, Limits, ParseWarning, RenderError};
 pub use render::{

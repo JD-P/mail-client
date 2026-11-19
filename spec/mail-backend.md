@@ -988,6 +988,18 @@ implementations are required to run disposable sandbox workers.
 - explain/preview endpoints for rules and queries; and
 - capability discovery so third-party clients do not guess backend features.
 
+### Human workflow state and relationship policy
+
+- read/unread remains a per-message observation;
+- active, waiting, snoozed and done are explicit conversation work states;
+- a Cold conversation can be made actionable once without promoting its sender;
+- contact identity is independent from Action/FYI routing, obligation
+  permission, notifications and remote-content policy;
+- Warm — FYI includes marketing and other known low-obligation mail rather
+  than encoding Marketing as a fourth trust workflow; and
+- first-account onboarding can propose a bounded set of frequent recent
+  correspondents while preserving address-first identity and explicit consent.
+
 ### Data lifecycle and recovery
 
 - migrations with rollback/recovery tests;

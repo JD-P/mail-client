@@ -781,6 +781,10 @@ impl Backend {
         Contacts(self.clone())
     }
 
+    pub fn onboarding(&self) -> crate::Onboarding {
+        crate::Onboarding::new(self.clone())
+    }
+
     pub fn search(&self) -> Search {
         Search(self.clone())
     }
@@ -3794,7 +3798,7 @@ impl Contacts {
             .await
     }
 
-    async fn add_with_provenance(
+    pub(crate) async fn add_with_provenance(
         &self,
         contact: NewContact,
         provenance: crate::ContactProvenance,
@@ -3846,6 +3850,12 @@ impl Contacts {
                     value.created_at,
                     value.updated_at,
                 ],
+            )
+            .await?;
+        transaction
+            .execute(
+                "INSERT INTO contact_relationships(contact_id, kind, warm_route, may_create_obligations, notify, remote_content, updated_at) VALUES (?1, 'person', 'action', 1, 1, 'ask', ?2)",
+                (value.id.to_string(), value.created_at),
             )
             .await?;
         for address in &value.addresses {
@@ -3934,6 +3944,87 @@ impl Contacts {
             .into_iter()
             .find(|contact| contact.id == id)
             .ok_or_else(|| not_found("contact", id))
+    }
+
+    pub async fn relationship(&self, id: ContactId) -> Result<crate::ContactRelationship> {
+        let connection = self.0.inner.connection.lock().await;
+        let mut rows = connection
+            .query(
+                "SELECT kind, warm_route, may_create_obligations, notify, remote_content, updated_at FROM contact_relationships WHERE contact_id = ?1",
+                (id.to_string(),),
+            )
+            .await?;
+        let row = rows.next().await?.ok_or_else(|| not_found("contact", id))?;
+        Ok(crate::ContactRelationship {
+            contact_id: id,
+            kind: parse_relationship_kind(&row.get::<String>(0)?)?,
+            warm_route: parse_warm_route(&row.get::<String>(1)?)?,
+            may_create_obligations: row.get(2)?,
+            notify: row.get(3)?,
+            remote_content: parse_remote_content_policy(&row.get::<String>(4)?)?,
+            updated_at: row.get(5)?,
+        })
+    }
+
+    pub async fn set_relationship(
+        &self,
+        id: ContactId,
+        relationship: crate::ContactRelationship,
+    ) -> Result<crate::ContactRelationship> {
+        if relationship.contact_id != id {
+            return Err(BackendError::InvalidInput(
+                "relationship contact identifier does not match target".into(),
+            ));
+        }
+        let route_is_action = relationship.warm_route == crate::WarmRoute::Action;
+        if route_is_action != relationship.may_create_obligations {
+            return Err(BackendError::InvalidInput(
+                "Warm Action routing and obligation permission must change together".into(),
+            ));
+        }
+        let now = Utc::now().timestamp();
+        let mut connection = self.0.inner.connection.lock().await;
+        let transaction = connection.transaction().await?;
+        let changed = transaction
+            .execute(
+                r#"UPDATE contact_relationships
+                SET kind = ?1, warm_route = ?2, may_create_obligations = ?3,
+                    notify = ?4, remote_content = ?5, updated_at = ?6
+                WHERE contact_id = ?7"#,
+                turso::params![
+                    relationship_kind_text(relationship.kind),
+                    warm_route_text(relationship.warm_route),
+                    relationship.may_create_obligations,
+                    relationship.notify,
+                    remote_content_policy_text(relationship.remote_content),
+                    now,
+                    id.to_string(),
+                ],
+            )
+            .await?;
+        if changed == 0 {
+            transaction.rollback().await?;
+            return Err(not_found("contact", id));
+        }
+        let event = insert_event(
+            &transaction,
+            now,
+            "contact_relationship_changed",
+            id.to_string(),
+            json!({
+                "contact_id": id,
+                "kind": relationship.kind,
+                "warm_route": relationship.warm_route,
+                "may_create_obligations": relationship.may_create_obligations,
+                "notify": relationship.notify,
+                "remote_content": relationship.remote_content,
+            }),
+        )
+        .await?;
+        transaction.commit().await?;
+        drop(connection);
+        let _ = self.0.inner.events.send(event);
+        self.relationship(id).await
     }
 
     pub async fn update(&self, id: ContactId, contact: NewContact) -> Result<Contact> {
@@ -5758,6 +5849,67 @@ fn classification_text(classification: UserClassification) -> &'static str {
     match classification {
         UserClassification::Spam => "spam",
         UserClassification::NotSpam => "not_spam",
+    }
+}
+
+fn relationship_kind_text(value: crate::RelationshipKind) -> &'static str {
+    match value {
+        crate::RelationshipKind::Person => "person",
+        crate::RelationshipKind::Organization => "organization",
+        crate::RelationshipKind::Merchant => "merchant",
+        crate::RelationshipKind::Newsletter => "newsletter",
+        crate::RelationshipKind::AutomatedService => "automated_service",
+        crate::RelationshipKind::Other => "other",
+    }
+}
+
+fn parse_relationship_kind(value: &str) -> Result<crate::RelationshipKind> {
+    match value {
+        "person" => Ok(crate::RelationshipKind::Person),
+        "organization" => Ok(crate::RelationshipKind::Organization),
+        "merchant" => Ok(crate::RelationshipKind::Merchant),
+        "newsletter" => Ok(crate::RelationshipKind::Newsletter),
+        "automated_service" => Ok(crate::RelationshipKind::AutomatedService),
+        "other" => Ok(crate::RelationshipKind::Other),
+        _ => Err(BackendError::InvalidInput(
+            "database contains invalid relationship kind".into(),
+        )),
+    }
+}
+
+fn warm_route_text(value: crate::WarmRoute) -> &'static str {
+    match value {
+        crate::WarmRoute::Action => "action",
+        crate::WarmRoute::Fyi => "fyi",
+    }
+}
+
+fn parse_warm_route(value: &str) -> Result<crate::WarmRoute> {
+    match value {
+        "action" => Ok(crate::WarmRoute::Action),
+        "fyi" => Ok(crate::WarmRoute::Fyi),
+        _ => Err(BackendError::InvalidInput(
+            "database contains invalid Warm route".into(),
+        )),
+    }
+}
+
+fn remote_content_policy_text(value: crate::RemoteContentPolicy) -> &'static str {
+    match value {
+        crate::RemoteContentPolicy::Ask => "ask",
+        crate::RemoteContentPolicy::Allow => "allow",
+        crate::RemoteContentPolicy::Block => "block",
+    }
+}
+
+fn parse_remote_content_policy(value: &str) -> Result<crate::RemoteContentPolicy> {
+    match value {
+        "ask" => Ok(crate::RemoteContentPolicy::Ask),
+        "allow" => Ok(crate::RemoteContentPolicy::Allow),
+        "block" => Ok(crate::RemoteContentPolicy::Block),
+        _ => Err(BackendError::InvalidInput(
+            "database contains invalid remote-content policy".into(),
+        )),
     }
 }
 

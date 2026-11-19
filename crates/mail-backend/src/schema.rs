@@ -11,7 +11,7 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 version INTEGER NOT NULL
             );
             INSERT INTO schema_meta(version)
-                SELECT 21 WHERE NOT EXISTS (SELECT 1 FROM schema_meta);
+                SELECT 22 WHERE NOT EXISTS (SELECT 1 FROM schema_meta);
 
             CREATE TABLE IF NOT EXISTS accounts (
                 id TEXT PRIMARY KEY,
@@ -127,6 +127,16 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 openpgp_encryption_required INTEGER NOT NULL DEFAULT 0,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS thread_work_state (
+                thread_id TEXT PRIMARY KEY REFERENCES threads(id) ON DELETE CASCADE,
+                status TEXT NOT NULL DEFAULT 'active'
+                    CHECK(status IN ('active', 'waiting', 'snoozed', 'done')),
+                snoozed_until INTEGER,
+                actionable_once INTEGER NOT NULL DEFAULT 0,
+                updated_at INTEGER NOT NULL,
+                CHECK(status = 'snoozed' OR snoozed_until IS NULL)
             );
 
             CREATE TABLE IF NOT EXISTS thread_participants (
@@ -340,6 +350,27 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 contact_id TEXT NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
                 address TEXT PRIMARY KEY COLLATE NOCASE,
                 accepted_name TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS contact_relationships (
+                contact_id TEXT PRIMARY KEY REFERENCES contacts(id) ON DELETE CASCADE,
+                kind TEXT NOT NULL DEFAULT 'person'
+                    CHECK(kind IN ('person', 'organization', 'merchant', 'newsletter', 'automated_service', 'other')),
+                warm_route TEXT NOT NULL DEFAULT 'action'
+                    CHECK(warm_route IN ('action', 'fyi')),
+                may_create_obligations INTEGER NOT NULL DEFAULT 1,
+                notify INTEGER NOT NULL DEFAULT 1,
+                remote_content TEXT NOT NULL DEFAULT 'ask'
+                    CHECK(remote_content IN ('ask', 'allow', 'block')),
+                updated_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS onboarding_contact_decisions (
+                account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+                address TEXT NOT NULL COLLATE NOCASE,
+                decision TEXT NOT NULL CHECK(decision IN ('accepted', 'dismissed')),
+                decided_at INTEGER NOT NULL,
+                PRIMARY KEY(account_id, address)
             );
 
             CREATE TABLE IF NOT EXISTS openpgp_settings (
@@ -723,6 +754,12 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 ON calendar_events(calendar_id, updated_at, id);
             CREATE INDEX IF NOT EXISTS calendar_events_uid
                 ON calendar_events(calendar_id, uid, recurrence_id);
+            CREATE INDEX IF NOT EXISTS thread_work_state_queue
+                ON thread_work_state(status, snoozed_until, updated_at, thread_id);
+            CREATE INDEX IF NOT EXISTS contact_relationships_route
+                ON contact_relationships(warm_route, may_create_obligations, contact_id);
+            CREATE INDEX IF NOT EXISTS onboarding_contact_decisions_account
+                ON onboarding_contact_decisions(account_id, decision, address);
             "#,
         )
         .await?;
@@ -1349,7 +1386,27 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
             .await?;
         version = 21;
     }
-    if version != 21 {
+    if version == 21 {
+        // Version twenty-two adds independent conversation work state,
+        // relationship policy and first-account contact onboarding. Tables and
+        // indexes are created idempotently by the common schema batch above.
+        connection
+            .execute_batch(
+                r#"
+                INSERT OR IGNORE INTO contact_relationships(
+                    contact_id, kind, warm_route, may_create_obligations,
+                    notify, remote_content, updated_at
+                )
+                SELECT id, 'person', 'action', 1, 1, 'ask',
+                    CASE WHEN updated_at > 0 THEN updated_at ELSE created_at END
+                FROM contacts;
+                UPDATE schema_meta SET version = 22;
+                "#,
+            )
+            .await?;
+        version = 22;
+    }
+    if version != 22 {
         return Err(crate::BackendError::InvalidInput(format!(
             "unsupported database schema version {version}"
         )));
@@ -1566,7 +1623,7 @@ mod tests {
             .await
             .unwrap();
         let row = rows.next().await.unwrap().unwrap();
-        assert_eq!(row.get::<i64>(0).unwrap(), 21);
+        assert_eq!(row.get::<i64>(0).unwrap(), 22);
         assert_eq!(row.get::<String>(1).unwrap(), r#"{"received_at":123}"#);
         drop(rows);
 
@@ -1609,7 +1666,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap(),
-            21
+            22
         );
         drop(rows);
 
@@ -1746,7 +1803,7 @@ mod tests {
             .await
             .unwrap();
         let row = rows.next().await.unwrap().unwrap();
-        assert_eq!(row.get::<i64>(0).unwrap(), 21);
+        assert_eq!(row.get::<i64>(0).unwrap(), 22);
         assert_eq!(row.get::<String>(1).unwrap(), "CaseSensitive@example.test");
         assert!(row.get::<bool>(2).unwrap());
         assert!(row.get::<bool>(3).unwrap());

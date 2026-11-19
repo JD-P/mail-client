@@ -25,6 +25,7 @@ mod imap_mutation;
 mod lifecycle;
 mod mime;
 mod mime_api;
+mod onboarding;
 mod openpgp;
 mod organization;
 mod query;
@@ -60,6 +61,7 @@ pub use imap_engine::{
 pub use imap_mutation::ImapMutations;
 pub use lifecycle::{restore_profile_backup, DataLifecycle};
 pub use mime_api::{Mime, SandboxedDocumentExtractor};
+pub use onboarding::Onboarding;
 pub use openpgp::OpenPgp;
 pub use organization::SavedSearches;
 pub use query::{parse_query, QueryExpr, QueryParseError, QueryTerm};

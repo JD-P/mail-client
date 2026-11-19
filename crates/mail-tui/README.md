@@ -1,4 +1,26 @@
-# Lizard mail TUI renderer
+# Lizard mail TUI
+
+This crate now contains both the bounded HTML-email renderer and the first
+working terminal client for the opinionated Warm/Cold/Spam workflow specified
+in [`../../spec/tui-workflows.md`](../../spec/tui-workflows.md).
+The exact implementation boundary is tracked in
+[`../../spec/tui-implementation-status.md`](../../spec/tui-implementation-status.md).
+
+Run the client against a Lizard backend profile:
+
+```sh
+cargo run -p lizard-mail-tui -- /path/to/profile
+```
+
+The implemented client opens directly into Warm — Action, or into bounded
+contact onboarding when the first configured account has mail but no contacts.
+Global keys switch between Warm Action, Warm FYI, Cold Review, Spam, Waiting,
+Snoozed, Done, Contacts, and contextual Help. Done/Waiting/Snooze and Make
+Actionable Once are durable backend operations. Serious open-interstitial
+findings block the ordinary reader until the user explicitly chooses restricted
+viewing.
+
+## HTML renderer
 
 This crate renders the project's bounded HTML-email subset as semantic Ratatui
 text. It is deliberately separate from the graphical Lizard renderer: terminal

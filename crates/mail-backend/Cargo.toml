@@ -23,7 +23,7 @@ mail-auth = { path = "../../vendor/mail-auth", default-features = false, feature
 pgp = { version = "=0.21.1", default-features = false }
 psl = "2"
 rand = "0.8.5"
-reqwest = { version = "=0.13.1", default-features = false, features = ["rustls", "http2", "stream"] }
+reqwest = { version = "=0.13.1", default-features = false, features = ["rustls-no-provider", "http2", "stream"] }
 roxmltree = "=0.21.1"
 rustpython-parser = "0.4"
 serde = { version = "1", features = ["derive"] }

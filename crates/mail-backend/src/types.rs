@@ -430,6 +430,53 @@ pub enum InboxClass {
     Spam,
 }
 
+/// Opinionated frontend work queues. These are projections over independent
+/// trust, relationship and conversation-work state; they are not folders and
+/// never change the message's physical server placement.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowView {
+    WarmAction,
+    WarmFyi,
+    ColdReview,
+    SpamQuarantine,
+    Waiting,
+    Snoozed,
+    Done,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ThreadWorkStatus {
+    #[default]
+    Active,
+    Waiting,
+    Snoozed,
+    Done,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ThreadWorkState {
+    pub status: ThreadWorkStatus,
+    pub snoozed_until: Option<i64>,
+    /// A cold conversation may be admitted to the Warm action queue without
+    /// creating a durable relationship with its sender. The grant is scoped
+    /// to this conversation and survives replies within it.
+    pub actionable_once: bool,
+    pub updated_at: i64,
+}
+
+impl Default for ThreadWorkState {
+    fn default() -> Self {
+        Self {
+            status: ThreadWorkStatus::Active,
+            snoozed_until: None,
+            actionable_once: false,
+            updated_at: 0,
+        }
+    }
+}
+
 /// The provider-side fact from which a spam verdict was obtained.
 ///
 /// These are authenticated account-state observations, not RFC 5322 headers
@@ -835,6 +882,10 @@ pub struct ThreadSummary {
     /// silently downgrading the conversation to plaintext.
     #[serde(default)]
     pub openpgp_encryption_required: bool,
+    /// Explicit work state is conversation-level. Individual messages retain
+    /// independent read/unread state.
+    #[serde(default)]
+    pub work_state: ThreadWorkState,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -849,6 +900,9 @@ pub struct ThreadFilter {
     pub account_id: Option<AccountId>,
     pub folder_id: Option<FolderId>,
     pub inbox_class: Option<InboxClass>,
+    /// When present this opinionated projection supersedes `inbox_class`.
+    #[serde(default)]
+    pub workflow: Option<WorkflowView>,
     pub sort: MessageSort,
     pub page_size: usize,
     pub cursor: Option<String>,
@@ -860,6 +914,7 @@ impl Default for ThreadFilter {
             account_id: None,
             folder_id: None,
             inbox_class: None,
+            workflow: None,
             sort: MessageSort::ReceivedNewest,
             page_size: 50,
             cursor: None,
@@ -1722,6 +1777,7 @@ pub enum ContactProvenanceKind {
     #[default]
     Manual,
     VcardImport,
+    OnboardingSuggestion,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -1745,6 +1801,109 @@ impl ContactProvenance {
 pub struct ContactImportResult {
     pub imported: Vec<ContactId>,
     pub skipped_duplicate_contacts: u64,
+}
+
+/// Default placement for mail from a known relationship. Marketing is a
+/// common FYI rule/category, not a distinct trust workflow or mandatory view.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WarmRoute {
+    #[default]
+    Action,
+    Fyi,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RelationshipKind {
+    #[default]
+    Person,
+    Organization,
+    Merchant,
+    Newsletter,
+    AutomatedService,
+    Other,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RemoteContentPolicy {
+    #[default]
+    Ask,
+    Allow,
+    Block,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ContactRelationship {
+    pub contact_id: ContactId,
+    pub kind: RelationshipKind,
+    pub warm_route: WarmRoute,
+    pub may_create_obligations: bool,
+    pub notify: bool,
+    pub remote_content: RemoteContentPolicy,
+    pub updated_at: i64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct NewContactRelationship {
+    pub kind: RelationshipKind,
+    pub warm_route: WarmRoute,
+    pub may_create_obligations: bool,
+    pub notify: bool,
+    pub remote_content: RemoteContentPolicy,
+}
+
+impl Default for NewContactRelationship {
+    fn default() -> Self {
+        Self {
+            kind: RelationshipKind::Person,
+            warm_route: WarmRoute::Action,
+            may_create_obligations: true,
+            notify: true,
+            remote_content: RemoteContentPolicy::Ask,
+        }
+    }
+}
+
+impl ContactRelationship {
+    pub fn personal(contact_id: ContactId) -> Self {
+        Self {
+            contact_id,
+            kind: RelationshipKind::Person,
+            warm_route: WarmRoute::Action,
+            may_create_obligations: true,
+            notify: true,
+            remote_content: RemoteContentPolicy::Ask,
+            updated_at: 0,
+        }
+    }
+
+    pub fn fyi(contact_id: ContactId, kind: RelationshipKind) -> Self {
+        Self {
+            contact_id,
+            kind,
+            warm_route: WarmRoute::Fyi,
+            may_create_obligations: false,
+            notify: false,
+            remote_content: RemoteContentPolicy::Ask,
+            updated_at: 0,
+        }
+    }
+}
+
+/// A bounded onboarding proposal derived from recent account history. Claimed
+/// names remain message-supplied evidence until the user accepts or edits one.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ContactSuggestion {
+    pub account_id: AccountId,
+    pub address: String,
+    pub claimed_name: Option<String>,
+    pub message_count: u64,
+    pub latest_received_at: i64,
+    pub suggested_kind: RelationshipKind,
+    pub suggested_warm_route: WarmRoute,
+    pub suggested_may_create_obligations: bool,
 }
 
 /// One pure check in a filter rule. A rule's checks are an implicit AND (with
