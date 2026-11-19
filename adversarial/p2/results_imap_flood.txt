@@ -1,0 +1,36 @@
+Pass 2 retained IMAP LIST response-flood measurements
+Reviewed commit: 47eb6b29fde5807dd9204aee2c4049eb7dd0ddb2
+Date: 2026-11-19 UTC
+
+The harness uses async_imap::Client over a Tokio duplex stream, completes a
+real LOGIN exchange, issues LIST, and then uses the same
+try_collect::<Vec<_>>() pattern as ImapAccountEngine::discover_mailboxes.
+Every server response is a valid 34-byte LIST response. TLS is deliberately
+omitted from this local transport harness because the defect is after TLS
+decryption and is independent of the transport wrapper.
+
+$ for n in 1000 10000 20000 40000; do target/release/p2-imap-response-flood list-flood "$n"; done
+requested=1000 emitted=1000 collected=1000 wire_bytes=34024 peak_rss_kib=6424
+requested=10000 emitted=10000 collected=10000 wire_bytes=340024 peak_rss_kib=45320
+requested=20000 emitted=20000 collected=20000 wire_bytes=680024 peak_rss_kib=88216
+requested=40000 emitted=40000 collected=40000 wire_bytes=1360024 peak_rss_kib=174004
+
+A separately timed fresh 40,000-response run:
+
+requested=40000 emitted=40000 collected=40000 wire_bytes=1360024 peak_rss_kib=174112
+elapsed_s=1.030479 exit=0
+
+The 40,000-response case therefore retains roughly 127.9 bytes of resident
+memory for every byte sent on the wire. Each parsed response owns the
+BytesMut block that backs its borrowed fields, and the stream allocates those
+blocks in 4 KiB units.
+
+$ python3 adversarial/p2/imap-response-flood/measure.py 40000 150000
+memory allocation of 4096 bytes failed
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+exit=-6 external_peak_rss_kib=28740 address_space_limit_kib=150000
+
+The low RSS value on the limited run is expected: RLIMIT_AS constrains virtual
+address reservations as well as resident pages, so the allocator aborts
+before all of the otherwise-observed 174 MiB becomes resident. The important
+outcome is SIGABRT from 1.36 MiB of ordinary protocol traffic.

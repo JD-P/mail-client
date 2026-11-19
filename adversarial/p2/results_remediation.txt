@@ -1,0 +1,54 @@
+Pass 2 IMAP response-budget remediation
+Reviewed vulnerable commit: 47eb6b29fde5807dd9204aee2c4049eb7dd0ddb2
+Fix commit: 4d1ab6614bfcb103edb2d8cd721f63fdef0e96a4
+Date: 2026-11-19 UTC
+
+The fix applies count and aggregate-wire-byte limits in the shared async-imap
+decoder before a parsed response escapes into a collector. The backend uses a
+1,024-response, 64 MiB command budget, an 8 MiB individual-response limit and
+a nesting limit of 64. Requested UID FETCH consumers additionally enforce
+requested cardinality and reject duplicates. Large flag reconciliation is
+performed in exact 512-UID chunks.
+
+Original retained attack, without an address-space ceiling:
+
+  $ python3 adversarial/p2/imap-response-flood/measure.py 40000
+  requested=40000 rejected=true error=Io(Custom { kind: Other, error: "incoming command exceeds configured response-count limit" }) peak_rss_kib=6672
+  exit=0 external_peak_rss_kib=28616 address_space_limit_kib=none
+
+Original retained attack under the ceiling that previously produced SIGABRT:
+
+  $ python3 adversarial/p2/imap-response-flood/measure.py 40000 150000
+  requested=40000 rejected=true error=Io(Custom { kind: Other, error: "incoming command exceeds configured response-count limit" }) peak_rss_kib=6616
+  exit=0 external_peak_rss_kib=28616 address_space_limit_kib=150000
+
+Five additional direct repetitions under RLIMIT_AS=150000 KiB all exited zero
+after rejection, at 6,640-6,808 KiB reported process peak RSS.
+
+Compatibility and regression verification:
+
+  cargo test -p async-imap --no-default-features --features runtime-tokio --locked
+    80 unit tests passed; 22 review regressions passed; 1 doctest passed.
+
+  cargo test -p async-imap --locked
+    79 async-std unit tests passed; 1 doctest passed.
+
+  cargo test -p lizard-mail-backend --locked
+    108 non-Docker tests passed; 6 Docker-dependent tests ignored by default.
+
+  cargo test -p lizard-mail-backend --locked --test dovecot_imap -- --ignored --nocapture
+    pulls_real_mail_from_dovecot_incrementally passed.
+
+  cargo test -p lizard-mail-backend --locked --test imap_account_engine \
+    owns_tls_auth_discovery_and_remote_reconciliation -- --ignored --nocapture
+    owns_tls_auth_discovery_and_remote_reconciliation passed.
+
+  cargo clippy -p async-imap --no-default-features --features runtime-tokio \
+    --all-targets --locked -- -A clippy::result_large_err -D warnings
+    passed; result_large_err is a pre-existing public login/auth API shape.
+
+  cargo clippy -p lizard-mail-backend --all-targets --locked -- \
+    -A clippy::result_large_err -A clippy::too_many_arguments \
+    -A clippy::type_complexity -A clippy::await_holding_lock \
+    -A clippy::useless_conversion -D warnings
+    passed; the allowed lints are pre-existing outside this remediation.

@@ -1,0 +1,90 @@
+Pass 2 scoped negative evidence
+Reviewed commit: 47eb6b29fde5807dd9204aee2c4049eb7dd0ddb2
+Date: 2026-11-19 UTC
+
+No host RCE was demonstrated. These are scoped observations, not a proof that
+all dependencies or future configurations are memory-safe.
+
+1. IMAP parser mutation
+
+Release build:
+
+  target/release/p2-imap-response-flood parser-fuzz 1000000
+  parser_iterations=1000000 panics=0 max_input_bytes=4096
+
+AddressSanitizer build:
+
+  ASAN_OPTIONS=detect_leaks=0:abort_on_error=1 \
+    target/p2-asan/x86_64-unknown-linux-gnu/release/p2-imap-response-flood \
+    parser-fuzz 1000000
+  parser_iterations=1000000 panics=0 max_input_bytes=4096
+
+The generator mutates valid LIST, FETCH, SEARCH, STATUS, METADATA, VANISHED,
+ESEARCH, NAMESPACE, continuation and command-completion responses. Production
+async-imap additionally rejects an individual response above 64 MiB and
+parenthesis nesting above 128 before imap-proto's recursive parser runs.
+
+2. MIME parser mutation
+
+Release build:
+
+  target/release/p2-imap-response-flood mime-fuzz 250000
+  mime_iterations=250000 panics=0 max_input_bytes=65536
+
+AddressSanitizer build:
+
+  ASAN_OPTIONS=detect_leaks=0:abort_on_error=1 \
+    target/p2-asan/x86_64-unknown-linux-gnu/release/p2-imap-response-flood \
+    mime-fuzz 250000
+  mime_iterations=250000 panics=0 max_input_bytes=65536
+
+The generator mutates ordinary, encoded-word, multipart, nested-message,
+delivery-authentication, group-address, alternative and attachment messages,
+then traverses headers, addresses, MIME parts, decoded content and text/HTML
+bodies. This targets mail-parser 1.0.1's unsafe SIMD scanner and its validated
+UTF-8 conversion boundary. No panic or sanitizer report was observed.
+
+3. Maintained code and command/path boundaries
+
+- No unsafe Rust occurs in the maintained backend, TUI or vendored
+  async-imap protocol path. mail-auth's unsafe UTF-8 conversion follows a
+  successful UTF-8 check; its AWS-LC ML-DSA FFI module is not enabled by the
+  backend feature set.
+- IMAP mailbox strings are quoted and CR/LF rejected before they are reused in
+  commands. UIDs pass a digit/range-character validator. Server strings are
+  SQL parameters and are not filesystem paths.
+- Attachment export uses a caller-selected create-new path. The untrusted
+  MIME filename is display metadata only. Archives are inspected and expanded
+  manually under byte/count/ratio budgets; ZipArchive::extract is not used.
+- The only production subprocess receiving mail data is the literal program
+  `gpg`, with application-selected arguments and the OpenPGP packet on stdin.
+  There is no shell. A vulnerability in the installed GnuPG remains an
+  external parser risk, but no argument or command injection path was found.
+
+4. Native renderer containment
+
+  target/debug/lizard sandbox-self-test
+  {"filesystem_denied":true,"fonts_preloaded":24,"network_denied":true}
+
+On Linux x86-64 the Gecko-subset renderer preloads fonts, closes descriptors
+above stderr, enters no-new-privileges seccomp, and then processes untrusted
+HTML with a 512 MiB address-space limit and CPU limit. The allowlist excludes
+open/openat, socket, connect, execve, ptrace and process creation. Native
+image/WebRender memory corruption could yield code execution inside this
+disposable worker, but no escape to the host was found. On unsupported
+platforms sandbox entry returns an error instead of running unconfined.
+
+5. Published advisories
+
+RustSec advisory-db commit 074ea9a7ed619f511b5b7374c7a97e98d1e98be4
+was checked for the mail-server-controlled parsing stack. Exact versions in
+the lockfile are outside the published affected ranges: rustls 0.23.46,
+pgp 0.21.1, zip 9.6.1 and image 0.25.10. No RustSec entries existed for
+async-imap, imap-proto 0.17.0, mail-parser 1.0.1 or mail-auth at that database
+revision. This says nothing about unreported defects.
+
+6. SMTP
+
+SMTP response lines are capped at 8 KiB and multiline responses at 100 lines.
+All submission commands reject CR/LF. No analogous response-count allocation
+or command injection was found on the SMTP path.
