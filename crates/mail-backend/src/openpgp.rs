@@ -42,6 +42,9 @@ const MAX_SECRET_KEY_BYTES: usize = 4 * 1024 * 1024;
 const MAX_SIGNATURES: usize = 16;
 const MAX_GPG_DIAGNOSTIC_BYTES: usize = 1024 * 1024;
 const MAX_DECRYPTED_BYTES: usize = 64 * 1024 * 1024;
+const MAX_COMPRESSION_DEPTH: usize = 16;
+const OPENPGP_READ_CHUNK: usize = 64 * 1024;
+const OPENPGP_INLINE_PLAINTEXT: usize = 1024 * 1024;
 
 #[derive(Clone)]
 pub struct OpenPgp(Backend);
@@ -1322,6 +1325,15 @@ impl OpenPgp {
                     plaintext = Some((value, provider.fingerprint));
                     break;
                 }
+                Err(error @ BackendError::MessageTooLarge { .. }) => {
+                    self.store_decryption_failure(
+                        message_id,
+                        OpenPgpEncryptionStatus::Unsupported,
+                        "decrypted OpenPGP entity exceeds the configured message limit",
+                    )
+                    .await?;
+                    return Err(error);
+                }
                 Err(error) => failures.push(error.to_string()),
             }
         }
@@ -1408,17 +1420,52 @@ impl OpenPgp {
                     .resolve_openpgp_secret(&reference)
                     .await?;
                 let secret = parse_secret_key(stored.key.as_ref())?;
-                let message = Message::from_bytes(encrypted).map_err(openpgp_error)?;
                 let password = Password::from(stored.passphrase.expose());
-                let mut decrypted = message.decrypt(&password, &secret).map_err(openpgp_error)?;
-                while decrypted.is_compressed() {
-                    decrypted = decrypted.decompress().map_err(openpgp_error)?;
+                let decrypt = || {
+                    let message = Message::from_bytes(encrypted).map_err(openpgp_error)?;
+                    let mut decrypted =
+                        message.decrypt(&password, &secret).map_err(openpgp_error)?;
+                    let mut compression_depth = 0;
+                    while decrypted.is_compressed() {
+                        if compression_depth == MAX_COMPRESSION_DEPTH {
+                            return Err(BackendError::OpenPgp(format!(
+                                "OpenPGP compression nesting exceeds the supported depth of {MAX_COMPRESSION_DEPTH}"
+                            )));
+                        }
+                        decrypted = decrypted.decompress().map_err(openpgp_error)?;
+                        compression_depth += 1;
+                    }
+                    Ok::<_, BackendError>(decrypted)
+                };
+                let limit = self
+                    .0
+                    .inner
+                    .config
+                    .limits
+                    .max_message_bytes
+                    .min(MAX_DECRYPTED_BYTES);
+                let mut authenticated = decrypt()?;
+                match inspect_openpgp_plaintext(&mut authenticated, limit)? {
+                    InspectedPlaintext::Buffered(plaintext) => Ok(plaintext),
+                    InspectedPlaintext::Length(length) => {
+                        let mut authenticated = decrypt()?;
+                        read_openpgp_plaintext_exact(&mut authenticated, length)
+                    }
                 }
-                decrypted.as_data_vec().map_err(openpgp_error)
             }
             OpenPgpSecretKeyProviderKind::GnuPg | OpenPgpSecretKeyProviderKind::YubiKey => {
-                let result =
-                    run_gpg(provider, &["--decrypt"], encrypted, MAX_DECRYPTED_BYTES).await?;
+                let result = run_gpg(
+                    provider,
+                    &["--decrypt"],
+                    encrypted,
+                    self.0
+                        .inner
+                        .config
+                        .limits
+                        .max_message_bytes
+                        .min(MAX_DECRYPTED_BYTES),
+                )
+                .await?;
                 let status = String::from_utf8_lossy(&result.stderr);
                 if !status.contains("DECRYPTION_OKAY") {
                     return Err(BackendError::OpenPgp(format!(
@@ -2538,6 +2585,80 @@ fn openpgp_error(error: impl std::fmt::Display) -> BackendError {
     BackendError::OpenPgp(error.to_string())
 }
 
+#[derive(Debug)]
+enum InspectedPlaintext {
+    Buffered(Vec<u8>),
+    Length(usize),
+}
+
+/// Authenticate and count OpenPGP plaintext without retaining a large packet
+/// on the heap. Small messages stay buffered; a larger accepted message is
+/// decrypted a second time into an exactly sized allocation. Reading to EOF
+/// is intentional because rPGP completes MDC/AEAD authentication while it is
+/// being read. Oversized plaintext is never returned to a caller.
+fn inspect_openpgp_plaintext(reader: &mut impl Read, limit: usize) -> Result<InspectedPlaintext> {
+    let sentinel = limit
+        .checked_add(1)
+        .ok_or_else(|| BackendError::InvalidInput("OpenPGP plaintext limit is too large".into()))?;
+    let mut buffered = Some(Vec::with_capacity(limit.min(OPENPGP_INLINE_PLAINTEXT)));
+    let mut total = 0_usize;
+    let mut buffer = vec![0_u8; OPENPGP_READ_CHUNK.min(sentinel).max(1)];
+
+    loop {
+        let remaining = sentinel - total;
+        let read_limit = remaining.min(buffer.len());
+        let count = reader
+            .read(&mut buffer[..read_limit])
+            .map_err(openpgp_error)?;
+        if count == 0 {
+            return Ok(match buffered {
+                Some(plaintext) => InspectedPlaintext::Buffered(plaintext),
+                None => InspectedPlaintext::Length(total),
+            });
+        }
+
+        let observed = total + count;
+        if observed > limit {
+            return Err(BackendError::MessageTooLarge {
+                actual: observed,
+                limit,
+            });
+        }
+        total = observed;
+        if let Some(output) = buffered.as_mut() {
+            if total <= OPENPGP_INLINE_PLAINTEXT {
+                output.extend_from_slice(&buffer[..count]);
+            } else {
+                buffered = None;
+            }
+        }
+    }
+}
+
+fn read_openpgp_plaintext_exact(reader: &mut impl Read, expected: usize) -> Result<Vec<u8>> {
+    let mut output = Vec::with_capacity(expected);
+    let mut buffer = vec![0_u8; OPENPGP_READ_CHUNK.min(expected.max(1))];
+    loop {
+        let count = reader.read(&mut buffer).map_err(openpgp_error)?;
+        if count == 0 {
+            if output.len() == expected {
+                return Ok(output);
+            }
+            return Err(BackendError::OpenPgp(format!(
+                "OpenPGP plaintext length changed while authenticating: expected {expected}, received {}",
+                output.len()
+            )));
+        }
+        let observed = output.len().saturating_add(count);
+        if observed > expected {
+            return Err(BackendError::OpenPgp(format!(
+                "OpenPGP plaintext length changed while authenticating: expected {expected}, received at least {observed}"
+            )));
+        }
+        output.extend_from_slice(&buffer[..count]);
+    }
+}
+
 fn parse_message_id(value: String) -> Result<MessageId> {
     value
         .parse()
@@ -2666,6 +2787,65 @@ fn parse_draft_mode(value: &str) -> Result<OpenPgpDraftMode> {
 mod tests {
     use super::*;
     use crate::{AccountKind, BackendConfig, CredentialStoragePolicy, NewAccount};
+
+    struct RepeatedByteReader {
+        remaining: usize,
+        consumed: usize,
+    }
+
+    impl Read for RepeatedByteReader {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            let count = self.remaining.min(buffer.len());
+            buffer[..count].fill(b'x');
+            self.remaining -= count;
+            self.consumed += count;
+            Ok(count)
+        }
+    }
+
+    #[test]
+    fn bounded_openpgp_inspection_accepts_plaintext_at_the_limit() {
+        let mut reader = RepeatedByteReader {
+            remaining: 128 * 1024,
+            consumed: 0,
+        };
+        let inspected = inspect_openpgp_plaintext(&mut reader, 128 * 1024).unwrap();
+        assert!(matches!(
+            inspected,
+            InspectedPlaintext::Buffered(plaintext) if plaintext.len() == 128 * 1024
+        ));
+        assert_eq!(reader.consumed, 128 * 1024);
+    }
+
+    #[test]
+    fn bounded_openpgp_inspection_stops_after_the_first_excess_byte() {
+        let limit = 128 * 1024;
+        let mut reader = RepeatedByteReader {
+            remaining: 16 * 1024 * 1024,
+            consumed: 0,
+        };
+        let error = inspect_openpgp_plaintext(&mut reader, limit).unwrap_err();
+        assert!(matches!(
+            error,
+            BackendError::MessageTooLarge {
+                actual,
+                limit: actual_limit
+            } if actual == limit + 1 && actual_limit == limit
+        ));
+        assert_eq!(reader.consumed, limit + 1);
+    }
+
+    #[test]
+    fn large_openpgp_inspection_retains_only_the_length() {
+        let length = OPENPGP_INLINE_PLAINTEXT + 1;
+        let mut reader = RepeatedByteReader {
+            remaining: length,
+            consumed: 0,
+        };
+        let inspected = inspect_openpgp_plaintext(&mut reader, length).unwrap();
+        assert!(matches!(inspected, InspectedPlaintext::Length(value) if value == length));
+        assert_eq!(reader.consumed, length);
+    }
 
     #[test]
     fn canonicalizes_mime_without_double_crlf() {

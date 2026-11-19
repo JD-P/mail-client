@@ -91,6 +91,8 @@ fn draw_queue(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
                 .map(String::as_str)
                 .unwrap_or("unknown sender");
             let subject = thread.subject.as_deref().unwrap_or("(no subject)");
+            let sender = safe_single_line_text(sender);
+            let subject = safe_single_line_text(subject);
             let state = match thread.work_state.status {
                 ThreadWorkStatus::Active => "",
                 ThreadWorkStatus::Waiting => " [waiting]",
@@ -206,7 +208,7 @@ fn draw_reader(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
         ]),
         Line::from(vec![
             Span::styled("Identity: ", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw(dkim),
+            Span::raw(safe_single_line_text(&dkim)),
         ]),
         Line::from(vec![
             Span::styled("Work: ", Style::default().add_modifier(Modifier::BOLD)),
@@ -278,7 +280,10 @@ fn draw_onboarding(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
                 .unwrap_or("no claimed name");
             ListItem::new(format!(
                 "{} claims to be {}  · {} messages · {:?}",
-                suggestion.address, name, suggestion.message_count, suggestion.suggested_warm_route
+                safe_single_line_text(&suggestion.address),
+                safe_single_line_text(name),
+                suggestion.message_count,
+                suggestion.suggested_warm_route
             ))
         })
         .collect::<Vec<_>>();
@@ -312,7 +317,7 @@ fn draw_onboarding_edit(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
                 "Display name: ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw(safe_text(&edit.display_name)),
+            Span::raw(safe_single_line_text(&edit.display_name)),
         ]),
         Line::from(vec![
             Span::styled(
@@ -367,7 +372,11 @@ fn draw_contacts(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
                 .map(|address| address.address.as_str())
                 .collect::<Vec<_>>()
                 .join(", ");
-            ListItem::new(format!("{}  <{}>", contact.display_name, addresses))
+            ListItem::new(format!(
+                "{}  <{}>",
+                safe_single_line_text(&contact.display_name),
+                safe_single_line_text(&addresses)
+            ))
         })
         .collect::<Vec<_>>();
     let mut state = ListState::default().with_selected(Some(app.selected));
@@ -437,7 +446,7 @@ fn draw_footer(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
         Screen::Help => "Esc back",
     };
     let line = if let Some(status) = &app.status {
-        format!("{commands}  │  {status}")
+        format!("{commands}  │  {}", safe_single_line_text(status))
     } else {
         commands.to_owned()
     };
@@ -493,4 +502,36 @@ fn safe_text(value: &str) -> String {
             }
         })
         .collect()
+}
+
+fn safe_single_line_text(value: &str) -> String {
+    safe_text(value)
+        .chars()
+        .map(|character| {
+            if matches!(character, '\n' | '\t') {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn single_line_text_neutralizes_terminal_controls_and_bidi_overrides() {
+        let sanitized = safe_single_line_text("safe\u{1b}[31m\u{202e}txt\u{2066}\nnext\tfield");
+
+        assert_eq!(sanitized, "safe�[31m�txt� next field");
+        assert!(!sanitized.chars().any(|character| {
+            character.is_control()
+                || matches!(
+                    character,
+                    '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+                )
+        }));
+    }
 }
