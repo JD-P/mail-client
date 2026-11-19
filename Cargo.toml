@@ -6,7 +6,7 @@ license = "MIT"
 description = "Bounded HTML email frontend for WebRender/SWGL"
 
 [workspace]
-members = [".", "crates/mail-backend", "vendor/async-imap", "vendor/mail-auth"]
+members = [".", "crates/mail-backend", "crates/mail-tui", "vendor/async-imap", "vendor/mail-auth"]
 default-members = ["."]
 exclude = ["tests/openpgp-conformance"]
 

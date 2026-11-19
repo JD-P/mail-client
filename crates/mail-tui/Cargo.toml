@@ -1,0 +1,17 @@
+[package]
+name = "lizard-mail-tui"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "A bounded semantic HTML email renderer for Ratatui"
+
+[dependencies]
+html5ever = "=0.40.1"
+markup5ever_rcdom = "=0.40.1"
+ratatui = { version = "=0.30.2", default-features = false }
+unicode-segmentation = "1"
+unicode-width = "0.2"
+url = "2"
+
+[dev-dependencies]
+ratatui = { version = "=0.30.2", default-features = false }
