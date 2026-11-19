@@ -1,0 +1,9 @@
+[package]
+name = "lizard-verified-kernel"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Single-source executable Verus kernels for Lizard security invariants"
+
+[dependencies]
+vstd = "=0.0.0-2026-11-01-0251"

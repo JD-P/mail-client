@@ -10,6 +10,7 @@ use crate::{
     RenderedPage,
 };
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+use lizard_verified_kernel::charge_usize;
 use ratatui::{
     layout::Alignment,
     style::{Color, Modifier, Style},
@@ -406,25 +407,21 @@ impl WirePage {
         let mut total_cells = 0usize;
         let mut lines = Vec::with_capacity(self.lines.len());
         for line in self.lines {
-            total_spans = total_spans.saturating_add(line.spans.len());
-            if total_spans > MAX_OUTPUT_SPANS {
-                return Err(protocol_error("renderer output contains too many spans"));
-            }
+            total_spans = charge_usize(total_spans, line.spans.len(), MAX_OUTPUT_SPANS)
+                .ok_or_else(|| protocol_error("renderer output contains too many spans"))?;
             let mut line_cells = 0usize;
             let mut spans = Vec::with_capacity(line.spans.len());
             for span in line.spans {
                 validate_display_text(&span.text)?;
-                total_text_bytes = total_text_bytes.saturating_add(span.text.len());
-                if total_text_bytes > MAX_OUTPUT_TEXT_BYTES {
-                    return Err(protocol_error("renderer output text is too large"));
-                }
+                total_text_bytes =
+                    charge_usize(total_text_bytes, span.text.len(), MAX_OUTPUT_TEXT_BYTES)
+                        .ok_or_else(|| protocol_error("renderer output text is too large"))?;
                 let cells = span.text.width();
-                line_cells = line_cells.saturating_add(cells);
-                total_cells = total_cells.saturating_add(cells);
+                line_cells = charge_usize(line_cells, cells, usize::from(width))
+                    .ok_or_else(|| protocol_error("renderer output exceeds its cell budget"))?;
+                total_cells = charge_usize(total_cells, cells, limits.max_output_cells)
+                    .ok_or_else(|| protocol_error("renderer output exceeds its cell budget"))?;
                 spans.push(Span::styled(span.text, span.style.to_style()));
-            }
-            if line_cells > usize::from(width) || total_cells > limits.max_output_cells {
-                return Err(protocol_error("renderer output exceeds its cell budget"));
             }
             let mut rendered = Line::from(spans);
             rendered.alignment = line.alignment.map(WireAlignment::into_alignment);

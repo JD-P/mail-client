@@ -3,6 +3,7 @@ use crate::{
     BackendError, FindingPresentation, FindingSeverity, FindingTargetKind, HeuristicCompilation,
     HeuristicTraceStep, Message, Result,
 };
+use lizard_verified_kernel::{charge_u32, charge_usize, repeat_cost};
 use rustpython_parser::{ast, Parse};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value as JsonValue};
@@ -137,6 +138,9 @@ pub(crate) enum HeuristicRunError {
     Failed(String),
 }
 
+type HeuristicRunOutput = (Vec<ProducedFinding>, Vec<HeuristicTraceStep>);
+type HeuristicRunFailure = (HeuristicRunError, Vec<HeuristicTraceStep>);
+
 /// Parse and authority-check Python-shaped Lizard Rules source without
 /// executing a Python runtime. The report is suitable for previews before
 /// activation. Value-type errors are isolated as failed evaluations.
@@ -188,21 +192,21 @@ pub(crate) fn run_program_traced(
     program: &CompiledHeuristic,
     message: &Message,
     thread_openpgp_required: bool,
-) -> std::result::Result<
-    (Vec<ProducedFinding>, Vec<HeuristicTraceStep>),
-    (HeuristicRunError, Vec<HeuristicTraceStep>),
-> {
+) -> std::result::Result<HeuristicRunOutput, HeuristicRunFailure> {
     let mut runtime = Runtime {
         message,
         thread_openpgp_required,
         locals: HashMap::new(),
-        steps: 0,
+        structural_steps: 0,
+        work_steps: 0,
+        structural_limit: program.maximum_steps,
         findings: Vec::new(),
         trace: Vec::new(),
     };
     if let Err(error) = runtime.execute_block(&program.body) {
         return Err((error, runtime.trace));
     }
+    debug_assert!(runtime.structural_steps <= program.maximum_steps);
     Ok((runtime.findings, runtime.trace))
 }
 
@@ -654,7 +658,9 @@ struct Runtime<'a> {
     message: &'a Message,
     thread_openpgp_required: bool,
     locals: HashMap<String, RuntimeValue>,
-    steps: u32,
+    structural_steps: u32,
+    work_steps: u32,
+    structural_limit: u32,
     findings: Vec<ProducedFinding>,
     trace: Vec<HeuristicTraceStep>,
 }
@@ -705,12 +711,11 @@ impl Runtime<'_> {
     }
 
     fn step(&mut self) -> std::result::Result<(), HeuristicRunError> {
-        self.steps = self.steps.saturating_add(1);
-        if self.steps > MAX_RUNTIME_STEPS {
-            Err(HeuristicRunError::Budget)
-        } else {
-            Ok(())
-        }
+        self.structural_steps = charge_u32(self.structural_steps, 1, self.structural_limit)
+            .ok_or(HeuristicRunError::Budget)?;
+        self.work_steps =
+            charge_u32(self.work_steps, 1, MAX_RUNTIME_STEPS).ok_or(HeuristicRunError::Budget)?;
+        Ok(())
     }
 
     fn execute_block(
@@ -961,14 +966,11 @@ impl Runtime<'_> {
     /// cannot repeatedly scan a multi-megabyte message under a nominally tiny
     /// step count.
     fn charge_text(&mut self, bytes: usize) -> std::result::Result<(), HeuristicRunError> {
-        let chunks = bytes.saturating_add(63) / 64;
+        let chunks = charge_usize(bytes, 63, usize::MAX).ok_or(HeuristicRunError::Budget)? / 64;
         let chunks = u32::try_from(chunks).unwrap_or(u32::MAX);
-        self.steps = self.steps.saturating_add(chunks);
-        if self.steps > MAX_RUNTIME_STEPS {
-            Err(HeuristicRunError::Budget)
-        } else {
-            Ok(())
-        }
+        self.work_steps = charge_u32(self.work_steps, chunks, MAX_RUNTIME_STEPS)
+            .ok_or(HeuristicRunError::Budget)?;
+        Ok(())
     }
 
     fn resolve_path(
@@ -1537,61 +1539,73 @@ fn statement_cost(statements: &[Statement]) -> Result<u32> {
     let mut total = 0_u32;
     for statement in statements {
         let cost = match statement {
-            Statement::Let { value, .. } => 1_u32.saturating_add(expression_cost(value)),
+            Statement::Let { value, .. } => cost_add(1, expression_cost(value)),
             Statement::If {
                 condition,
                 then_body,
                 else_body,
-            } => 1_u32
-                .saturating_add(expression_cost(condition))
-                .saturating_add(statement_cost(then_body)?.max(statement_cost(else_body)?)),
-            Statement::ForAttachments { body, .. } => 1_u32.saturating_add(
-                MAX_ATTACHMENTS.saturating_mul(1_u32.saturating_add(statement_cost(body)?)),
+            } => cost_add(
+                cost_add(1, expression_cost(condition)),
+                statement_cost(then_body)?.max(statement_cost(else_body)?),
             ),
-            Statement::ForLinks { body, .. } => 1_u32.saturating_add(
-                MAX_LINKS.saturating_mul(1_u32.saturating_add(statement_cost(body)?)),
+            Statement::ForAttachments { body, .. } => cost_add(
+                1,
+                cost_repeat(cost_add(1, statement_cost(body)?), MAX_ATTACHMENTS),
+            ),
+            Statement::ForLinks { body, .. } => cost_add(
+                1,
+                cost_repeat(cost_add(1, statement_cost(body)?), MAX_LINKS),
             ),
             Statement::Yield(template) => {
-                1_u32.saturating_add(template.evidence.iter().fold(0_u32, |cost, (_, value)| {
-                    cost.saturating_add(expression_cost(value))
-                }))
+                let target = template.target.as_ref().map(expression_cost).unwrap_or(0);
+                let evidence = template.evidence.iter().fold(0_u32, |cost, (_, value)| {
+                    cost_add(cost, expression_cost(value))
+                });
+                cost_add(cost_add(1, target), evidence)
             }
             Statement::Return => 1,
         };
-        total = total.saturating_add(cost);
+        total = cost_add(total, cost);
     }
     Ok(total)
 }
 
+fn cost_add(left: u32, right: u32) -> u32 {
+    charge_u32(left, right, u32::MAX).unwrap_or(u32::MAX)
+}
+
+fn cost_repeat(unit: u32, count: u32) -> u32 {
+    repeat_cost(unit, count, u32::MAX).unwrap_or(u32::MAX)
+}
+
 fn expression_cost(expression: &Expression) -> u32 {
     match expression {
-        Expression::And(values) | Expression::Or(values) => {
-            values.iter().fold(1_u32, |cost, value| {
-                cost.saturating_add(expression_cost(value))
-            })
-        }
+        Expression::And(values) | Expression::Or(values) => values
+            .iter()
+            .fold(1_u32, |cost, value| cost_add(cost, expression_cost(value))),
         Expression::Not(value)
         | Expression::Negate(value)
         | Expression::Lower(value)
-        | Expression::IsMissing(value) => 1_u32.saturating_add(expression_cost(value)),
-        Expression::Arithmetic { left, right, .. } => 1_u32
-            .saturating_add(expression_cost(left))
-            .saturating_add(expression_cost(right)),
+        | Expression::IsMissing(value) => cost_add(1, expression_cost(value)),
+        Expression::Arithmetic { left, right, .. } => {
+            cost_add(cost_add(1, expression_cost(left)), expression_cost(right))
+        }
         Expression::Compare {
             left, comparators, ..
-        } => comparators.iter().fold(
-            1_u32.saturating_add(expression_cost(left)),
-            |cost, value| cost.saturating_add(expression_cost(value)),
-        ),
-        Expression::Contains { value, needle, .. } => 1_u32
-            .saturating_add(expression_cost(value))
-            .saturating_add(expression_cost(needle)),
-        Expression::StartsWith { value, prefix, .. } => 1_u32
-            .saturating_add(expression_cost(value))
-            .saturating_add(expression_cost(prefix)),
-        Expression::EndsWith { value, suffix, .. } => 1_u32
-            .saturating_add(expression_cost(value))
-            .saturating_add(expression_cost(suffix)),
+        } => comparators
+            .iter()
+            .fold(cost_add(1, expression_cost(left)), |cost, value| {
+                cost_add(cost, expression_cost(value))
+            }),
+        Expression::Contains { value, needle, .. } => {
+            cost_add(cost_add(1, expression_cost(value)), expression_cost(needle))
+        }
+        Expression::StartsWith { value, prefix, .. } => {
+            cost_add(cost_add(1, expression_cost(value)), expression_cost(prefix))
+        }
+        Expression::EndsWith { value, suffix, .. } => {
+            cost_add(cost_add(1, expression_cost(value)), expression_cost(suffix))
+        }
         _ => 1,
     }
 }
@@ -1713,5 +1727,19 @@ def detect(message):
         assert_eq!(python_remainder(3, -2), Some(-1));
         assert_eq!(python_floor_div(i64::MIN, -1), None);
         assert_eq!(python_remainder(1, 0), None);
+    }
+
+    #[test]
+    fn static_cost_includes_finding_target_evaluation() {
+        let template = FindingTemplate {
+            code: "x".into(),
+            presentation: FindingPresentation::AttachmentInterstitial,
+            severity: FindingSeverity::Warning,
+            target_kind: FindingTargetKind::Attachment,
+            target: Some(Expression::Path(vec!["attachment".into(), "id".into()])),
+            text: None,
+            evidence: Vec::new(),
+        };
+        assert_eq!(statement_cost(&[Statement::Yield(template)]).unwrap(), 2);
     }
 }

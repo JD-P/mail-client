@@ -8,6 +8,10 @@ use crate::{
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
 use chrono::Utc;
+use lizard_verified_kernel::{
+    submission_transition, SubmissionEvent as VerifiedSubmissionEvent,
+    SubmissionState as VerifiedSubmissionState,
+};
 use serde_json::json;
 use std::{collections::HashSet, str::FromStr};
 use tokio::io::AsyncRead;
@@ -764,6 +768,12 @@ impl Outbox {
     pub async fn cancel(&self, id: SubmissionId) -> Result<Submission> {
         let now = Utc::now().timestamp();
         let mut connection = self.0.inner.connection.lock().await;
+        let current = load_submission_on(&connection, id).await?.status;
+        require_submission_transition(
+            current,
+            VerifiedSubmissionEvent::Cancel,
+            SubmissionStatus::Cancelled,
+        )?;
         let transaction = connection.transaction().await?;
         let changed = transaction
             .execute(
@@ -801,6 +811,12 @@ impl Outbox {
     pub async fn retry(&self, id: SubmissionId) -> Result<Submission> {
         let now = Utc::now().timestamp();
         let mut connection = self.0.inner.connection.lock().await;
+        let current = load_submission_on(&connection, id).await?.status;
+        require_submission_transition(
+            current,
+            VerifiedSubmissionEvent::ExplicitRetry,
+            SubmissionStatus::Pending,
+        )?;
         let transaction = connection.transaction().await?;
         let changed = transaction
             .execute(
@@ -851,6 +867,12 @@ impl Outbox {
         let now = Utc::now().timestamp();
         let (hash, recipients, envelope_from, event) = {
             let mut connection = self.0.inner.connection.lock().await;
+            let current = load_submission_on(&connection, id).await?.status;
+            require_submission_transition(
+                current,
+                VerifiedSubmissionEvent::Begin,
+                SubmissionStatus::InFlight,
+            )?;
             let transaction = connection.transaction().await?;
             let changed = transaction
                 .execute(
@@ -912,6 +934,12 @@ impl Outbox {
     ) -> Result<()> {
         let now = Utc::now().timestamp();
         let mut connection = self.0.inner.connection.lock().await;
+        let current = load_submission_on(&connection, id).await?.status;
+        require_submission_transition(
+            current,
+            VerifiedSubmissionEvent::ScheduleRetry,
+            SubmissionStatus::RetryScheduled,
+        )?;
         let transaction = connection.transaction().await?;
         let changed = transaction
             .execute(
@@ -963,6 +991,16 @@ impl Outbox {
         };
         let now = Utc::now().timestamp();
         let mut connection = self.0.inner.connection.lock().await;
+        let current = load_submission_on(&connection, id).await?.status;
+        require_submission_transition(
+            current,
+            if status == SubmissionStatus::Ambiguous {
+                VerifiedSubmissionEvent::MarkAmbiguous
+            } else {
+                VerifiedSubmissionEvent::MarkFailed
+            },
+            status,
+        )?;
         let transaction = connection.transaction().await?;
         let changed = transaction
             .execute(
@@ -1003,6 +1041,12 @@ impl Outbox {
         let message_id = self.0.ingest(IngestMessage::local(raw)).await?;
         let now = Utc::now().timestamp();
         let mut connection = self.0.inner.connection.lock().await;
+        let current = load_submission_on(&connection, id).await?.status;
+        require_submission_transition(
+            current,
+            VerifiedSubmissionEvent::MarkSent,
+            SubmissionStatus::Sent,
+        )?;
         let transaction = connection.transaction().await?;
         let changed = transaction
             .execute(
@@ -1043,6 +1087,11 @@ impl Outbox {
     }
 
     pub(crate) async fn recover_inflight(&self) -> Result<()> {
+        require_submission_transition(
+            SubmissionStatus::InFlight,
+            VerifiedSubmissionEvent::RecoverInterrupted,
+            SubmissionStatus::Ambiguous,
+        )?;
         let now = Utc::now().timestamp();
         let mut connection = self.0.inner.connection.lock().await;
         let transaction = connection.transaction().await?;
@@ -1771,6 +1820,34 @@ fn parse_submission_status(value: &str) -> Result<SubmissionStatus> {
         _ => Err(BackendError::InvalidInput(
             "invalid submission status".into(),
         )),
+    }
+}
+
+fn verified_submission_state(value: SubmissionStatus) -> VerifiedSubmissionState {
+    match value {
+        SubmissionStatus::Pending => VerifiedSubmissionState::Pending,
+        SubmissionStatus::InFlight => VerifiedSubmissionState::InFlight,
+        SubmissionStatus::RetryScheduled => VerifiedSubmissionState::RetryScheduled,
+        SubmissionStatus::Sent => VerifiedSubmissionState::Sent,
+        SubmissionStatus::Failed => VerifiedSubmissionState::Failed,
+        SubmissionStatus::Ambiguous => VerifiedSubmissionState::Ambiguous,
+        SubmissionStatus::Cancelled => VerifiedSubmissionState::Cancelled,
+    }
+}
+
+fn require_submission_transition(
+    current: SubmissionStatus,
+    event: VerifiedSubmissionEvent,
+    expected: SubmissionStatus,
+) -> Result<()> {
+    if submission_transition(verified_submission_state(current), event)
+        == Some(verified_submission_state(expected))
+    {
+        Ok(())
+    } else {
+        Err(BackendError::Conflict(format!(
+            "submission transition {current:?} via {event:?} is not permitted"
+        )))
     }
 }
 

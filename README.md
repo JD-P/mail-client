@@ -152,17 +152,20 @@ hashed in `spec/standalone-adapters.json`.
 rustup toolchain install 1.99.1 --profile minimal
 python3 tools/bootstrap.py --only verus
 .tools/verus-x86-linux/verus --crate-type lib src/verified.rs
+.tools/verus-x86-linux/verus --crate-type lib crates/verified-kernel/src/lib.rs
 cargo test --locked --release
 cargo fmt --package lizard --check
 python3 tools/check_upstream.py
 ```
 
-Six executable kernel functions in `src/verified.rs` pass Verus 0.2026.11.02.8bf68ee:
-budget debit, bounded addition, buffer containment, RGBA length, alpha
-premultiplication and table occupancy interval updates. The verifier reports
-10 verified obligations and zero errors. Cargo erases contracts from those
-same definitions; no duplicate model bodies, assume, admit or external_body
-are used. See [verification boundaries](docs/verification.md).
+Six executable renderer-kernel functions in `src/verified.rs` and ten shared
+mail-security functions in `crates/verified-kernel/src/lib.rs` pass Verus
+0.2026.11.02.8bf68ee. They cover the original geometry/raster/table invariants
+plus exact resource charging, OpenPGP read windows, heuristic cost arithmetic,
+storage reservations, thread trust admission and SMTP/IMAP transition graphs.
+The verifier reports 26 obligations and zero errors. Cargo erases contracts
+from those same definitions; no duplicate model bodies, `assume`, `admit` or
+`external_body` are used. See [verification boundaries](docs/verification.md).
 
 The remainder is ordinary Rust, arranged around indexed owned arenas, explicit
 budgets, typed lengths and fixed-point geometry for later contracts. Parsing,

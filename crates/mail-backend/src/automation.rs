@@ -2008,6 +2008,7 @@ impl Heuristics {
         Ok(values)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn replace_findings(
         &self,
         heuristic: &Heuristic,

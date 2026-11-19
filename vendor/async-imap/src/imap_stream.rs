@@ -7,6 +7,7 @@ use bytes::BytesMut;
 use futures_util::stream::Stream;
 use futures_util::task::{Context, Poll};
 use futures_util::{io, ready};
+use lizard_verified_kernel::charge_usize;
 use nom::Needed;
 #[cfg(feature = "runtime-tokio")]
 use tokio::io::{AsyncRead as Read, AsyncWrite as Write, AsyncWriteExt};
@@ -159,24 +160,14 @@ impl<R: Read + Write + Unpin> ImapStream<R> {
         if !self.command_budget_active {
             return Ok(());
         }
-        let responses = self
-            .command_responses
-            .checked_add(1)
-            .ok_or_else(|| io::Error::other("incoming command response count overflow"))?;
-        let aggregate_bytes = self
-            .command_bytes
-            .checked_add(bytes)
-            .ok_or_else(|| io::Error::other("incoming command byte count overflow"))?;
-        if responses > self.max_command_responses {
-            return Err(io::Error::other(
-                "incoming command exceeds configured response-count limit",
-            ));
-        }
-        if aggregate_bytes > self.max_command_bytes {
-            return Err(io::Error::other(
-                "incoming command exceeds configured aggregate byte limit",
-            ));
-        }
+        let responses = charge_usize(self.command_responses, 1, self.max_command_responses)
+            .ok_or_else(|| {
+                io::Error::other("incoming command exceeds configured response-count limit")
+            })?;
+        let aggregate_bytes = charge_usize(self.command_bytes, bytes, self.max_command_bytes)
+            .ok_or_else(|| {
+                io::Error::other("incoming command exceeds configured aggregate byte limit")
+            })?;
         self.command_responses = responses;
         self.command_bytes = aggregate_bytes;
         Ok(())

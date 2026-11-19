@@ -9,6 +9,7 @@ use crate::{
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
 use chrono::Utc;
+use lizard_verified_kernel::{bounded_read_window, charge_usize};
 use mail_parser::MessageParser;
 use pgp::{
     composed::{
@@ -2597,16 +2598,16 @@ enum InspectedPlaintext {
 /// is intentional because rPGP completes MDC/AEAD authentication while it is
 /// being read. Oversized plaintext is never returned to a caller.
 fn inspect_openpgp_plaintext(reader: &mut impl Read, limit: usize) -> Result<InspectedPlaintext> {
-    let sentinel = limit
-        .checked_add(1)
+    let sentinel = charge_usize(limit, 1, usize::MAX)
         .ok_or_else(|| BackendError::InvalidInput("OpenPGP plaintext limit is too large".into()))?;
     let mut buffered = Some(Vec::with_capacity(limit.min(OPENPGP_INLINE_PLAINTEXT)));
     let mut total = 0_usize;
     let mut buffer = vec![0_u8; OPENPGP_READ_CHUNK.min(sentinel).max(1)];
 
     loop {
-        let remaining = sentinel - total;
-        let read_limit = remaining.min(buffer.len());
+        let read_limit = bounded_read_window(total, sentinel, buffer.len()).ok_or_else(|| {
+            BackendError::OpenPgp("OpenPGP plaintext accounting invariant failed".into())
+        })?;
         let count = reader
             .read(&mut buffer[..read_limit])
             .map_err(openpgp_error)?;
@@ -2617,7 +2618,9 @@ fn inspect_openpgp_plaintext(reader: &mut impl Read, limit: usize) -> Result<Ins
             });
         }
 
-        let observed = total + count;
+        let observed = charge_usize(total, count, sentinel).ok_or_else(|| {
+            BackendError::OpenPgp("OpenPGP reader exceeded its requested slice".into())
+        })?;
         if observed > limit {
             return Err(BackendError::MessageTooLarge {
                 actual: observed,
@@ -2649,12 +2652,12 @@ fn read_openpgp_plaintext_exact(reader: &mut impl Read, expected: usize) -> Resu
                 output.len()
             )));
         }
-        let observed = output.len().saturating_add(count);
-        if observed > expected {
+        let Some(observed) = charge_usize(output.len(), count, expected) else {
             return Err(BackendError::OpenPgp(format!(
-                "OpenPGP plaintext length changed while authenticating: expected {expected}, received at least {observed}"
+                "OpenPGP plaintext length changed while authenticating: expected {expected}, received more than expected"
             )));
-        }
+        };
+        debug_assert_eq!(observed, output.len() + count);
         output.extend_from_slice(&buffer[..count]);
     }
 }

@@ -4666,7 +4666,7 @@ impl Sync {
                 return Err(error);
             }
             offset += requested as u64;
-            storage_reservation.materialized(requested as u64);
+            storage_reservation.materialized(requested as u64)?;
             if let Err(source) = file.sync_data().await {
                 let error = crate::error::io_error(path.clone(), source);
                 self.0

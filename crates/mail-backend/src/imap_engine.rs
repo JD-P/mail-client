@@ -15,6 +15,7 @@ use async_imap::{Authenticator, Client, Session};
 use chrono::Utc;
 use futures_util::future::BoxFuture;
 use futures_util::{Stream, TryStreamExt};
+use lizard_verified_kernel::charge_usize;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -2507,10 +2508,12 @@ struct RequestedFetchTracker<'a> {
 
 impl<'a> RequestedFetchTracker<'a> {
     fn new(requested: &'a HashSet<u32>) -> io::Result<Self> {
-        let maximum = requested
-            .len()
-            .checked_add(MAX_UNSOLICITED_FETCHES_PER_COMMAND)
-            .ok_or_else(|| io::Error::other("requested FETCH response budget overflow"))?;
+        let maximum = charge_usize(
+            requested.len(),
+            MAX_UNSOLICITED_FETCHES_PER_COMMAND,
+            usize::MAX,
+        )
+        .ok_or_else(|| io::Error::other("requested FETCH response budget overflow"))?;
         Ok(Self {
             requested,
             maximum,
@@ -2520,15 +2523,9 @@ impl<'a> RequestedFetchTracker<'a> {
     }
 
     fn observe(&mut self, uid: Option<u32>) -> io::Result<bool> {
-        self.responses = self
-            .responses
-            .checked_add(1)
-            .ok_or_else(|| io::Error::other("FETCH response count overflow"))?;
-        if self.responses > self.maximum {
-            return Err(io::Error::other(
-                "FETCH returned more responses than the requested UID budget",
-            ));
-        }
+        self.responses = charge_usize(self.responses, 1, self.maximum).ok_or_else(|| {
+            io::Error::other("FETCH returned more responses than the requested UID budget")
+        })?;
         let Some(uid) = uid else {
             return Ok(false);
         };

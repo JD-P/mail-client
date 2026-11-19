@@ -1,4 +1,5 @@
 use crate::{BackendError, Result};
+use lizard_verified_kernel::charge_u64;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -55,15 +56,15 @@ impl BlobStore {
             let _ = fs::remove_file(&temporary).await;
             return Err(crate::error::io_error(temporary, source));
         }
-        reservation.materialized(bytes.len() as u64);
+        reservation.materialized(bytes.len() as u64)?;
         match fs::rename(&temporary, &destination).await {
             Ok(()) => {
-                reservation.commit(bytes.len() as u64);
+                reservation.commit(bytes.len() as u64)?;
                 Ok(hash)
             }
             Err(_source) if destination.exists() => {
                 let _ = fs::remove_file(&temporary).await;
-                reservation.commit(0);
+                reservation.commit(0)?;
                 Ok(hash)
             }
             Err(source) => {
@@ -134,15 +135,15 @@ impl BlobStore {
             if read == 0 {
                 break;
             }
-            size = size.saturating_add(read as u64);
-            if size > maximum_bytes {
+            let Some(next_size) = charge_u64(size, read as u64, maximum_bytes) else {
                 drop(file);
                 let _ = fs::remove_file(&temporary).await;
                 return Err(BackendError::MessageTooLarge {
-                    actual: usize::try_from(size).unwrap_or(usize::MAX),
+                    actual: usize::try_from(size.saturating_add(read as u64)).unwrap_or(usize::MAX),
                     limit: usize::try_from(maximum_bytes).unwrap_or(usize::MAX),
                 });
-            }
+            };
+            size = next_size;
             hasher.update(&buffer[..read]);
             if let Err(error) = reservation.grow(read as u64) {
                 drop(file);
@@ -154,7 +155,7 @@ impl BlobStore {
                 let _ = fs::remove_file(&temporary).await;
                 return Err(crate::error::io_error(temporary, source));
             }
-            reservation.materialized(read as u64);
+            reservation.materialized(read as u64)?;
         }
         if let Err(source) = file.sync_all().await {
             drop(file);
@@ -171,7 +172,7 @@ impl BlobStore {
             .map_err(|source| crate::error::io_error(destination.clone(), source))?
         {
             let _ = fs::remove_file(&temporary).await;
-            reservation.commit(0);
+            reservation.commit(0)?;
             return Ok((hash, size));
         }
         let parent = destination.parent().expect("blob path has parent");
@@ -181,12 +182,12 @@ impl BlobStore {
         }
         match fs::rename(&temporary, &destination).await {
             Ok(()) => {
-                reservation.commit(size);
+                reservation.commit(size)?;
                 Ok((hash, size))
             }
             Err(_source) if destination.exists() => {
                 let _ = fs::remove_file(&temporary).await;
-                reservation.commit(0);
+                reservation.commit(0)?;
                 Ok((hash, size))
             }
             Err(source) => {
@@ -224,13 +225,13 @@ impl BlobStore {
             if read == 0 {
                 break;
             }
-            size = size.saturating_add(read as u64);
-            if size > maximum_bytes {
+            let Some(next_size) = charge_u64(size, read as u64, maximum_bytes) else {
                 return Err(BackendError::MessageTooLarge {
-                    actual: usize::try_from(size).unwrap_or(usize::MAX),
+                    actual: usize::try_from(size.saturating_add(read as u64)).unwrap_or(usize::MAX),
                     limit: usize::try_from(maximum_bytes).unwrap_or(usize::MAX),
                 });
-            }
+            };
+            size = next_size;
             hasher.update(&buffer[..read]);
             writer
                 .write_all(&buffer[..read])

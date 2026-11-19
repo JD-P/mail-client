@@ -6,6 +6,7 @@ use crate::{
     WorkflowView,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use lizard_verified_kernel::{thread_candidate_allowed, TrustState};
 use mail_parser::thread_name;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -125,7 +126,7 @@ impl Threads {
             parameters.push(Value::Text(folder_id.to_string()));
         }
         if let Some(workflow) = filter.workflow {
-            clauses.push(workflow_predicate(workflow).into());
+            clauses.push(workflow_predicate(workflow));
         } else if let Some(class) = filter.inbox_class {
             clauses.push(
                 match class {
@@ -539,7 +540,7 @@ async fn unique_header_target_on(
     let mut rows = connection
         .query(
             format!(
-                "SELECT m.thread_id, m.id FROM messages m JOIN threads t ON t.id = m.thread_id WHERE m.thread_message_id = ?1 AND m.thread_id IS NOT NULL{trust_clause} ORDER BY m.id LIMIT 3"
+                "SELECT m.thread_id, m.id, t.sender_trust FROM messages m JOIN threads t ON t.id = m.thread_id WHERE m.thread_message_id = ?1 AND m.thread_id IS NOT NULL{trust_clause} ORDER BY m.id LIMIT 3"
             ),
             (identifier,),
         )
@@ -548,6 +549,13 @@ async fn unique_header_target_on(
     let mut parent = None;
     let mut parent_ambiguous = false;
     while let Some(row) = rows.next().await? {
+        let candidate_trust = parse_sender_trust(&row.get::<String>(2)?)?;
+        if !thread_candidate_allowed(
+            verified_trust(sender_trust),
+            verified_trust(candidate_trust),
+        ) {
+            continue;
+        }
         let candidate_thread = parse_thread_id(row.get(0)?)?;
         if thread_id.is_some_and(|current| current != candidate_thread) {
             return Ok(None);
@@ -578,7 +586,7 @@ async fn unique_subject_target_on(
         ThreadSenderTrust::Unknown => " AND t.sender_trust = 'unknown'",
     };
     let sql = format!(
-        "SELECT DISTINCT t.id FROM threads t JOIN thread_participants p ON p.thread_id = t.id WHERE t.normalized_subject = ?{trust_clause} AND t.updated_at >= ? AND t.updated_at <= ? AND p.address = ? COLLATE NOCASE ORDER BY t.updated_at DESC, t.id LIMIT 2"
+        "SELECT DISTINCT t.id, t.sender_trust FROM threads t JOIN thread_participants p ON p.thread_id = t.id WHERE t.normalized_subject = ?{trust_clause} AND t.updated_at >= ? AND t.updated_at <= ? AND p.address = ? COLLATE NOCASE ORDER BY t.updated_at DESC, t.id LIMIT 2"
     );
     let parameters = vec![
         Value::Text(normalized_subject.to_owned()),
@@ -587,15 +595,28 @@ async fn unique_subject_target_on(
         Value::Text(normalize_address(from_address)),
     ];
     let mut rows = connection.query(sql, params_from_iter(parameters)).await?;
-    let first = rows
-        .next()
-        .await?
-        .map(|row| parse_thread_id(row.get(0)?))
-        .transpose()?;
-    if first.is_some() && rows.next().await?.is_some() {
-        return Ok(None);
+    let mut first = None;
+    while let Some(row) = rows.next().await? {
+        let candidate_trust = parse_sender_trust(&row.get::<String>(1)?)?;
+        if !thread_candidate_allowed(
+            verified_trust(sender_trust),
+            verified_trust(candidate_trust),
+        ) {
+            continue;
+        }
+        let candidate = parse_thread_id(row.get(0)?)?;
+        if first.replace(candidate).is_some() {
+            return Ok(None);
+        }
     }
     Ok(first)
+}
+
+fn verified_trust(value: ThreadSenderTrust) -> TrustState {
+    match value {
+        ThreadSenderTrust::Known => TrustState::Known,
+        ThreadSenderTrust::Unknown => TrustState::Unknown,
+    }
 }
 
 async fn sender_trust_on(

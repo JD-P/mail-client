@@ -541,6 +541,7 @@ dependencies = [
  "chrono",
  "futures-util",
  "imap-proto",
+ "lizard-verified-kernel",
  "log",
  "nom 8.0.0",
  "pin-project",
@@ -4591,6 +4592,7 @@ dependencies = [
  "landlock",
  "libc",
  "linkify",
+ "lizard-verified-kernel",
  "mail-auth",
  "mail-parser",
  "pgp",
@@ -4629,6 +4631,7 @@ dependencies = [
  "landlock",
  "libc",
  "lizard-mail-backend",
+ "lizard-verified-kernel",
  "markup5ever_rcdom",
  "ratatui",
  "serde",
@@ -4639,6 +4642,13 @@ dependencies = [
  "unicode-width 0.2.3",
  "url",
  "zeroize",
+]
+
+[[package]]
+name = "lizard-verified-kernel"
+version = "0.1.0"
+dependencies = [
+ "vstd",
 ]
 
 [[package]]

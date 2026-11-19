@@ -2789,14 +2789,15 @@ mod tests {
         assert_eq!(second_page.items.len(), 1);
         assert_ne!(first_page.items[0].id, second_page.items[0].id);
 
-        let requests = transport.requests.lock().unwrap();
-        assert!(requests.iter().any(|request| {
-            request.method == Method::PUT && request.if_match.as_deref() == Some("*")
-        }));
-        assert!(requests
-            .iter()
-            .all(|request| request.url.host_str() == Some("calendar.example")));
-        drop(requests);
+        {
+            let requests = transport.requests.lock().unwrap();
+            assert!(requests.iter().any(|request| {
+                request.method == Method::PUT && request.if_match.as_deref() == Some("*")
+            }));
+            assert!(requests
+                .iter()
+                .all(|request| request.url.host_str() == Some("calendar.example")));
+        }
 
         backend
             .calendar_accounts()

@@ -1,5 +1,6 @@
 use crate::{AccountId, Backend, BackendError, Result};
 use chrono::Utc;
+use lizard_verified_kernel::{charge_u64, materialize_bytes, reservation_commit_allowed};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -973,16 +974,23 @@ impl StorageReservation {
             return Ok(());
         }
         let mut state = lock_state(&self.budget.state);
-        let reserved = state
-            .reservations
-            .values()
-            .fold(0u64, |total, value| total.saturating_add(value.reserved));
+        let reserved = sum_reservations(state.reservations.values().map(|value| value.reserved))?;
         if let Some(limit) = self.budget.limits.max_profile_bytes {
-            let used = state
-                .observed_blob_bytes
-                .saturating_add(state.observed_non_blob_bytes)
-                .saturating_add(reserved);
-            if used.saturating_add(bytes) > limit {
+            let used = charge_u64(
+                state.observed_blob_bytes,
+                state.observed_non_blob_bytes,
+                limit,
+            )
+            .and_then(|value| charge_u64(value, reserved, limit));
+            let Some(used) = used else {
+                return Err(BackendError::StorageQuotaExceeded {
+                    scope: "profile".into(),
+                    used: limit,
+                    requested: bytes,
+                    limit,
+                });
+            };
+            if charge_u64(used, bytes, limit).is_none() {
                 return Err(BackendError::StorageQuotaExceeded {
                     scope: "profile".into(),
                     used,
@@ -991,20 +999,19 @@ impl StorageReservation {
                 });
             }
         }
-        let unmaterialized = state.reservations.values().fold(0u64, |total, value| {
-            total.saturating_add(value.reserved.saturating_sub(value.materialized))
-        });
+        let unmaterialized = sum_unmaterialized(state.reservations.values().copied())?;
         let available =
             fs2::available_space(&self.budget.profile_dir).map_err(|source| BackendError::Io {
                 path: self.budget.profile_dir.clone(),
                 source,
             })?;
-        let required = self
-            .budget
-            .limits
-            .minimum_free_bytes
-            .saturating_add(unmaterialized)
-            .saturating_add(bytes);
+        let required = charge_u64(
+            self.budget.limits.minimum_free_bytes,
+            unmaterialized,
+            u64::MAX,
+        )
+        .and_then(|value| charge_u64(value, bytes, u64::MAX))
+        .unwrap_or(u64::MAX);
         if available < required {
             return Err(BackendError::StorageFull {
                 path: Some(self.budget.profile_dir.clone()),
@@ -1016,25 +1023,65 @@ impl StorageReservation {
             .reservations
             .get_mut(&self.id)
             .expect("active storage reservation exists");
-        reservation.reserved = reservation.reserved.saturating_add(bytes);
+        reservation.reserved = charge_u64(reservation.reserved, bytes, u64::MAX)
+            .ok_or_else(|| BackendError::InvalidInput("storage reservation overflow".into()))?;
         Ok(())
     }
 
-    pub(crate) fn materialized(&mut self, bytes: u64) {
+    pub(crate) fn materialized(&mut self, bytes: u64) -> Result<()> {
         let mut state = lock_state(&self.budget.state);
         let reservation = state
             .reservations
             .get_mut(&self.id)
             .expect("active storage reservation exists");
-        reservation.materialized = reservation.materialized.saturating_add(bytes);
+        reservation.materialized =
+            materialize_bytes(reservation.reserved, reservation.materialized, bytes).ok_or_else(
+                || BackendError::InvalidInput("materialized bytes exceed their reservation".into()),
+            )?;
+        Ok(())
     }
 
-    pub(crate) fn commit(mut self, added_bytes: u64) {
+    pub(crate) fn commit(mut self, added_bytes: u64) -> Result<()> {
         let mut state = lock_state(&self.budget.state);
+        let reservation = state
+            .reservations
+            .get(&self.id)
+            .copied()
+            .expect("active storage reservation exists");
+        if !reservation_commit_allowed(reservation.reserved, reservation.materialized, added_bytes)
+        {
+            return Err(BackendError::InvalidInput(
+                "storage commit exceeds materialized reservation".into(),
+            ));
+        }
+        let observed = charge_u64(state.observed_blob_bytes, added_bytes, u64::MAX)
+            .ok_or_else(|| BackendError::InvalidInput("observed storage overflow".into()))?;
         state.reservations.remove(&self.id);
-        state.observed_blob_bytes = state.observed_blob_bytes.saturating_add(added_bytes);
+        state.observed_blob_bytes = observed;
         self.active = false;
+        Ok(())
     }
+}
+
+fn sum_reservations(mut values: impl Iterator<Item = u64>) -> Result<u64> {
+    values.try_fold(0, |total, value| {
+        charge_u64(total, value, u64::MAX)
+            .ok_or_else(|| BackendError::InvalidInput("storage reservation total overflow".into()))
+    })
+}
+
+fn sum_unmaterialized(mut values: impl Iterator<Item = ReservationState>) -> Result<u64> {
+    values.try_fold(0, |total, value| {
+        let remaining = value
+            .reserved
+            .checked_sub(value.materialized)
+            .ok_or_else(|| {
+                BackendError::InvalidInput("materialized bytes exceed their reservation".into())
+            })?;
+        charge_u64(total, remaining, u64::MAX).ok_or_else(|| {
+            BackendError::InvalidInput("unmaterialized reservation total overflow".into())
+        })
+    })
 }
 
 impl Drop for StorageReservation {

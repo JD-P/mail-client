@@ -17,6 +17,7 @@ hex = "0.4"
 html5ever = "=0.40.1"
 icalendar = "=0.17.17"
 linkify = "0.10"
+lizard-verified-kernel = { path = "../verified-kernel" }
 keyring = "4.2"
 mail-parser = { version = "=1.0.1", features = ["full_encoding"] }
 mail-auth = { path = "../../vendor/mail-auth", default-features = false, features = ["dns-hickory", "dns-tls-ring", "rust-crypto"] }

@@ -8,6 +8,10 @@ use crate::{
     ImapMutationStatus, MessageId, RemoteMessageIdentity, Result,
 };
 use chrono::Utc;
+use lizard_verified_kernel::{
+    imap_mutation_transition, ImapMutationEvent as VerifiedImapMutationEvent,
+    ImapMutationState as VerifiedImapMutationState,
+};
 use serde_json::json;
 use std::str::FromStr;
 use turso::{params_from_iter, Value};
@@ -308,6 +312,23 @@ impl ImapMutations {
         let now = Utc::now().timestamp();
         let mut connection = self.0.inner.connection.lock().await;
         let mutation = self.get_without_lock(&connection, id).await?;
+        if !matches!(
+            mutation.status,
+            ImapMutationStatus::Pending | ImapMutationStatus::Conflict
+        ) {
+            return if mutation.status == ImapMutationStatus::InFlight {
+                Err(BackendError::Conflict(
+                    "an in-flight IMAP mutation cannot be cancelled safely".into(),
+                ))
+            } else {
+                Ok(mutation)
+            };
+        }
+        require_imap_mutation_transition(
+            mutation.status,
+            VerifiedImapMutationEvent::Cancel,
+            ImapMutationStatus::Cancelled,
+        )?;
         let transaction = connection.transaction().await?;
         let changed = transaction
             .execute(
@@ -622,6 +643,12 @@ impl ImapMutations {
     pub(crate) async fn begin(&self, id: ImapMutationId) -> Result<ImapMutation> {
         let now = Utc::now().timestamp();
         let connection = self.0.inner.connection.lock().await;
+        let current = self.get_without_lock(&connection, id).await?.status;
+        require_imap_mutation_transition(
+            current,
+            VerifiedImapMutationEvent::Begin,
+            ImapMutationStatus::InFlight,
+        )?;
         let changed = connection
             .execute(
                 "UPDATE imap_mutations SET status = 'in_flight', attempts = attempts + 1, updated_at = ?1, last_error = NULL WHERE id = ?2 AND status = 'pending'",
@@ -639,6 +666,12 @@ impl ImapMutations {
     pub(crate) async fn resume_attempt(&self, id: ImapMutationId) -> Result<ImapMutation> {
         let now = Utc::now().timestamp();
         let connection = self.0.inner.connection.lock().await;
+        let current = self.get_without_lock(&connection, id).await?.status;
+        require_imap_mutation_transition(
+            current,
+            VerifiedImapMutationEvent::ResumeIdempotent,
+            ImapMutationStatus::InFlight,
+        )?;
         let changed = connection
             .execute(
                 "UPDATE imap_mutations SET attempts = attempts + 1, updated_at = ?1, last_error = NULL WHERE id = ?2 AND status = 'in_flight'",
@@ -659,6 +692,11 @@ impl ImapMutations {
         observed: Option<&RemoteMessageIdentity>,
         destination: Option<(FolderId, u32, u32, Vec<String>)>,
     ) -> Result<()> {
+        require_imap_mutation_transition(
+            mutation.status,
+            VerifiedImapMutationEvent::Apply,
+            ImapMutationStatus::Applied,
+        )?;
         let _search_guard = self.0.inner.search_sync.write().await;
         let now = Utc::now().timestamp();
         let mut connection = self.0.inner.connection.lock().await;
@@ -721,12 +759,18 @@ impl ImapMutations {
             .await?;
             enqueue_search_on(&transaction, mutation.message_id).await?;
         }
-        transaction
+        let changed = transaction
             .execute(
                 "UPDATE imap_mutations SET status = 'applied', updated_at = ?1, completed_at = ?1, last_error = NULL WHERE id = ?2 AND status = 'in_flight'",
                 (now, mutation.id.to_string()),
             )
             .await?;
+        if changed != 1 {
+            transaction.rollback().await?;
+            return Err(BackendError::Conflict(
+                "IMAP mutation changed before its applied state was recorded".into(),
+            ));
+        }
         events.push(
             insert_event(
                 &transaction,
@@ -781,17 +825,28 @@ impl ImapMutations {
         observed: serde_json::Value,
         detail: impl Into<String>,
     ) -> Result<()> {
+        require_imap_mutation_transition(
+            mutation.status,
+            VerifiedImapMutationEvent::RecordConflict,
+            ImapMutationStatus::Conflict,
+        )?;
         let detail = detail.into();
         let now = Utc::now().timestamp();
         let conflict_id = ImapMutationConflictId::new();
         let mut connection = self.0.inner.connection.lock().await;
         let transaction = connection.transaction().await?;
-        transaction
+        let changed = transaction
             .execute(
-                "UPDATE imap_mutations SET status = 'conflict', updated_at = ?1, completed_at = ?1, last_error = ?2 WHERE id = ?3",
+                "UPDATE imap_mutations SET status = 'conflict', updated_at = ?1, completed_at = ?1, last_error = ?2 WHERE id = ?3 AND status IN ('pending', 'in_flight')",
                 (now, detail.clone(), mutation.id.to_string()),
             )
             .await?;
+        if changed != 1 {
+            transaction.rollback().await?;
+            return Err(BackendError::Conflict(
+                "IMAP mutation changed before its conflict was recorded".into(),
+            ));
+        }
         transaction
             .execute(
                 "INSERT INTO imap_mutation_conflicts(id, mutation_id, kind, expected_json, observed_json, detail, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
@@ -1011,6 +1066,32 @@ fn parse_mutation_status(value: &str) -> Result<ImapMutationStatus> {
         _ => Err(BackendError::InvalidInput(
             "database contains invalid IMAP mutation status".into(),
         )),
+    }
+}
+
+fn verified_imap_mutation_state(value: ImapMutationStatus) -> VerifiedImapMutationState {
+    match value {
+        ImapMutationStatus::Pending => VerifiedImapMutationState::Pending,
+        ImapMutationStatus::InFlight => VerifiedImapMutationState::InFlight,
+        ImapMutationStatus::Applied => VerifiedImapMutationState::Applied,
+        ImapMutationStatus::Conflict => VerifiedImapMutationState::Conflict,
+        ImapMutationStatus::Cancelled => VerifiedImapMutationState::Cancelled,
+    }
+}
+
+fn require_imap_mutation_transition(
+    current: ImapMutationStatus,
+    event: VerifiedImapMutationEvent,
+    expected: ImapMutationStatus,
+) -> Result<()> {
+    if imap_mutation_transition(verified_imap_mutation_state(current), event)
+        == Some(verified_imap_mutation_state(expected))
+    {
+        Ok(())
+    } else {
+        Err(BackendError::Conflict(format!(
+            "IMAP mutation transition {current:?} via {event:?} is not permitted"
+        )))
     }
 }
 
