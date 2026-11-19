@@ -2,6 +2,7 @@ Pass 2 subsequent IMAP process-isolation hardening
 Reviewed vulnerable commit: 47eb6b29fde5807dd9204aee2c4049eb7dd0ddb2
 Resource-budget fix commit: 4d1ab6614bfcb103edb2d8cd721f63fdef0e96a4
 Isolation fix commit: 1699f224742e516c176fd5a68827c0256e903762
+x32 ABI fix commit: 98be267030423877e52f4fb61728ce641d03a307
 Date: 2026-11-19 UTC
 
 The managed IMAP API now launches a fresh lizard-mail-sync-worker for every
@@ -22,6 +23,12 @@ ownership/mode/xattr mutation are denied. An unavailable or partially enforced
 sandbox aborts before the backend opens; there is no automatic in-process
 fallback.
 
+The x86-64 audit architecture also covers x32 ABI syscall numbers. The filter
+now rejects `__X32_SYSCALL_BIT` before evaluating its exact native syscall
+denylist. A disposable regression process attempts an x32-numbered `getpid`
+and must be killed by `SIGSYS`, even if the kernel would otherwise report that
+x32 is unsupported.
+
 The explicit residual authority is recorded in spec/imap-sync-isolation.md.
 A worker compromise can corrupt or disclose the synchronized profile's mail
 database and blobs, and Landlock's network policy is port-based rather than
@@ -31,10 +38,11 @@ are outside the intended authority.
 Verification:
 
   cargo test -p lizard-mail-backend --locked
-    111 non-Docker tests passed; 7 Docker/kernel-dependent tests ignored.
+    112 non-Docker tests passed; 7 Docker/kernel-dependent tests ignored.
 
   cargo test -p lizard-mail-backend --test imap_worker --locked -- --nocapture
     worker_sandbox_is_fail_closed passed.
+    worker_seccomp_kills_x32_syscall_numbers passed with SIGSYS.
     worker_crash_is_an_account_error_not_a_backend_crash passed, including
     explicit failed/resumable body state after a worker death.
 

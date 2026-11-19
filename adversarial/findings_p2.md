@@ -239,3 +239,8 @@ read/write access to the mail database and blobs, and its allowed outbound
 ports are not restricted to one destination address. Exact authority,
 verification and host limitations are recorded in
 `spec/imap-sync-isolation.md` and `adversarial/p2/results_isolation.txt`.
+
+Follow-up commit `98be267030423877e52f4fb61728ce641d03a307`
+closes the x86-64/x32 ABI-numbering gap in the initial seccomp filter. It kills
+syscalls carrying `__X32_SYSCALL_BIT` before the native-number denylist and
+adds a subprocess regression requiring `SIGSYS`.
