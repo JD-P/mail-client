@@ -20,6 +20,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::future::Future;
 use std::io;
+use std::net::SocketAddr;
 use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -94,7 +95,7 @@ pub trait CredentialProvider: Send + Sync {
     fn resolve<'a>(&'a self, reference: &'a str) -> BoxFuture<'a, Result<ImapCredential>>;
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ImapAccountEngineConfig {
     pub connect_timeout: Duration,
     pub command_timeout: Duration,
@@ -223,6 +224,9 @@ pub struct ImapAccountEngine {
     credentials: Arc<dyn CredentialProvider>,
     config: ImapAccountEngineConfig,
     tls: TlsConnector,
+    /// Addresses resolved by the trusted supervisor before a sandboxed worker
+    /// starts.  The ordinary in-process engine leaves this unset.
+    resolved_addresses: Option<Arc<Vec<SocketAddr>>>,
 }
 
 impl ImapAccountEngine {
@@ -271,7 +275,18 @@ impl ImapAccountEngine {
             credentials,
             config,
             tls: TlsConnector::from(Arc::new(tls)),
+            resolved_addresses: None,
         })
+    }
+
+    pub(crate) fn with_resolved_addresses(mut self, addresses: Vec<SocketAddr>) -> Result<Self> {
+        if addresses.is_empty() || addresses.len() > 16 {
+            return Err(BackendError::InvalidInput(
+                "isolated IMAP worker requires between one and sixteen resolved addresses".into(),
+            ));
+        }
+        self.resolved_addresses = Some(Arc::new(addresses));
+        Ok(self)
     }
 
     pub async fn state(&self, account_id: AccountId) -> Result<ImapAccountSyncState> {
@@ -637,7 +652,7 @@ impl ImapAccountEngine {
         })
     }
 
-    async fn load_imap_account(&self, account_id: AccountId) -> Result<Account> {
+    pub(crate) async fn load_imap_account(&self, account_id: AccountId) -> Result<Account> {
         let account = self.backend.accounts().get(account_id).await?;
         if account.kind != AccountKind::Imap || account.imap.is_none() {
             return Err(BackendError::InvalidInput(
@@ -669,10 +684,22 @@ impl ImapAccountEngine {
         .await
         .map_err(|_| BackendError::Imap("credential lookup timed out".into()))??;
 
-        let tcp = timeout(
-            self.config.connect_timeout,
-            TcpStream::connect((settings.host.as_str(), settings.port)),
-        )
+        let tcp = timeout(self.config.connect_timeout, async {
+            if let Some(addresses) = &self.resolved_addresses {
+                let mut last_error = None;
+                for address in addresses.iter().copied() {
+                    match TcpStream::connect(address).await {
+                        Ok(stream) => return Ok(stream),
+                        Err(error) => last_error = Some(error),
+                    }
+                }
+                Err(last_error.unwrap_or_else(|| {
+                    io::Error::new(io::ErrorKind::AddrNotAvailable, "no resolved IMAP address")
+                }))
+            } else {
+                TcpStream::connect((settings.host.as_str(), settings.port)).await
+            }
+        })
         .await
         .map_err(|_| BackendError::Imap("TCP connection timed out".into()))?
         .map_err(|error| BackendError::Imap(format!("TCP connection failed: {error}")))?;
@@ -2044,7 +2071,7 @@ impl ImapAccountEngine {
         Ok(())
     }
 
-    async fn store_account_state(
+    pub(crate) async fn store_account_state(
         &self,
         account_id: AccountId,
         status: ImapAccountSyncStatus,
@@ -2123,7 +2150,7 @@ impl ImapAccountEngine {
         })
     }
 
-    async fn wait_for_change(
+    pub(crate) async fn wait_for_change(
         &self,
         account_id: AccountId,
         cancellation: &CancellationToken,
@@ -2187,7 +2214,7 @@ impl ImapAccountEngine {
         }
     }
 
-    async fn wait_backoff(
+    pub(crate) async fn wait_backoff(
         &self,
         account_id: AccountId,
         failures: u32,

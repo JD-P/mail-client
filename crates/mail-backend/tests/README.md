@@ -38,6 +38,16 @@ durable concurrent-flag conflicts:
 cargo test -p lizard-mail-backend --test imap_account_engine -- --ignored --nocapture
 ```
 
+`imap_worker.rs` proves that a failed disposable worker becomes an account
+error without terminating the parent and that sandbox setup either enforces
+its file/network restrictions or fails closed. Its ignored Dovecot case covers
+isolated header sync, on-demand body retrieval and parent-side Tantivy
+publication on a Linux x86-64 host with Landlock ABI 6:
+
+```sh
+cargo test -p lizard-mail-backend --test imap_worker -- --ignored --nocapture
+```
+
 The container publishes Dovecot's IMAP and IMAPS ports on random loopback ports,
 creates an ephemeral test-only TLS certificate, and is force-removed by the test
 guard, including when an assertion unwinds.

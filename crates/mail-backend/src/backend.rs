@@ -65,14 +65,14 @@ struct PreparedResource {
     decoded_size: u64,
 }
 
-struct DownloadAttemptGuard {
+pub(crate) struct DownloadAttemptGuard {
     backend: Backend,
     message_id: MessageId,
     armed: bool,
 }
 
 impl DownloadAttemptGuard {
-    fn new(backend: Backend, message_id: MessageId) -> Self {
+    pub(crate) fn new(backend: Backend, message_id: MessageId) -> Self {
         Self {
             backend,
             message_id,
@@ -80,7 +80,7 @@ impl DownloadAttemptGuard {
         }
     }
 
-    fn disarm(&mut self) {
+    pub(crate) fn disarm(&mut self) {
         self.armed = false;
     }
 }
@@ -190,6 +190,9 @@ pub(crate) struct Inner {
     _database: turso::Database,
     pub(crate) connection: Mutex<Connection>,
     pub(crate) search_index: Arc<SearchIndex>,
+    /// Sandboxed synchronization workers enqueue search changes but never
+    /// contend for the profile's exclusive Tantivy writer.
+    pub(crate) search_deferred: bool,
     pub(crate) search_sync: RwLock<()>,
     /// Serializes physical blob collection against the interval between
     /// publishing a content-addressed file and committing its database
@@ -208,23 +211,43 @@ pub(crate) struct Inner {
 
 impl Backend {
     pub async fn open(config: BackendConfig) -> Result<Self> {
-        tokio::fs::create_dir_all(&config.profile_dir)
-            .await
-            .map_err(|source| crate::error::io_error(config.profile_dir.clone(), source))?;
-        tokio::fs::create_dir_all(config.profile_dir.join("downloads"))
-            .await
-            .map_err(|source| {
-                crate::error::io_error(config.profile_dir.join("downloads"), source)
-            })?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            tokio::fs::set_permissions(&config.profile_dir, std::fs::Permissions::from_mode(0o700))
+        Self::open_internal(config, None).await
+    }
+
+    pub(crate) async fn open_sync_worker(
+        config: BackendConfig,
+        observed_storage: crate::StorageUsage,
+    ) -> Result<Self> {
+        Self::open_internal(config, Some(observed_storage)).await
+    }
+
+    async fn open_internal(
+        config: BackendConfig,
+        worker_storage: Option<crate::StorageUsage>,
+    ) -> Result<Self> {
+        let sync_worker = worker_storage.is_some();
+        if !sync_worker {
+            tokio::fs::create_dir_all(&config.profile_dir)
+                .await
+                .map_err(|source| crate::error::io_error(config.profile_dir.clone(), source))?;
+            tokio::fs::create_dir_all(config.profile_dir.join("downloads"))
+                .await
+                .map_err(|source| {
+                    crate::error::io_error(config.profile_dir.join("downloads"), source)
+                })?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                tokio::fs::set_permissions(
+                    &config.profile_dir,
+                    std::fs::Permissions::from_mode(0o700),
+                )
                 .await
                 .map_err(|source| BackendError::Io {
                     path: config.profile_dir.clone(),
                     source,
                 })?;
+            }
         }
         let database_path = config.profile_dir.join("mail.db");
         let database_path = database_path
@@ -235,13 +258,30 @@ impl Backend {
             .build()
             .await?;
         let mut connection = database.connect()?;
-        schema::migrate(&connection).await?;
-        crate::spam::initialize(&mut connection).await?;
-        crate::security::initialize(&mut connection).await?;
-        let search_index = prepare_search_index(&config.profile_dir, &mut connection).await?;
-        let storage =
-            crate::storage::StorageBudget::open(config.profile_dir.clone(), config.storage_limits)
-                .await?;
+        if !sync_worker {
+            schema::migrate(&connection).await?;
+            crate::spam::initialize(&mut connection).await?;
+            crate::security::initialize(&mut connection).await?;
+        }
+        let search_index = if sync_worker {
+            Arc::new(SearchIndex::create_deferred(&config.profile_dir)?)
+        } else {
+            prepare_search_index(&config.profile_dir, &mut connection).await?
+        };
+        let storage = match worker_storage {
+            Some(usage) => crate::storage::StorageBudget::from_observed(
+                config.profile_dir.clone(),
+                config.storage_limits,
+                usage,
+            ),
+            None => {
+                crate::storage::StorageBudget::open(
+                    config.profile_dir.clone(),
+                    config.storage_limits,
+                )
+                .await?
+            }
+        };
         let blobs = BlobStore::open(config.profile_dir.join("blobs"), Arc::clone(&storage)).await?;
         let credentials = crate::credential::CredentialManager::new(
             &config.profile_dir,
@@ -257,6 +297,7 @@ impl Backend {
                 _database: database,
                 connection: Mutex::new(connection),
                 search_index,
+                search_deferred: sync_worker,
                 search_sync: RwLock::new(()),
                 blob_references: RwLock::new(()),
                 blobs,
@@ -269,6 +310,12 @@ impl Backend {
                 automation_reevaluation_requested: AtomicBool::new(false),
             }),
         };
+        if sync_worker {
+            // The supervising process owns credential cleanup, search
+            // publication and maintenance backfills.  Running them here
+            // would widen the worker's authority and race the live backend.
+            return Ok(backend);
+        }
         backend.drain_credential_cleanup(64).await?;
         backend.recover_interrupted_downloads().await?;
         backend.backfill_sender_projection().await?;
@@ -877,6 +924,29 @@ impl Backend {
     }
 
     pub fn managed_imap_account_engine(
+        &self,
+        config: crate::ImapAccountEngineConfig,
+    ) -> Result<crate::IsolatedImapAccountEngine> {
+        self.isolated_imap_account_engine(
+            self.credential_provider(),
+            config,
+            crate::ImapSyncIsolationConfig::default(),
+        )
+    }
+
+    pub fn isolated_imap_account_engine(
+        &self,
+        credentials: Arc<dyn crate::CredentialProvider>,
+        config: crate::ImapAccountEngineConfig,
+        isolation: crate::ImapSyncIsolationConfig,
+    ) -> Result<crate::IsolatedImapAccountEngine> {
+        crate::IsolatedImapAccountEngine::new(self.clone(), credentials, config, isolation)
+    }
+
+    /// Explicit escape hatch for embedders which cannot launch the fail-closed
+    /// worker.  Applications should normally use
+    /// [`Backend::managed_imap_account_engine`].
+    pub fn managed_imap_account_engine_in_process(
         &self,
         config: crate::ImapAccountEngineConfig,
     ) -> Result<crate::ImapAccountEngine> {
@@ -2314,6 +2384,9 @@ impl Backend {
     }
 
     pub(crate) async fn flush_search_projection(&self) -> Result<()> {
+        if self.inner.search_deferred {
+            return Ok(());
+        }
         loop {
             let deleted = {
                 let connection = self.inner.connection.lock().await;
@@ -2383,6 +2456,39 @@ impl Backend {
                     .await?;
             }
             transaction.commit().await?;
+        }
+    }
+
+    pub(crate) async fn current_change_cursor(&self) -> Result<ChangeCursor> {
+        let connection = self.inner.connection.lock().await;
+        let mut rows = connection
+            .query("SELECT COALESCE(max(sequence), 0) FROM changes", ())
+            .await?;
+        let sequence = rows
+            .next()
+            .await?
+            .ok_or_else(|| {
+                BackendError::InvalidInput("change cursor query returned no row".into())
+            })?
+            .get::<i64>(0)?;
+        Ok(ChangeCursor(u64::try_from(sequence).map_err(|_| {
+            BackendError::InvalidInput("database contains an invalid change sequence".into())
+        })?))
+    }
+
+    /// Publish durable side effects committed by an isolated synchronization
+    /// worker into this process's Tantivy writer and broadcast channel.
+    pub(crate) async fn publish_worker_changes(&self, mut cursor: ChangeCursor) -> Result<()> {
+        self.flush_search_projection().await?;
+        loop {
+            let events = self.events().changes_since(cursor, 500).await?;
+            if events.is_empty() {
+                return Ok(());
+            }
+            for event in events {
+                cursor = ChangeCursor(event.sequence);
+                let _ = self.inner.events.send(event);
+            }
         }
     }
 }

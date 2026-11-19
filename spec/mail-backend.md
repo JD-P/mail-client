@@ -15,6 +15,11 @@ boundary, discovers mailboxes, negotiates capabilities, reconciles UID state
 and routes bounded body streams through the same idempotent ingestion path as
 local imports.
 
+Managed IMAP synchronization runs in a short-lived, resource-limited process
+by default. Its filesystem, network, credential and IPC authority—and the
+explicit in-process compatibility escape hatch—are specified in
+[imap-sync-isolation.md](imap-sync-isolation.md).
+
 The current slice runs OpenPGP/MIME signing, verification, encryption and
 decryption, but does **not** yet independently verify ARC chains or expose
 inter-process transport. It does ingest bounded

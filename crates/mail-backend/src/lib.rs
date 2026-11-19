@@ -22,6 +22,7 @@ mod identity;
 mod imap;
 mod imap_engine;
 mod imap_mutation;
+mod imap_worker;
 mod lifecycle;
 mod mime;
 mod mime_api;
@@ -59,6 +60,7 @@ pub use imap_engine::{
     ImapMailboxCompleteness, ImapMailboxSyncState, ImapMutationSyncReport, SecretValue,
 };
 pub use imap_mutation::ImapMutations;
+pub use imap_worker::{ImapSyncIsolationConfig, IsolatedImapAccountEngine};
 pub use lifecycle::{restore_profile_backup, DataLifecycle};
 pub use mime_api::{Mime, SandboxedDocumentExtractor};
 pub use onboarding::Onboarding;
@@ -74,3 +76,8 @@ pub use storage::{
 };
 pub use thread::Threads;
 pub use types::*;
+
+#[doc(hidden)]
+pub fn __run_imap_sync_worker() -> std::result::Result<(), String> {
+    imap_worker::run_worker_process()
+}

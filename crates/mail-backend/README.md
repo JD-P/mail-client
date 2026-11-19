@@ -109,6 +109,9 @@ Current invariants:
   opaque credential reference; replacing or removing account/SMTP
   configuration deletes a Lizard-owned credential after its final reference
   disappears;
+- the default managed IMAP engine runs each sync, body fetch and IDLE cycle in
+  a disposable Linux sandbox; the parent retains credentials, Tantivy and live
+  subscribers, and a crashed or timed-out worker becomes durable account state;
 - `ImapAccountEngine` owns TLS connection establishment, credential resolution,
   SASL/OAuth authentication, mailbox discovery, capability negotiation,
   UIDVALIDITY/CONDSTORE/QRESYNC reconciliation, IDLE/poll wakeups, cancellation
@@ -172,12 +175,17 @@ Reply-All recipients while removing the user's account identities.
 `Threads::forward` deliberately creates a new thread with no reply headers and
 identifies the exact original message as a `message/rfc822` attachment.
 
-`Backend::imap_account_engine` accepts a `CredentialProvider` implemented by an
-OS keychain or OAuth broker. The provider receives only the account's opaque
-credential reference and returns a zeroizing, debug-redacted secret. The
-engine accepts implicit TLS or verified STARTTLS and never represents plaintext
-production transport. `sync_once` is useful for explicit refresh; `run` uses
-IDLE when available, polling otherwise, and stops through a cancellation token.
+`Backend::managed_imap_account_engine` uses the backend credential store and a
+fail-closed, resource-limited worker by default. `Backend::isolated_imap_account_engine`
+accepts a custom `CredentialProvider` implemented by an OS keychain or OAuth
+broker; the provider receives only the account's opaque credential reference
+and returns a zeroizing, debug-redacted secret. `Backend::imap_account_engine`
+and `managed_imap_account_engine_in_process` are explicit in-process escape
+hatches rather than automatic fallbacks. Both engines accept implicit TLS or
+verified STARTTLS and never represent plaintext production transport.
+`sync_once` is useful for explicit refresh; `run` uses IDLE when available,
+polling otherwise, and stops through a cancellation token. The process and
+sandbox contract is documented in `../../spec/imap-sync-isolation.md`.
 
 `imap_fetch_message` remains the adapter for importers that already possess a
 complete `async-imap` `FETCH` result. The caller must request `UID FLAGS

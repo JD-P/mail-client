@@ -134,12 +134,35 @@ impl SearchIndex {
         Self::from_index(profile_dir.to_owned(), index, fields)
     }
 
+    /// A worker-side placeholder which deliberately never touches the shared
+    /// on-disk Tantivy directory.  Isolated synchronization leaves durable
+    /// queue rows for the supervising backend to publish after the worker
+    /// exits, avoiding a second cross-process index writer.
+    pub(crate) fn create_deferred(profile_dir: &Path) -> Result<Self> {
+        let (schema, fields) = schema_and_fields();
+        let index = Index::create_in_ram(schema);
+        Self::from_index_with_limits(profile_dir.to_owned(), index, fields, 1, 16 * 1024 * 1024)
+    }
+
     fn from_index(profile_dir: PathBuf, index: Index, fields: Fields) -> Result<Self> {
+        Self::from_index_with_limits(
+            profile_dir,
+            index,
+            fields,
+            INDEX_WRITER_THREADS,
+            INDEX_WRITER_MEMORY_BYTES,
+        )
+    }
+
+    fn from_index_with_limits(
+        profile_dir: PathBuf,
+        index: Index,
+        fields: Fields,
+        writer_threads: usize,
+        writer_memory_bytes: usize,
+    ) -> Result<Self> {
         let writer = index
-            .writer_with_num_threads::<TantivyDocument>(
-                INDEX_WRITER_THREADS,
-                INDEX_WRITER_MEMORY_BYTES,
-            )
+            .writer_with_num_threads::<TantivyDocument>(writer_threads, writer_memory_bytes)
             .map_err(search_error)?;
         let reader = index
             .reader_builder()

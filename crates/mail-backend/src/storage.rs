@@ -847,6 +847,7 @@ impl IssueCollector {
 pub(crate) struct StorageBudget {
     profile_dir: PathBuf,
     limits: StorageLimits,
+    refresh_profile: bool,
     gate: Arc<RwLock<()>>,
     state: StdMutex<BudgetState>,
 }
@@ -871,6 +872,7 @@ impl StorageBudget {
         Ok(Arc::new(Self {
             profile_dir,
             limits,
+            refresh_profile: true,
             gate: Arc::new(RwLock::new(())),
             state: StdMutex::new(BudgetState {
                 observed_blob_bytes: measured.blob_bytes,
@@ -880,6 +882,29 @@ impl StorageBudget {
                 last_refresh: Instant::now(),
             }),
         }))
+    }
+
+    /// Construct a worker-side budget from a supervisor measurement.  The
+    /// isolated worker cannot read the credential or search-index trees, so
+    /// it must not re-walk the complete profile while it is running.
+    pub(crate) fn from_observed(
+        profile_dir: PathBuf,
+        limits: StorageLimits,
+        usage: StorageUsage,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            profile_dir,
+            limits,
+            refresh_profile: false,
+            gate: Arc::new(RwLock::new(())),
+            state: StdMutex::new(BudgetState {
+                observed_blob_bytes: usage.blob_bytes,
+                observed_non_blob_bytes: usage.total_bytes.saturating_sub(usage.blob_bytes),
+                reservations: HashMap::new(),
+                next_reservation: 1,
+                last_refresh: Instant::now(),
+            }),
+        })
     }
 
     pub(crate) async fn measure(&self) -> Result<StorageUsage> {
@@ -893,6 +918,9 @@ impl StorageBudget {
     }
 
     async fn refresh_if_stale(&self) -> Result<()> {
+        if !self.refresh_profile {
+            return Ok(());
+        }
         if lock_state(&self.state).last_refresh.elapsed() < BUDGET_REFRESH_INTERVAL {
             return Ok(());
         }
