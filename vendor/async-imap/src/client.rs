@@ -694,20 +694,26 @@ impl<T: Read + Write + Unpin + fmt::Debug + Send> Session<T> {
 
     /// Fetch the immutable RFC 5322 size for one UID.
     pub async fn uid_fetch_body_size(&mut self, uid: Uid) -> Result<u32> {
-        let metadata = self
-            .uid_fetch(uid.to_string(), "(UID RFC822.SIZE)")
-            .await?
-            .try_collect::<Vec<_>>()
-            .await?;
-        metadata
-            .iter()
-            .find(|fetch| fetch.uid == Some(uid))
-            .and_then(|fetch| fetch.size)
-            .ok_or_else(|| {
-                Error::Parse(ParseError::ExpectedResponseNotFound(format!(
-                    "RFC822.SIZE for UID {uid}"
-                )))
-            })
+        let mut metadata = self.uid_fetch(uid.to_string(), "(UID RFC822.SIZE)").await?;
+        let mut size = None;
+        let mut found = false;
+        while let Some(fetch) = metadata.try_next().await? {
+            if fetch.uid != Some(uid) {
+                continue;
+            }
+            if found {
+                return Err(Error::Parse(ParseError::Unexpected(format!(
+                    "duplicate RFC822.SIZE response for UID {uid}"
+                ))));
+            }
+            found = true;
+            size = fetch.size;
+        }
+        size.ok_or_else(|| {
+            Error::Parse(ParseError::ExpectedResponseNotFound(format!(
+                "RFC822.SIZE for UID {uid}"
+            )))
+        })
     }
 
     /// Fetch exactly one bounded `BODY.PEEK[]<offset.count>` range.
@@ -731,27 +737,33 @@ impl<T: Read + Write + Unpin + fmt::Debug + Send> Session<T> {
             )));
         }
         let query = format!("(UID BODY.PEEK[]<{offset}.{count}>)");
-        let responses = self
-            .uid_fetch(uid.to_string(), query)
-            .await?
-            .try_collect::<Vec<_>>()
-            .await?;
-        let body = responses
-            .iter()
-            .find(|fetch| fetch.uid == Some(uid))
-            .and_then(Fetch::body)
-            .ok_or_else(|| {
-                Error::Parse(ParseError::ExpectedResponseNotFound(format!(
-                    "BODY[] partial for UID {uid} at offset {offset}"
-                )))
-            })?;
+        let mut responses = self.uid_fetch(uid.to_string(), query).await?;
+        let mut body = None;
+        let mut found = false;
+        while let Some(fetch) = responses.try_next().await? {
+            if fetch.uid != Some(uid) {
+                continue;
+            }
+            if found {
+                return Err(Error::Parse(ParseError::Unexpected(format!(
+                    "duplicate BODY[] partial response for UID {uid} at offset {offset}"
+                ))));
+            }
+            found = true;
+            body = fetch.body().map(<[u8]>::to_vec);
+        }
+        let body = body.ok_or_else(|| {
+            Error::Parse(ParseError::ExpectedResponseNotFound(format!(
+                "BODY[] partial for UID {uid} at offset {offset}"
+            )))
+        })?;
         if body.len() != count as usize {
             return Err(Error::Parse(ParseError::Unexpected(format!(
                 "BODY[] partial for UID {uid} at offset {offset} contained {} bytes, expected {count}",
                 body.len()
             ))));
         }
-        destination.write_all(body).await?;
+        destination.write_all(&body).await?;
         Ok(count)
     }
 
@@ -1716,6 +1728,16 @@ impl<T: Read + Write + Unpin + fmt::Debug> Connection<T> {
         Ok(())
     }
 
+    /// Set aggregate resource limits for one tagged command.
+    ///
+    /// `responses` includes untagged responses and the final tagged
+    /// completion. `bytes` is the sum of their parsed wire lengths. These
+    /// limits complement the individual response-size and nesting limits.
+    pub fn set_command_limits(&mut self, responses: usize, bytes: usize) -> Result<()> {
+        self.stream.set_command_limits(responses, bytes)?;
+        Ok(())
+    }
+
     /// Convert this connection into the raw underlying stream.
     pub fn into_inner(self) -> T {
         let Self { stream, .. } = self;
@@ -1746,6 +1768,7 @@ impl<T: Read + Write + Unpin + fmt::Debug> Connection<T> {
         self.recover_pending_command().await?;
         validate_command(command)?;
         let request_id = self.request_ids.next().unwrap(); // safe: never returns Err
+        self.stream.begin_command();
         self.stream
             .encode(Request(Some(request_id.clone()), command.as_bytes().into()))
             .await?;
@@ -1962,7 +1985,7 @@ mod tests {
     use std::future::Future;
 
     use async_std::sync::{Arc, Mutex};
-    use futures_util::StreamExt;
+    use futures_util::{StreamExt, TryStreamExt};
     use imap_proto::Status;
 
     macro_rules! mock_client {
@@ -1996,6 +2019,61 @@ mod tests {
         let mut session = mock_session!(MockStream::new(response.as_bytes().to_vec()));
         session.read_response().await.unwrap().unwrap();
         session.read_response().await.unwrap().unwrap();
+    }
+
+    #[cfg_attr(feature = "runtime-tokio", tokio::test)]
+    #[cfg_attr(feature = "runtime-async-std", async_std::test)]
+    async fn command_response_count_limit_precedes_collection() {
+        let response = b"* LIST () \"/\" \"one\"\r\n\
+                         * LIST () \"/\" \"two\"\r\n\
+                         A0001 OK LIST complete\r\n"
+            .to_vec();
+        let mut session = mock_session!(MockStream::new(response));
+        session.set_command_limits(2, 1024).unwrap();
+
+        let error = session
+            .list(None, Some("\"*\""))
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("response-count limit"));
+    }
+
+    #[cfg_attr(feature = "runtime-tokio", tokio::test)]
+    #[cfg_attr(feature = "runtime-async-std", async_std::test)]
+    async fn command_aggregate_byte_limit_includes_completion() {
+        let list = b"* LIST () \"/\" \"one\"\r\n";
+        let completion = b"A0001 OK LIST complete\r\n";
+        let mut response = list.to_vec();
+        response.extend_from_slice(completion);
+        let mut session = mock_session!(MockStream::new(response));
+        session
+            .set_command_limits(10, list.len() + completion.len() - 1)
+            .unwrap();
+
+        let error = session
+            .list(None, Some("\"*\""))
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("aggregate byte limit"));
+    }
+
+    #[cfg_attr(feature = "runtime-tokio", tokio::test)]
+    #[cfg_attr(feature = "runtime-async-std", async_std::test)]
+    async fn body_size_rejects_duplicate_requested_uid() {
+        let response = b"* 1 FETCH (UID 7 RFC822.SIZE 10)\r\n\
+                         * 1 FETCH (UID 7 RFC822.SIZE 10)\r\n\
+                         A0001 OK FETCH complete\r\n"
+            .to_vec();
+        let mut session = mock_session!(MockStream::new(response));
+
+        let error = session.uid_fetch_body_size(7).await.unwrap_err();
+        assert!(error.to_string().contains("duplicate RFC822.SIZE"));
     }
 
     #[cfg_attr(feature = "runtime-tokio", tokio::test)]

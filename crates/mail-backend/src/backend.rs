@@ -18,7 +18,7 @@ use crate::{
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use chrono::Utc;
-use futures_util::{stream, StreamExt, TryStreamExt};
+use futures_util::{stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::{
@@ -4345,7 +4345,7 @@ impl Sync {
                 .map(u32::to_string)
                 .collect::<Vec<_>>()
                 .join(",");
-            let mut fetches = session
+            let fetches = session
                 .uid_fetch(
                     uid_set,
                     "(UID FLAGS INTERNALDATE RFC822.SIZE BODYSTRUCTURE BODY.PEEK[HEADER.FIELDS (DATE FROM SENDER TO CC BCC REPLY-TO DELIVERED-TO LIST-ID MESSAGE-ID IN-REPLY-TO REFERENCES SUBJECT CONTENT-TYPE MIME-VERSION AUTHENTICATION-RESULTS ARC-AUTHENTICATION-RESULTS)])",
@@ -4353,12 +4353,13 @@ impl Sync {
                 .await
                 .map_err(imap_error)?;
             let requested: HashSet<u32> = uid_chunk.iter().copied().collect();
+            let fetches = crate::imap_engine::collect_requested_fetches(fetches, &requested)
+                .await
+                .map_err(imap_error)?;
             let mut metadata = Vec::with_capacity(uid_chunk.len());
-            while let Some(fetch) = fetches.try_next().await.map_err(imap_error)? {
+            for fetch in fetches {
                 let item = imap_fetch_headers(&fetch)?;
-                if requested.contains(&item.uid) {
-                    metadata.push(item);
-                }
+                metadata.push(item);
             }
             metadata.sort_unstable_by_key(|item| item.uid);
             metadata.dedup_by_key(|item| item.uid);

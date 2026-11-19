@@ -40,11 +40,21 @@ pub struct ImapStream<R: Read + Write> {
 
     /// Incremental structural depth checker, run before the recursive parser.
     nesting: NestingValidator,
+
+    /// Aggregate limits and counters for the current tagged command. A
+    /// response remains individually subject to `max_response_size`.
+    max_command_responses: usize,
+    max_command_bytes: usize,
+    command_responses: usize,
+    command_bytes: usize,
+    command_budget_active: bool,
 }
 
 impl<R: Read + Write + Unpin> ImapStream<R> {
     pub(crate) const DEFAULT_MAX_RESPONSE_SIZE: usize = 64 * 1024 * 1024;
     pub(crate) const DEFAULT_MAX_NESTING: usize = 128;
+    pub(crate) const DEFAULT_MAX_COMMAND_RESPONSES: usize = 1024;
+    pub(crate) const DEFAULT_MAX_COMMAND_BYTES: usize = 128 * 1024 * 1024;
 
     /// Creates a new `ImapStream` based on the given `Read`er.
     pub fn new(inner: R) -> Self {
@@ -55,6 +65,11 @@ impl<R: Read + Write + Unpin> ImapStream<R> {
             read_closed: false,
             max_response_size: Self::DEFAULT_MAX_RESPONSE_SIZE,
             nesting: NestingValidator::new(Self::DEFAULT_MAX_NESTING),
+            max_command_responses: Self::DEFAULT_MAX_COMMAND_RESPONSES,
+            max_command_bytes: Self::DEFAULT_MAX_COMMAND_BYTES,
+            command_responses: 0,
+            command_bytes: 0,
+            command_budget_active: false,
         }
     }
 
@@ -119,6 +134,54 @@ impl<R: Read + Write + Unpin> ImapStream<R> {
         Ok(())
     }
 
+    pub(crate) fn set_command_limits(&mut self, responses: usize, bytes: usize) -> io::Result<()> {
+        if responses == 0 || bytes == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "command response and byte limits must be non-zero",
+            ));
+        }
+        self.max_command_responses = responses;
+        self.max_command_bytes = bytes;
+        Ok(())
+    }
+
+    /// Start accounting for a newly-written tagged command. Callers drain an
+    /// abandoned prior command before invoking this, so dropping a response
+    /// stream cannot reset the old command's budget.
+    pub(crate) fn begin_command(&mut self) {
+        self.command_responses = 0;
+        self.command_bytes = 0;
+        self.command_budget_active = true;
+    }
+
+    fn observe_command_response(&mut self, bytes: usize) -> io::Result<()> {
+        if !self.command_budget_active {
+            return Ok(());
+        }
+        let responses = self
+            .command_responses
+            .checked_add(1)
+            .ok_or_else(|| io::Error::other("incoming command response count overflow"))?;
+        let aggregate_bytes = self
+            .command_bytes
+            .checked_add(bytes)
+            .ok_or_else(|| io::Error::other("incoming command byte count overflow"))?;
+        if responses > self.max_command_responses {
+            return Err(io::Error::other(
+                "incoming command exceeds configured response-count limit",
+            ));
+        }
+        if aggregate_bytes > self.max_command_bytes {
+            return Err(io::Error::other(
+                "incoming command exceeds configured aggregate byte limit",
+            ));
+        }
+        self.command_responses = responses;
+        self.command_bytes = aggregate_bytes;
+        Ok(())
+    }
+
     /// Attempts to decode a single response from the buffer.
     ///
     /// Returns `None` if the buffer does not contain enough data.
@@ -137,6 +200,10 @@ impl<R: Read + Write + Unpin> ImapStream<R> {
             log::trace!("decode: buffered bytes: {}", buf.len());
             match imap_proto::Response::parse(buf) {
                 Ok((remaining, response)) => {
+                    let response_bytes = buf.len() - remaining.len();
+                    if let Err(error) = self.observe_command_response(response_bytes) {
+                        return Err(Some(error));
+                    }
                     // TODO: figure out if we can use a minimum required size for a response.
                     self.decode_needs = 0;
                     self.buffer.reset_with_data(remaining);

@@ -14,7 +14,7 @@ use async_imap::types::{Capabilities, Capability, CopyUid, NameAttribute};
 use async_imap::{Authenticator, Client, Session};
 use chrono::Utc;
 use futures_util::future::BoxFuture;
-use futures_util::TryStreamExt;
+use futures_util::{Stream, TryStreamExt};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -37,6 +37,12 @@ use zeroize::Zeroize;
 
 const MAX_QRESYNC_UID_SET_BYTES: usize = 32 * 1024;
 const MAX_TRACKED_UIDS: usize = 10_000_000;
+const MAX_IMAP_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
+const MAX_IMAP_COMMAND_RESPONSES: usize = 1024;
+const MAX_IMAP_COMMAND_BYTES: usize = 64 * 1024 * 1024;
+const MAX_IMAP_RESPONSE_NESTING: usize = 64;
+const MAX_IMAP_RECONCILE_UIDS: usize = 512;
+const MAX_UNSOLICITED_FETCHES_PER_COMMAND: usize = 32;
 
 /// A secret returned by a platform credential adapter.
 ///
@@ -676,12 +682,12 @@ impl ImapAccountEngine {
         let mut client = match settings.security {
             ImapSecurity::ImplicitTls => {
                 let tls = self.upgrade_tls(&settings.host, tcp).await?;
-                let mut client = Client::new(ImapTransport::Tls(Box::new(tls)));
+                let mut client = configured_client(ImapTransport::Tls(Box::new(tls)))?;
                 read_greeting(&mut client, self.config.command_timeout).await?;
                 client
             }
             ImapSecurity::StartTls => {
-                let mut client = Client::new(ImapTransport::Plain(tcp));
+                let mut client = configured_client(ImapTransport::Plain(tcp))?;
                 read_greeting(&mut client, self.config.command_timeout).await?;
                 let capabilities = command_timeout(
                     self.config.command_timeout,
@@ -709,7 +715,7 @@ impl ImapAccountEngine {
                     }
                 };
                 let tls = self.upgrade_tls(&settings.host, plain).await?;
-                Client::new(ImapTransport::Tls(Box::new(tls)))
+                configured_client(ImapTransport::Tls(Box::new(tls)))?
             }
         };
 
@@ -1588,6 +1594,7 @@ impl ImapAccountEngine {
         let can_qresync = qresync_enabled
             && target.uid_validity.is_some()
             && target.highest_mod_sequence.is_some()
+            && known.len() < MAX_IMAP_COMMAND_RESPONSES - 64
             && qresync_uids
                 .as_ref()
                 .is_some_and(|value| value.len() <= MAX_QRESYNC_UID_SET_BYTES);
@@ -1660,35 +1667,7 @@ impl ImapAccountEngine {
             }
         }
 
-        if !used_qresync && same_epoch {
-            if capabilities.has_str("CONDSTORE") {
-                if let Some(mod_sequence) = target.highest_mod_sequence {
-                    changed =
-                        command_timeout(self.config.command_timeout, "CHANGEDSINCE FETCH", async {
-                            session
-                                .uid_fetch(
-                                    "1:*",
-                                    format!("(UID FLAGS MODSEQ) (CHANGEDSINCE {mod_sequence})"),
-                                )
-                                .await?
-                                .try_collect::<Vec<_>>()
-                                .await
-                        })
-                        .await?;
-                }
-            } else {
-                changed =
-                    command_timeout(self.config.command_timeout, "flag reconciliation", async {
-                        session
-                            .uid_fetch("1:*", "(UID FLAGS)")
-                            .await?
-                            .try_collect::<Vec<_>>()
-                            .await
-                    })
-                    .await?;
-            }
-        }
-        let refreshed_instances = self
+        let mut refreshed_instances = self
             .apply_changed_fetches(
                 account_id,
                 mailbox.folder_id,
@@ -1697,6 +1676,21 @@ impl ImapAccountEngine {
                 &changed,
             )
             .await?;
+        if !used_qresync && same_epoch {
+            refreshed_instances += self
+                .reconcile_flags(
+                    session,
+                    account_id,
+                    mailbox.folder_id,
+                    uid_validity,
+                    &known,
+                    capabilities
+                        .has_str("CONDSTORE")
+                        .then_some(target.highest_mod_sequence)
+                        .flatten(),
+                )
+                .await?;
+        }
 
         if !used_qresync {
             let current = command_timeout(
@@ -1794,6 +1788,46 @@ impl ImapAccountEngine {
             instances.insert(uid, id);
         }
         Ok(instances)
+    }
+
+    async fn reconcile_flags(
+        &self,
+        session: &mut Session<ImapTransport>,
+        account_id: AccountId,
+        folder_id: FolderId,
+        uid_validity: u32,
+        known: &HashMap<u32, crate::MessageId>,
+        changed_since: Option<u64>,
+    ) -> Result<usize> {
+        let mut uids = known.keys().copied().collect::<Vec<_>>();
+        uids.sort_unstable();
+        let mut refreshed = 0usize;
+        for chunk in uids.chunks(MAX_IMAP_RECONCILE_UIDS) {
+            let requested = chunk.iter().copied().collect::<HashSet<_>>();
+            let uid_set = chunk
+                .iter()
+                .map(u32::to_string)
+                .collect::<Vec<_>>()
+                .join(",");
+            let query = changed_since.map_or_else(
+                || "(UID FLAGS)".to_owned(),
+                |mod_sequence| format!("(UID FLAGS MODSEQ) (CHANGEDSINCE {mod_sequence})"),
+            );
+            let operation = if changed_since.is_some() {
+                "chunked CHANGEDSINCE FETCH"
+            } else {
+                "chunked flag reconciliation"
+            };
+            let fetches = command_timeout(self.config.command_timeout, operation, async {
+                let stream = session.uid_fetch(uid_set, query).await?;
+                collect_requested_fetches(stream, &requested).await
+            })
+            .await?;
+            refreshed += self
+                .apply_changed_fetches(account_id, folder_id, uid_validity, known, &fetches)
+                .await?;
+        }
+        Ok(refreshed)
     }
 
     async fn apply_changed_fetches(
@@ -2393,6 +2427,20 @@ fn sasl_name(value: &str) -> String {
     value.replace('=', "=3D").replace(',', "=2C")
 }
 
+fn configured_client(transport: ImapTransport) -> Result<Client<ImapTransport>> {
+    let mut client = Client::new(transport);
+    client
+        .set_max_response_size(MAX_IMAP_RESPONSE_BYTES)
+        .map_err(imap_error)?;
+    client
+        .set_max_response_nesting(MAX_IMAP_RESPONSE_NESTING)
+        .map_err(imap_error)?;
+    client
+        .set_command_limits(MAX_IMAP_COMMAND_RESPONSES, MAX_IMAP_COMMAND_BYTES)
+        .map_err(imap_error)?;
+    Ok(client)
+}
+
 async fn read_greeting(client: &mut Client<ImapTransport>, duration: Duration) -> Result<()> {
     timeout(duration, client.read_response())
         .await
@@ -2400,6 +2448,73 @@ async fn read_greeting(client: &mut Client<ImapTransport>, duration: Duration) -
         .map_err(|error| BackendError::Imap(format!("could not read server greeting: {error}")))?
         .ok_or_else(|| BackendError::Imap("server closed before its greeting".into()))?;
     Ok(())
+}
+
+pub(crate) async fn collect_requested_fetches<S>(
+    mut stream: S,
+    requested: &HashSet<u32>,
+) -> std::result::Result<Vec<async_imap::types::Fetch>, async_imap::error::Error>
+where
+    S: Stream<Item = async_imap::error::Result<async_imap::types::Fetch>> + Unpin,
+{
+    let mut tracker =
+        RequestedFetchTracker::new(requested).map_err(async_imap::error::Error::Io)?;
+    let mut selected = Vec::with_capacity(requested.len());
+    while let Some(fetch) = stream.try_next().await? {
+        if tracker
+            .observe(fetch.uid)
+            .map_err(async_imap::error::Error::Io)?
+        {
+            selected.push(fetch);
+        }
+    }
+    Ok(selected)
+}
+
+struct RequestedFetchTracker<'a> {
+    requested: &'a HashSet<u32>,
+    maximum: usize,
+    responses: usize,
+    seen: HashSet<u32>,
+}
+
+impl<'a> RequestedFetchTracker<'a> {
+    fn new(requested: &'a HashSet<u32>) -> io::Result<Self> {
+        let maximum = requested
+            .len()
+            .checked_add(MAX_UNSOLICITED_FETCHES_PER_COMMAND)
+            .ok_or_else(|| io::Error::other("requested FETCH response budget overflow"))?;
+        Ok(Self {
+            requested,
+            maximum,
+            responses: 0,
+            seen: HashSet::with_capacity(requested.len()),
+        })
+    }
+
+    fn observe(&mut self, uid: Option<u32>) -> io::Result<bool> {
+        self.responses = self
+            .responses
+            .checked_add(1)
+            .ok_or_else(|| io::Error::other("FETCH response count overflow"))?;
+        if self.responses > self.maximum {
+            return Err(io::Error::other(
+                "FETCH returned more responses than the requested UID budget",
+            ));
+        }
+        let Some(uid) = uid else {
+            return Ok(false);
+        };
+        if !self.requested.contains(&uid) {
+            return Ok(false);
+        }
+        if !self.seen.insert(uid) {
+            return Err(io::Error::other(format!(
+                "FETCH returned duplicate data for requested UID {uid}"
+            )));
+        }
+        Ok(true)
+    }
 }
 
 async fn command_timeout<T, E, F>(duration: Duration, operation: &str, future: F) -> Result<T>
@@ -2570,5 +2685,28 @@ mod tests {
             flag_difference(&["\\Seen".into(), "$Label".into()], &["\\seen".into()]),
             vec!["$Label"]
         );
+    }
+
+    #[test]
+    fn requested_fetch_tracker_rejects_duplicates_and_response_floods() {
+        let requested = HashSet::from([7, 9]);
+        let mut tracker = RequestedFetchTracker::new(&requested).unwrap();
+        assert!(tracker.observe(Some(7)).unwrap());
+        assert!(!tracker.observe(Some(100)).unwrap());
+        assert!(tracker
+            .observe(Some(7))
+            .unwrap_err()
+            .to_string()
+            .contains("duplicate"));
+
+        let mut tracker = RequestedFetchTracker::new(&requested).unwrap();
+        for uid in 0..requested.len() + MAX_UNSOLICITED_FETCHES_PER_COMMAND {
+            assert!(!tracker.observe(Some(10_000 + uid as u32)).unwrap());
+        }
+        assert!(tracker
+            .observe(None)
+            .unwrap_err()
+            .to_string()
+            .contains("requested UID budget"));
     }
 }
