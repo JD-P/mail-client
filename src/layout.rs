@@ -22,6 +22,10 @@ pub enum Draw {
         color: u32,
         radius: Au,
     },
+    DiscMarker {
+        rect: Rect,
+        color: u32,
+    },
     Text {
         node: NodeId,
         x: Au,
@@ -121,6 +125,8 @@ enum Placed {
         lines: (usize, usize),
         x: Au,
         rect: Rect,
+        margins: Edges<Au>,
+        advance: Au,
     },
 }
 #[derive(Clone)]
@@ -256,6 +262,11 @@ impl Scene {
                         return Err(Error::Invalid("paint rectangle"));
                     }
                 }
+                Draw::DiscMarker { rect, .. } => {
+                    if !rectangle(*rect) {
+                        return Err(Error::Invalid("paint marker"));
+                    }
+                }
                 Draw::Border {
                     rect,
                     widths,
@@ -339,6 +350,54 @@ impl Scene {
         Ok(())
     }
 }
+
+fn alphabetic_counter(mut value: i64, uppercase: bool) -> Option<String> {
+    if value < 1 || value > 1_000_000 {
+        return None;
+    }
+    let base = if uppercase { b'A' } else { b'a' };
+    let mut result = Vec::new();
+    while value > 0 {
+        value -= 1;
+        result.push((base + (value % 26) as u8) as char);
+        value /= 26;
+    }
+    result.reverse();
+    Some(result.into_iter().collect())
+}
+
+fn roman_counter(mut value: i64, uppercase: bool) -> Option<String> {
+    if !(1..=3999).contains(&value) {
+        return None;
+    }
+    let mut result = String::new();
+    for (number, digits) in [
+        (1000, "M"),
+        (900, "CM"),
+        (500, "D"),
+        (400, "CD"),
+        (100, "C"),
+        (90, "XC"),
+        (50, "L"),
+        (40, "XL"),
+        (10, "X"),
+        (9, "IX"),
+        (5, "V"),
+        (4, "IV"),
+        (1, "I"),
+    ] {
+        while value >= number {
+            result.push_str(digits);
+            value -= number;
+        }
+    }
+    Some(if uppercase {
+        result
+    } else {
+        result.to_ascii_lowercase()
+    })
+}
+
 impl<'a> Engine<'a> {
     pub fn new(
         doc: &'a Document,
@@ -427,6 +486,15 @@ impl<'a> Engine<'a> {
             left: self.val(s.margin.left, basis, s).unwrap_or(0),
         }
     }
+    fn vertical_shift(&self, s: &Style) -> Au {
+        match s.vertical_align.as_str() {
+            "super" => s.font_size / 3,
+            "sub" => -s.font_size / 5,
+            _ => length(&s.vertical_align)
+                .map(|value| self.eval(value, s.line_height, s))
+                .unwrap_or(0),
+        }
+    }
     fn insets(&self, s: &Style, basis: Au) -> Edges<Au> {
         let bw = |b: Border| {
             if matches!(b.style, BorderStyle::None | BorderStyle::Hidden) {
@@ -491,7 +559,12 @@ impl<'a> Engine<'a> {
                 {
                     continue;
                 }
-                if matches!(self.styles[*c].display, Display::Block | Display::ListItem) {
+                if self.styles[*c].float != Float::None {
+                    continue;
+                }
+                if self.styles[*c].clear == "none"
+                    && matches!(self.styles[*c].display, Display::Block | Display::ListItem)
+                {
                     m = collapse_margin(m, self.top_margin(*c, basis, depth + 1)?);
                 }
                 break;
@@ -514,6 +587,9 @@ impl<'a> Engine<'a> {
                     || matches!(n.kind, Kind::Comment)
                     || matches!(n.kind, Kind::Text) && n.text.trim().is_empty()
                 {
+                    continue;
+                }
+                if self.styles[*c].float != Float::None {
                     continue;
                 }
                 if matches!(self.styles[*c].display, Display::Block | Display::ListItem) {
@@ -581,15 +657,29 @@ impl<'a> Engine<'a> {
         }
         w = w.max(pad).min(MAX_COORD);
         let free = (available - w - m.left - m.right).max(0);
+        let containing_rtl = self.doc.nodes[id]
+            .parent
+            .map(|parent| self.styles[parent].direction_rtl)
+            .unwrap_or(false);
         let left = m.left
-            + match (s.margin.left, s.margin.right) {
-                (Size::Auto, Size::Auto) => free / 2,
-                (Size::Auto, _) => free,
-                _ => 0,
+            + if s.float != Float::None {
+                0
+            } else {
+                match (s.margin.left, s.margin.right) {
+                    (Size::Auto, Size::Auto) => free / 2,
+                    (Size::Auto, _) => free,
+                    (_, _) if containing_rtl && s.width != Size::Auto => free,
+                    _ => 0,
+                }
             };
         let bx = x + left;
         let cx = bx + edges.left;
-        let cy = y + edges.top;
+        let raw_cy = y + edges.top;
+        let cy = if s.display == Display::ListItem {
+            ((raw_cy + PX - 1) / PX) * PX
+        } else {
+            raw_cy
+        };
         let cw = (w - pad).max(0);
         if s.opacity < 1000 {
             self.emit(Draw::BeginOpacity { opacity: s.opacity }, clip, &s)?;
@@ -653,8 +743,22 @@ impl<'a> Engine<'a> {
                     first_content = false;
                 }
                 let (_, max) = self.measure(child, depth + 1)?;
-                let desired = self.val(cs.width, cw, &cs).unwrap_or(max).min(cw).max(PX);
-                let mut fy = cursor;
+                let margins = self.margins(&cs, cw);
+                let edges = self.insets(&cs, cw);
+                let available = (cw - margins.left - margins.right).max(PX);
+                let desired = self
+                    .val(cs.width, cw, &cs)
+                    .map(|value| {
+                        if cs.border_box {
+                            value
+                        } else {
+                            value + edges.left + edges.right
+                        }
+                    })
+                    .unwrap_or(max)
+                    .min(available)
+                    .max(PX);
+                let mut fy = checked_add(cursor, margins.top)?;
                 let (mut fx, mut fw) = self.line_space(cx, fy, cw, cs.font_size, &floats);
                 while fw < desired {
                     if let Some(bottom) = floats
@@ -673,17 +777,14 @@ impl<'a> Engine<'a> {
                 if cs.float == Float::Right {
                     fx += fw - desired;
                 }
-                let r = self.block(
-                    child,
-                    fx,
-                    fy,
-                    desired,
-                    Some(desired),
-                    content_clip,
-                    depth + 1,
-                )?;
+                let r = self.block(child, fx, fy, cw, Some(desired), content_clip, depth + 1)?;
                 floats.push(Floating {
-                    rect: r,
+                    rect: Rect::new(
+                        r.x - margins.left,
+                        r.y - margins.top,
+                        r.w + margins.left + margins.right,
+                        r.h + margins.top + margins.bottom,
+                    ),
                     side: cs.float,
                 });
                 continue;
@@ -712,17 +813,24 @@ impl<'a> Engine<'a> {
                     previous_margin = 0;
                     first_content = false;
                 }
+                let mut cleared = false;
                 if cs.clear != "none" {
                     for f in &floats {
                         if cs.clear == "both"
                             || cs.clear == "left" && f.side == Float::Left
                             || cs.clear == "right" && f.side == Float::Right
                         {
-                            cursor = cursor.max(f.rect.bottom());
+                            let next = cursor.max(f.rect.bottom());
+                            cleared |= next != cursor;
+                            cursor = next;
                         }
                     }
                 }
-                let top = self.top_margin(child, cw, 0)?;
+                let top = if cleared {
+                    0
+                } else {
+                    self.top_margin(child, cw, 0)?
+                };
                 let collapse_first = first_content
                     && edges.top == 0
                     && s.display == Display::Block
@@ -766,17 +874,36 @@ impl<'a> Engine<'a> {
             for (node, b) in self.scene.boxes.iter().enumerate() {
                 if self.styles[node].float != Float::None {
                     if let Some(b) = b {
-                        cursor = cursor.max(b.border.bottom());
+                        let bottom = self.margins(&self.styles[node], cw).bottom;
+                        cursor = cursor.max(checked_add(b.border.bottom(), bottom)?);
                     }
                 }
             }
         }
         let mut h = (cursor - cy).max(0);
+        if s.height == Size::Auto
+            && s.display == Display::ListItem
+            && matches!(s.list_type.as_str(), "disc" | "circle" | "square")
+            && s.line_height > 0
+            && h % s.line_height == 0
+        {
+            // Gecko's graphical marker contributes its half-pixel overflow
+            // when ordinary text struts determine the item height. A taller
+            // replaced box already determines the principal height.
+            h = checked_add(h, PX / 2)?;
+        }
         if let Some(value) = self.val(s.height, self.scene.height, &s) {
-            h = if s.border_box {
+            let specified = if s.border_box {
                 (value - edges.top - edges.bottom).max(0)
             } else {
                 value.max(0)
+            };
+            // CSS table-cell height contributes a minimum to the row. Cell
+            // contents are not clipped down to the declared height.
+            h = if s.display == Display::Cell {
+                h.max(specified)
+            } else {
+                specified
             };
         }
         if let Some(max) = self.val(s.max_height, self.scene.height, &s) {
@@ -790,22 +917,25 @@ impl<'a> Engine<'a> {
             return Err(Error::Budget("document geometry"));
         }
         let actual_radius = self.corner(&s, r);
+        let borders = [s.border.top, s.border.right, s.border.bottom, s.border.left];
+        let opaque_uniform_rounded_border = actual_radius > 0
+            && s.background_clip == "border-box"
+            && borders.iter().all(|border| {
+                border.style == BorderStyle::Solid
+                    && border.width == borders[0].width
+                    && border.color & 255 == 255
+            });
         let color_area = self.area(&s, r, Rect::new(cx, cy, cw, h), &s.background_clip);
         if let Draw::Rect { rect, radius, .. } = &mut self.scene.primitives[bg].draw {
-            *rect = color_area;
-            *radius = actual_radius;
-            let borders = [s.border.top, s.border.right, s.border.bottom, s.border.left];
-            if s.background_clip == "border-box"
-                && actual_radius > 0
-                && borders.iter().all(|b| {
-                    b.style == BorderStyle::Solid
-                        && b.color & 255 == 255
-                        && b.width == borders[0].width
-                })
-            {
-                let inset = borders[0].width;
+            if opaque_uniform_rounded_border {
+                // Gecko leaves a one-device-pixel overlap between an opaque
+                // rounded border and its background to avoid an AA seam.
+                let inset = (borders[0].width - PX).max(0);
                 *rect = Rect::new(r.x + inset, r.y + inset, r.w - 2 * inset, r.h - 2 * inset);
                 *radius = (actual_radius - inset).max(0);
+            } else {
+                *rect = color_area;
+                *radius = actual_radius;
             }
         }
         self.fixed_clip = previous_fixed_clip;
@@ -832,10 +962,23 @@ impl<'a> Engine<'a> {
             self.borders(&s, r, clip)?;
         }
         if s.display == Display::ListItem && !s.list_inside && s.list_type != "none" {
-            let marker = self.marker(id);
-            let run = self.fonts.shape(&marker, &s, self.budget)?;
-            let mx = bx - run.width - self.fonts.shape(" ", &s, self.budget)?.width;
-            self.text(id, mx, baseline, run, clip, &s)?;
+            if s.list_type == "disc" {
+                // Gecko paints the default outside disc as marker geometry,
+                // not as the font's asymmetrical U+2022 outline.
+                self.emit(
+                    Draw::DiscMarker {
+                        rect: Rect::new(bx - 14 * PX, baseline - 7 * PX - PX / 2, 6 * PX, 6 * PX),
+                        color: s.color,
+                    },
+                    clip,
+                    &s,
+                )?;
+            } else {
+                let marker = self.marker(id);
+                let run = self.fonts.shape(&marker, &s, self.budget)?;
+                let mx = bx - run.width - self.fonts.shape(" ", &s, self.budget)?.width;
+                self.text(id, mx, baseline, run, clip, &s)?;
+            }
         }
         if s.opacity < 1000 {
             self.emit(Draw::EndOpacity, clip, &s)?;
@@ -911,12 +1054,18 @@ impl<'a> Engine<'a> {
             n = v;
         }
         match s.list_type.as_str() {
-            "lower-alpha" | "lower-latin" => {
-                format!("{}.", (b'a' + ((n.max(1) - 1) % 26) as u8) as char)
-            }
-            "upper-alpha" | "upper-latin" => {
-                format!("{}.", (b'A' + ((n.max(1) - 1) % 26) as u8) as char)
-            }
+            "lower-alpha" | "lower-latin" => alphabetic_counter(n, false)
+                .map(|value| format!("{value}."))
+                .unwrap_or_else(|| format!("{n}.")),
+            "upper-alpha" | "upper-latin" => alphabetic_counter(n, true)
+                .map(|value| format!("{value}."))
+                .unwrap_or_else(|| format!("{n}.")),
+            "lower-roman" => roman_counter(n, false)
+                .map(|value| format!("{value}."))
+                .unwrap_or_else(|| format!("{n}.")),
+            "upper-roman" => roman_counter(n, true)
+                .map(|value| format!("{value}."))
+                .unwrap_or_else(|| format!("{n}.")),
             _ => format!("{n}."),
         }
     }
@@ -1046,9 +1195,22 @@ impl<'a> Engine<'a> {
         }
         if self.styles[parent].display == Display::ListItem && self.styles[parent].list_inside {
             let s = &self.styles[parent];
-            let run = self
+            let mut run = self
                 .fonts
                 .shape(&(self.marker(parent) + " "), s, self.budget)?;
+            match s.list_type.as_str() {
+                "disc" | "circle" => {
+                    // Gecko's round inside markers reserve a small marker-side
+                    // gap beyond the shaped glyph plus ordinary word space.
+                    run.width += s.font_size * 17 / 320;
+                }
+                "square" => {
+                    // The square marker's typographic advance is slightly
+                    // narrower than the font glyph plus an ordinary space.
+                    run.width -= s.font_size * 17 / 480;
+                }
+                _ => {}
+            }
             items.insert(
                 0,
                 Item::Text {
@@ -1111,7 +1273,15 @@ impl<'a> Engine<'a> {
                     }
                     let sw = pending_space.as_ref().map(|(_, r)| r.width).unwrap_or(0);
                     let wrapping = !matches!(s.whitespace, WhiteSpace::Pre | WhiteSpace::Nowrap);
-                    if wrapping && pen + sw + run.width > lw && !line.is_empty() {
+                    let split_run = wrapping
+                        && (s.word_break == "break-all"
+                            || ((s.word_break == "break-word" || s.overflow_wrap)
+                                && run.width > lw));
+                    if wrapping
+                        && s.word_break != "break-all"
+                        && pen + sw + run.width > lw
+                        && !line.is_empty()
+                    {
                         self.finish_line(
                             parent,
                             &line,
@@ -1143,13 +1313,32 @@ impl<'a> Engine<'a> {
                     if first && line.is_empty() {
                         pen += self.eval(ps.indent, width, &ps);
                     }
-                    if wrapping
-                        && run.width > lw
-                        && (s.overflow_wrap || s.word_break == "break-all")
-                    {
-                        for grapheme in run.text.graphemes(true) {
-                            let small = self.fonts.shape(grapheme, &s, self.budget)?;
-                            if pen + small.width > lw && !line.is_empty() {
+                    if split_run {
+                        let mut shaping_style = s.clone();
+                        shaping_style.transform = "none".into();
+                        let mut offset = 0;
+                        while offset < run.text.len() {
+                            let ends: Vec<_> = run.text[offset..]
+                                .grapheme_indices(true)
+                                .map(|(index, grapheme)| offset + index + grapheme.len())
+                                .collect();
+                            let room = (lw - pen).max(0);
+                            let (mut lo, mut hi) = (0usize, ends.len());
+                            while lo < hi {
+                                self.budget.charge(1)?;
+                                let mid = lo + (hi - lo).div_ceil(2);
+                                let candidate = self.fonts.shape(
+                                    &run.text[offset..ends[mid - 1]],
+                                    &shaping_style,
+                                    self.budget,
+                                )?;
+                                if candidate.width <= room {
+                                    lo = mid;
+                                } else {
+                                    hi = mid - 1;
+                                }
+                            }
+                            if lo == 0 && !line.is_empty() {
                                 self.finish_line(
                                     parent,
                                     &line,
@@ -1164,15 +1353,56 @@ impl<'a> Engine<'a> {
                                 y = checked_add(y, line_height)?;
                                 line.clear();
                                 pen = 0;
+                                line_height = default_height;
+                                line_ascent = strut_above;
+                                first = false;
                                 (lx, lw) = self.line_space(x, y, width, default_height, floats);
+                                continue;
                             }
-                            line_ascent = line_ascent.max(small.ascent);
+                            let end = ends[lo.saturating_sub(1)];
+                            let end = if lo == 0 { ends[0] } else { end };
+                            let piece = self.fonts.shape(
+                                &run.text[offset..end],
+                                &shaping_style,
+                                self.budget,
+                            )?;
+                            let (_, _, font_height) = self.fonts.metrics(&s);
+                            let used = if !s.normal_line_height {
+                                s.line_height
+                            } else {
+                                font_height
+                            };
+                            let leading = (used - piece.ascent - piece.descent) / 2;
+                            let below = (line_height - line_ascent).max(piece.descent + leading);
+                            line_ascent = line_ascent.max(piece.ascent + leading);
+                            line_height = line_ascent + below;
                             line.push(Placed::Text {
                                 node,
-                                run: small.clone(),
+                                run: piece.clone(),
                                 x: pen,
                             });
-                            pen = checked_add(pen, small.width)?;
+                            pen = checked_add(pen, piece.width)?;
+                            offset = end;
+                            if offset < run.text.len() {
+                                self.finish_line(
+                                    parent,
+                                    &line,
+                                    lx,
+                                    y,
+                                    lw,
+                                    pen,
+                                    line_height,
+                                    line_ascent,
+                                    clip,
+                                )?;
+                                y = checked_add(y, line_height)?;
+                                line.clear();
+                                pen = 0;
+                                line_height = default_height;
+                                line_ascent = strut_above;
+                                first = false;
+                                (lx, lw) = self.line_space(x, y, width, default_height, floats);
+                            }
                         }
                     } else {
                         let (_, _, h) = self.fonts.metrics(&s);
@@ -1182,8 +1412,10 @@ impl<'a> Engine<'a> {
                             h
                         };
                         let leading = (used - run.ascent - run.descent) / 2;
-                        let below = (line_height - line_ascent).max(run.descent + leading);
-                        line_ascent = line_ascent.max(run.ascent + leading);
+                        let vertical_shift = self.vertical_shift(&s);
+                        let below =
+                            (line_height - line_ascent).max(run.descent + leading - vertical_shift);
+                        line_ascent = line_ascent.max(run.ascent + leading + vertical_shift);
                         line_height = line_ascent + below;
                         pen = checked_add(pen, run.width)?;
                         let xx = pen - run.width;
@@ -1220,6 +1452,7 @@ impl<'a> Engine<'a> {
                 }
                 Item::Box(id) => {
                     let s = self.styles[id].clone();
+                    let margins = self.margins(&s, width);
                     let a = self.scene.primitives.len();
                     let ln = self.scene.lines.len();
                     let r = if self.doc.nodes[id].tag == "img" {
@@ -1227,15 +1460,26 @@ impl<'a> Engine<'a> {
                     } else {
                         let (min, max) = self.measure(id, depth + 1)?;
                         let e = self.insets(&s, width);
+                        let shrink_available = (width - margins.left - margins.right).max(0);
                         let w = self
                             .val(s.width, width, &s)
-                            .map(|n| n + e.left + e.right)
-                            .unwrap_or(max.min(width).max(min));
-                        self.block(id, 0, 0, w, Some(w), clip, depth + 1)?
+                            .map(|n| {
+                                if s.border_box {
+                                    n
+                                } else {
+                                    n + e.left + e.right
+                                }
+                            })
+                            .unwrap_or(max.min(shrink_available).max(min));
+                        // Percentage padding and min/max constraints remain
+                        // relative to the containing block, not the resolved
+                        // shrink-to-fit width passed through `forced`.
+                        self.block(id, 0, 0, width, Some(w), clip, depth + 1)?
                     };
                     let b = self.scene.primitives.len();
+                    let advance = margins.left + r.w + margins.right;
                     let sw = pending_space.as_ref().map(|(_, r)| r.width).unwrap_or(0);
-                    if pen + sw + r.w > lw
+                    if pen + sw + advance > lw
                         && !line.is_empty()
                         && !matches!(ps.whitespace, WhiteSpace::Nowrap | WhiteSpace::Pre)
                     {
@@ -1265,8 +1509,40 @@ impl<'a> Engine<'a> {
                         });
                     }
                     let below = (line_height - line_ascent).max(0);
-                    line_ascent = line_ascent.max(r.h);
-                    line_height = line_ascent + below;
+                    match s.vertical_align.as_str() {
+                        "top" | "text-top" | "bottom" | "text-bottom" => {
+                            // These alignments position the margin box against
+                            // the completed line. A box shorter than the strut
+                            // does not enlarge that line merely because its
+                            // top would sit above the text baseline.
+                            line_height = line_height.max(margins.top + r.h + margins.bottom);
+                        }
+                        "middle" => {
+                            // The margin-box midpoint sits one half x-height
+                            // above the parent baseline. Account for both
+                            // extents while constructing the line box; merely
+                            // increasing its total height leaves a tall middle
+                            // box protruding above the line in Gecko.
+                            let margin_height = margins.top + r.h + margins.bottom;
+                            let above = margin_height / 2 + self.fonts.x_height(&ps) / 2;
+                            let below_box = margin_height - above;
+                            line_ascent = line_ascent.max(above);
+                            line_height = line_ascent + below.max(below_box);
+                        }
+                        _ => {
+                            // An inline-block participates with the baseline
+                            // of its last in-flow line. Replaced elements use
+                            // their bottom edge, as recorded by image_box.
+                            let box_baseline = self.scene.boxes[id]
+                                .as_ref()
+                                .map(|layout| (layout.baseline - r.y).clamp(0, r.h))
+                                .unwrap_or(r.h);
+                            let shift = self.vertical_shift(&s);
+                            line_ascent = line_ascent.max(margins.top + box_baseline + shift);
+                            line_height = line_ascent
+                                + below.max(margins.bottom + r.h - box_baseline - shift);
+                        }
+                    }
                     line.push(Placed::Box {
                         id,
                         first: a,
@@ -1274,8 +1550,10 @@ impl<'a> Engine<'a> {
                         lines: (ln, self.scene.lines.len()),
                         x: pen,
                         rect: r,
+                        margins,
+                        advance,
                     });
-                    pen = checked_add(pen, r.w)?;
+                    pen = checked_add(pen, advance)?;
                 }
             }
         }
@@ -1362,10 +1640,10 @@ impl<'a> Engine<'a> {
                         first,
                         last,
                         x: xx,
-                        rect,
+                        advance,
                         ..
                     } => {
-                        if *xx + rect.w <= room {
+                        if *xx + advance <= room {
                             shortened.push(item.clone());
                         } else {
                             for p in &mut self.scene.primitives[*first..*last] {
@@ -1379,13 +1657,15 @@ impl<'a> Engine<'a> {
                 .iter()
                 .map(|p| match p {
                     Placed::Text { x, run, .. } => x + run.width,
-                    Placed::Box { x, rect, .. } => x + rect.w,
+                    Placed::Box { x, advance, .. } => x + advance,
                 })
                 .max()
                 .unwrap_or(0);
             shortened.push(Placed::Text {
                 node: parent,
-                x: end,
+                // Gecko rasterizes the marker at the zero subpixel phase for
+                // this trailing half-pixel advance.
+                x: (end - PX / 2).max(0),
                 run: mark,
             });
         }
@@ -1437,7 +1717,7 @@ impl<'a> Engine<'a> {
             positions[index] = advance;
             advance += match &line[index] {
                 Placed::Text { run, .. } => run.width,
-                Placed::Box { rect, .. } => rect.w,
+                Placed::Box { advance, .. } => *advance,
             };
         }
         let mut inline_backgrounds: Vec<(NodeId, Rect)> = vec![];
@@ -1491,12 +1771,7 @@ impl<'a> Engine<'a> {
                 } => {
                     let xx = if reorder { &bidi_x } else { original_x };
                     let s = self.styles[*node].clone();
-                    let mut yy = baseline;
-                    match s.vertical_align.as_str() {
-                        "super" => yy -= s.font_size / 3,
-                        "sub" => yy += s.font_size / 5,
-                        _ => {}
-                    }
+                    let yy = baseline - self.vertical_shift(&s);
                     let r = Rect::new(
                         x + offset + xx,
                         yy - run.ascent,
@@ -1514,15 +1789,63 @@ impl<'a> Engine<'a> {
                     lines,
                     x: original_x,
                     rect: r,
+                    margins,
+                    ..
                 } => {
                     let xx = if reorder { &bidi_x } else { original_x };
+                    let box_baseline = self.scene.boxes[*id]
+                        .as_ref()
+                        .map(|layout| (layout.baseline - r.y).clamp(0, r.h))
+                        .unwrap_or(r.h);
                     let dy = match self.styles[*id].vertical_align.as_str() {
-                        "top" | "text-top" => y,
-                        "bottom" => y + h - r.h,
-                        "middle" => baseline - r.h / 2 - ps.font_size / 4,
-                        _ => baseline - r.h,
+                        "top" | "text-top" => y + margins.top,
+                        "bottom" => y + h - margins.bottom - r.h,
+                        "middle" => {
+                            baseline
+                                - (margins.top + r.h + margins.bottom) / 2
+                                - self.fonts.x_height(&ps) / 2
+                                + margins.top
+                        }
+                        _ => {
+                            let aligned =
+                                baseline - box_baseline - self.vertical_shift(&self.styles[*id]);
+                            if r.h == 0
+                                && self.styles[parent].display == Display::ListItem
+                                && matches!(
+                                    self.styles[parent].list_type.as_str(),
+                                    "disc" | "circle" | "square"
+                                )
+                            {
+                                // Gecko snaps the baseline edge of an empty
+                                // inline-block in a graphical-marker line to a
+                                // device-pixel boundary.
+                                aligned.div_euclid(PX) * PX
+                                    + if aligned.rem_euclid(PX) == 0 { 0 } else { PX }
+                            } else {
+                                aligned
+                            }
+                        }
                     };
-                    self.translate(*id, *first, *last, *lines, x + offset + xx - r.x, dy - r.y);
+                    let dy = if r.h == 0
+                        && self.styles[parent].display == Display::ListItem
+                        && matches!(
+                            self.styles[parent].list_type.as_str(),
+                            "disc" | "circle" | "square"
+                        )
+                        && matches!(self.styles[*id].vertical_align.as_str(), "bottom")
+                    {
+                        dy + PX / 2
+                    } else {
+                        dy
+                    };
+                    self.translate(
+                        *id,
+                        *first,
+                        *last,
+                        *lines,
+                        x + offset + xx + margins.left - r.x,
+                        dy - r.y,
+                    );
                 }
             }
         }
@@ -1647,6 +1970,7 @@ impl<'a> Engine<'a> {
             match &mut p.draw {
                 Draw::BeginOpacity { .. } | Draw::EndOpacity => {}
                 Draw::Rect { rect, .. }
+                | Draw::DiscMarker { rect, .. }
                 | Draw::Image { rect, .. }
                 | Draw::TiledImage { rect, .. }
                 | Draw::Gradient { rect, .. }
@@ -1681,6 +2005,16 @@ impl<'a> Engine<'a> {
     fn image_size(&self, id: NodeId, width: Au) -> (Au, Au, Option<usize>) {
         let n = &self.doc.nodes[id];
         let s = &self.styles[id];
+        let edges = self.insets(s, width);
+        let horizontal_edges = edges.left + edges.right;
+        let vertical_edges = edges.top + edges.bottom;
+        let content_dimension = |value: Au, edges: Au| {
+            if s.border_box {
+                (value - edges).max(0)
+            } else {
+                value
+            }
+        };
         let image = n
             .attr("src")
             .and_then(|key| self.images.iter().position(|i| i.key == key));
@@ -1692,21 +2026,31 @@ impl<'a> Engine<'a> {
                 )
             })
             .unwrap_or((16 * PX, 16 * PX));
-        let w = self.val(s.width, width, s);
-        let h = self.val(s.height, self.scene.height, s);
+        let w = self
+            .val(s.width, width, s)
+            .map(|value| content_dimension(value, horizontal_edges));
+        let h = self
+            .val(s.height, self.scene.height, s)
+            .map(|value| content_dimension(value, vertical_edges));
         let (mut w, mut h) = match (w, h) {
             (Some(w), Some(h)) => (w, h),
             (Some(w), None) => (w, if iw > 0 { ih * w / iw } else { 0 }),
             (None, Some(h)) => (if ih > 0 { iw * h / ih } else { 0 }, h),
             _ => (iw, ih),
         };
-        if let Some(max) = self.val(s.max_width, width, s) {
+        if let Some(max) = self
+            .val(s.max_width, width, s)
+            .map(|value| content_dimension(value, horizontal_edges))
+        {
             if w > max && w > 0 {
                 h = h * max / w;
                 w = max;
             }
         }
-        if let Some(min) = self.val(s.min_width, width, s) {
+        if let Some(min) = self
+            .val(s.min_width, width, s)
+            .map(|value| content_dimension(value, horizontal_edges))
+        {
             if w < min && w > 0 {
                 h = h * min / w;
                 w = min;
@@ -1852,7 +2196,12 @@ impl<'a> Engine<'a> {
         max += e.left + e.right;
         if let Size::Length(l) = s.width {
             if l.unit != Unit::Percent && l.extra[1] == 0 {
-                let w = self.eval(l, self.scene.width, s);
+                let value = self.eval(l, self.scene.width, s);
+                let w = if s.border_box {
+                    value
+                } else {
+                    value + e.left + e.right
+                };
                 min = min.max(w);
                 max = max.max(w);
             }
@@ -2327,14 +2676,20 @@ impl<'a> Engine<'a> {
         let spacing = sx * (cols as i64 + 1);
         let min: Au = mins.iter().sum::<Au>() + spacing + e.left + e.right;
         let max: Au = maxs.iter().sum::<Au>() + spacing + e.left + e.right;
+        let mut caption_max = 0;
+        for caption in &captions {
+            let (_, measured_max) = self.measure(*caption, depth + 1)?;
+            caption_max = caption_max.max(measured_max);
+        }
         let desired = forced
             .or_else(|| self.val(s.width, available, &s))
             .unwrap_or(max.min(available - margins.left - margins.right));
-        let mut w = desired.max(min);
+        let mut grid_width = desired.max(min);
         if let Some(max) = self.val(s.max_width, available, &s) {
-            w = w.min(max).max(min);
+            grid_width = grid_width.min(max).max(min);
         }
-        let inner = (w - e.left - e.right - spacing).max(0);
+        let w = grid_width.max(caption_max);
+        let inner = (grid_width - e.left - e.right - spacing).max(0);
         let sum_min: Au = mins.iter().sum();
         let sum_max: Au = maxs.iter().sum();
         let extra = (inner - sum_min).max(0);
@@ -2368,10 +2723,10 @@ impl<'a> Engine<'a> {
         for i in &targets {
             let g = (maxs[*i] - widths[*i]).max(0);
             widths[*i] += if residual <= growth && growth > 0 {
-                residual * g / growth
+                (residual * g + growth / 2) / growth
             } else {
                 g + if preferred > 0 {
-                    (residual - growth).max(0) * maxs[*i] / preferred
+                    ((residual - growth).max(0) * maxs[*i] + preferred / 2) / preferred
                 } else if !targets.is_empty() {
                     residual / targets.len() as i64
                 } else {
@@ -2405,7 +2760,7 @@ impl<'a> Engine<'a> {
         }
         let bg = self.emit(
             Draw::Rect {
-                rect: Rect::new(bx, top, w, 0),
+                rect: Rect::new(bx, top, grid_width, 0),
                 color: s.background_color,
                 radius: s.radius,
             },
@@ -2483,7 +2838,7 @@ impl<'a> Engine<'a> {
                 rect.h = cell_h;
             }
         }
-        let r = Rect::new(bx, top, w, (yy - top + e.bottom).max(0));
+        let r = Rect::new(bx, top, grid_width, (yy - top + e.bottom).max(0));
         if let Draw::Rect { rect, .. } = &mut self.scene.primitives[bg].draw {
             *rect = r;
         }
@@ -2537,12 +2892,6 @@ impl<'a> Engine<'a> {
         } else {
             self.borders(&s, r, clip)?;
         }
-        self.scene.boxes[id] = Some(LayoutBox {
-            node: id,
-            border: r,
-            content: r,
-            baseline: r.bottom(),
-        });
         for (i, node) in rows.iter().enumerate() {
             self.scene.boxes[*node] = Some(LayoutBox {
                 node: *node,
@@ -2569,7 +2918,14 @@ impl<'a> Engine<'a> {
                     .bottom();
             }
         }
-        Ok(Rect::new(bx, y, w, bottom - y))
+        let wrapper = Rect::new(bx, y, w, bottom - y);
+        self.scene.boxes[id] = Some(LayoutBox {
+            node: id,
+            border: wrapper,
+            content: wrapper,
+            baseline: wrapper.bottom(),
+        });
+        Ok(wrapper)
     }
     fn semantics(&mut self) -> Result<()> {
         let mut fragments: Vec<Vec<Rect>> = vec![vec![]; self.doc.nodes.len()];
@@ -2754,5 +3110,19 @@ impl<'a> Engine<'a> {
             });
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bounded_list_counters_match_css_sequences() {
+        assert_eq!(alphabetic_counter(1, false).as_deref(), Some("a"));
+        assert_eq!(alphabetic_counter(27, true).as_deref(), Some("AA"));
+        assert_eq!(roman_counter(4, false).as_deref(), Some("iv"));
+        assert_eq!(roman_counter(1999, true).as_deref(), Some("MCMXCIX"));
+        assert_eq!(roman_counter(4000, false), None);
     }
 }

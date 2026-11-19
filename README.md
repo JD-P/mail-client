@@ -123,6 +123,22 @@ fingerprints. A small synthetic fixture passing does not establish property-wide
 or inbox coverage. Test the comparison policy itself with
 `python3 -m unittest discover -s tools -p 'test_*.py'`.
 
+The deterministic differential fuzzer explores combinations within the
+requested email-rendering profile and minimizes distinct DOM, geometry, crash
+and pixel signatures while preserving the original source bytes:
+
+```sh
+python3 tools/fuzz_conformance.py --binary target/release/lizard \
+  --firefox .tools/firefox/firefox --geckodriver .tools/geckodriver \
+  --cases 256 --minimize 8 --output results/conformance-fuzz
+```
+
+`--seed` and `--start` make campaigns replayable and shardable. Passing random
+cases are discarded by default; failures, their independent traces and images,
+the minimized sources, exact environment hashes and `findings.json` are kept.
+Minimized failures that remain relevant across campaigns live in
+`tests/fuzz-corpus` until promoted to the passing fixture manifest.
+
 Both rendering source sets use Firefox tag `FIREFOX_160_0_RELEASE`, Git revision
 `2887d9de1f69c0e9776413da80e7ba0d1225dd9b`; the official binary records Mercurial
 revision `d84e7a6936554efe26097d9d9b24a0e11330e630`. Run

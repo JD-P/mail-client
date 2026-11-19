@@ -102,6 +102,23 @@ impl Fonts {
         let h = ((a + d + gap + PX - 1) / PX) * PX;
         (a, d, h)
     }
+    pub fn x_height(&self, s: &Style) -> Au {
+        let face = rustybuzz::Face::from_slice(&self.fonts[self.id(s)].bytes, 0).unwrap();
+        let parsed = face.as_ref();
+        let units = parsed.units_per_em() as i64;
+        let height = parsed
+            .x_height()
+            .or_else(|| {
+                parsed
+                    .glyph_index('x')
+                    .and_then(|glyph| parsed.glyph_bounding_box(glyph))
+                    .map(|bounds| bounds.y_max)
+            })
+            .unwrap_or((units / 2) as i16) as i64;
+        let scaled =
+            ((height as i128 * s.font_size as i128 + units as i128 / 2) / units as i128) as Au;
+        ((scaled + PX / 2) / PX) * PX
+    }
     pub fn shape(&self, text: &str, s: &Style, budget: &mut Budget) -> Result<Run> {
         budget.charge(text.len() as u64 + 1)?;
         let id = self.id(s);

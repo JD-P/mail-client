@@ -835,6 +835,187 @@
       ],
       "width": 800,
       "height": 600
+    },
+    {
+      "name": "fuzz-float-margins",
+      "file": "tests/fixtures/fuzz-float-margins.html",
+      "features": [
+        "css-float",
+        "css-margin"
+      ],
+      "width": 360,
+      "height": 260
+    },
+    {
+      "name": "fuzz-inline-vertical-align",
+      "file": "tests/fixtures/fuzz-inline-vertical-align.html",
+      "features": [
+        "css-display",
+        "css-vertical-align",
+        "css-list-style-type"
+      ],
+      "width": 360,
+      "height": 260
+    },
+    {
+      "name": "fuzz-parser-caption",
+      "file": "tests/fixtures/fuzz-parser-caption.html",
+      "features": [
+        "html-table"
+      ],
+      "width": 360,
+      "height": 260
+    },
+    {
+      "name": "fuzz-image-border-box",
+      "file": "tests/fixtures/fuzz-image-border-box.html",
+      "features": [
+        "html-img",
+        "css-box-sizing",
+        "css-padding"
+      ],
+      "width": 360,
+      "height": 260
+    },
+    {
+      "name": "fuzz-table-rowspan",
+      "file": "tests/fixtures/fuzz-table-rowspan.html",
+      "features": [
+        "html-table",
+        "css-table-layout"
+      ],
+      "width": 360,
+      "height": 260
+    },
+    {
+      "name": "fuzz-inline-block-auto",
+      "file": "tests/fixtures/fuzz-inline-block-auto.html",
+      "features": [
+        "css-display",
+        "css-width"
+      ],
+      "width": 360,
+      "height": 260
+    },
+    {
+      "name": "fuzz-transform-wrap",
+      "file": "tests/fixtures/fuzz-transform-wrap.html",
+      "features": [
+        "css-text-transform",
+        "css-word-break"
+      ],
+      "width": 360,
+      "height": 260
+    },
+    {
+      "name": "fuzz-inline-image-baseline",
+      "file": "tests/fixtures/fuzz-inline-image-baseline.html",
+      "features": [
+        "html-img",
+        "css-object-fit",
+        "css-vertical-align"
+      ],
+      "width": 360,
+      "height": 260
+    },
+    {
+      "name": "fuzz-float-clearance",
+      "file": "tests/fixtures/fuzz-float-clearance.html",
+      "features": [
+        "css-float",
+        "css-clear",
+        "css-margin"
+      ],
+      "width": 360,
+      "height": 260
+    },
+    {
+      "name": "fuzz-inline-margins",
+      "file": "tests/fixtures/fuzz-inline-margins.html",
+      "features": [
+        "css-display",
+        "css-margin"
+      ],
+      "width": 360,
+      "height": 260
+    },
+    {
+      "name": "fuzz-overflow-anywhere-bidi",
+      "file": "tests/fixtures/fuzz-overflow-anywhere-bidi.html",
+      "features": [
+        "css-overflow-wrap",
+        "css-direction"
+      ],
+      "width": 360,
+      "height": 260
+    },
+    {
+      "name": "fuzz-inside-roman",
+      "file": "tests/fixtures/fuzz-inside-roman.html",
+      "features": [
+        "css-list-style-type",
+        "css-list-style-position"
+      ],
+      "width": 360,
+      "height": 260
+    },
+    {
+      "name": "fuzz-table-cell-width",
+      "file": "tests/fixtures/fuzz-table-cell-width.html",
+      "features": [
+        "html-table",
+        "css-width"
+      ],
+      "width": 360,
+      "height": 260
+    },
+    {
+      "name": "fuzz-empty-inline-block",
+      "file": "tests/fixtures/fuzz-empty-inline-block.html",
+      "features": [
+        "css-display",
+        "css-width",
+        "css-list-style-type"
+      ],
+      "width": 360,
+      "height": 260
+    },
+    {
+      "name": "fuzz-inline-shrink-margins",
+      "file": "tests/fixtures/fuzz-inline-shrink-margins.html",
+      "features": [
+        "css-display",
+        "css-width",
+        "css-max-width",
+        "css-margin",
+        "css-padding"
+      ],
+      "width": 360,
+      "height": 260
+    },
+    {
+      "name": "fuzz-empty-inline-alpha",
+      "file": "tests/fixtures/fuzz-empty-inline-alpha.html",
+      "features": [
+        "css-display",
+        "css-width",
+        "css-list-style-type"
+      ],
+      "width": 360,
+      "height": 260
+    },
+    {
+      "name": "fuzz-inline-percent-containing",
+      "file": "tests/fixtures/fuzz-inline-percent-containing.html",
+      "features": [
+        "css-display",
+        "css-width",
+        "css-max-width",
+        "css-unit-percent",
+        "css-unit-calc"
+      ],
+      "width": 360,
+      "height": 260
     }
   ]
 }
