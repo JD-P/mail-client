@@ -1,0 +1,39 @@
+Pass 1 retained negative observations
+=====================================
+
+1. Terminal OSC 52 control sequence
+
+An actual cold-queue message subject containing ESC ] 52 ; c ; U0VDUkVU BEL
+was rendered through the real Ratatui UI and Crossterm backend. Ratatui
+discarded the ESC and BEL graphemes. The terminal byte stream retained the
+printable payload but did not contain the OSC sequence:
+
+terminal_contains_exact_osc52=false
+terminal_contains_payload=true
+terminal_contains_bel=false
+
+This rejects direct terminal-control injection through the tested queue path.
+
+2. CalDAV XML external/internal entity expansion
+
+The CalDAV response parser uses roxmltree::Document::parse. A local candidate
+with an internal DTD entity and repeated references failed before expansion:
+
+called `Result::unwrap()` on an `Err` value: DtdDetected
+exit_status=101
+max_rss_kib=8448
+
+The direct dependency behavior rejects DTD input, so the proposed XML entity
+expansion/XXE finding was not retained.
+
+3. CalDAV redirect/origin credentials
+
+The client requires HTTPS endpoints, revalidates final response URLs, rejects
+cross-origin discovered hrefs, and reqwest strips Authorization/Cookie on
+cross-origin redirects. No credential-forwarding or server-selected SSRF
+path was retained.
+
+4. OpenPGP external-provider control
+
+GnuPG and YubiKey providers use the bounded `run_gpg` subprocess reader with
+MAX_DECRYPTED_BYTES. P1-A is specific to the in-process software-key provider.

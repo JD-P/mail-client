@@ -1,0 +1,15 @@
+[package]
+name = "p1-openpgp-compression-bomb"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+base64 = "0.22"
+lizard-mail-backend = { path = "../../../crates/mail-backend" }
+pgp = { version = "=0.21.1", default-features = false }
+rand = "0.8.5"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+

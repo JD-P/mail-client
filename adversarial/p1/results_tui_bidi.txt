@@ -1,0 +1,12 @@
+Reviewed commit: 4d04393b2fcd9f8cee25029279cc2fe3bd4a3b5c
+Command: CARGO_TARGET_DIR=target cargo run -q --locked --manifest-path adversarial/p1/tui-bidi-queue/Cargo.toml
+Date: 2026-11-19 UTC
+
+stored_subject="Invoice \u{202e}moc.live@troppus"
+terminal_contains_rlo=true
+terminal_subject_window=[73, 110, 118, 111, 105, 99, 101, 32, 226, 128, 174, 109, 111, 99, 46, 108, 105, 118, 101, 64, 116, 114, 111, 112, 112, 117, 115, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32]
+
+Bytes 226,128,174 are UTF-8 U+202E RIGHT-TO-LEFT OVERRIDE. The exact control
+is preserved through message ingestion, ThreadSummary, Ratatui and the
+Crossterm backend.
+

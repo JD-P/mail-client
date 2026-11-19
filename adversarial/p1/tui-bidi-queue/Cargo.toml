@@ -1,0 +1,15 @@
+[package]
+name = "p1-tui-bidi-queue"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+lizard-mail-backend = { path = "../../../crates/mail-backend" }
+lizard-mail-tui = { path = "../../../crates/mail-tui" }
+ratatui = { version = "=0.30.2", default-features = false, features = ["crossterm"] }
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+

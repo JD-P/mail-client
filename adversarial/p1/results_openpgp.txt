@@ -1,0 +1,37 @@
+Reviewed commit: 4d04393b2fcd9f8cee25029279cc2fe3bd4a3b5c
+Command: python3 adversarial/p1/openpgp-compression-bomb/run.py
+Date: 2026-11-19 UTC
+
+[control fixture]
+plaintext_bytes=1048576
+encrypted_bytes=1237
+outer_message_bytes=2161
+message_id=a6689a88-5f5b-488e-9222-0a3287efc090
+[control decrypt]
+elapsed_ms=159
+result=ok body_text_bytes=1048534
+exit_status=0
+wall_ms=341.3
+max_rss_kib=83664
+[candidate fixture]
+plaintext_bytes=134217728
+encrypted_bytes=130670
+outer_message_bytes=179279
+message_id=73ac1f91-09c6-4a9f-acd7-dd3ab03df39f
+[candidate decrypt]
+elapsed_ms=2437
+result=error message is 134217728 bytes; configured maximum is 67108864
+exit_status=0
+wall_ms=2609.8
+max_rss_kib=213264
+[candidate under 180000 KiB RLIMIT_AS]
+memory allocation of 33554432 bytes failed
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+exit_status=-6
+wall_ms=682.0
+max_rss_kib=96992
+
+The profile/message UUIDs and encryption randomness vary between runs. The
+plaintext, compressed ciphertext and outer RFC 5322 sizes are stable for this
+fixture under pgp 0.21.1.
+
