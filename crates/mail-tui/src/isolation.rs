@@ -4,6 +4,7 @@
 //! display handle. It returns a bounded semantic page; the parent validates
 //! that page and remains the only process allowed to emit terminal controls.
 
+use crate::render::{image_reference_is_consistent, link_reference_is_consistent};
 use crate::{
     HtmlRenderer, ImageReference, ImageSource, Limits, LinkKind, LinkReference, RenderOptions,
     RenderedPage,
@@ -169,6 +170,12 @@ impl IsolatedHtmlRenderer {
             }
             let mut response = vec![0_u8; length];
             stdout.read_exact(&mut response).await?;
+            let mut trailing = [0_u8; 1];
+            if stdout.read(&mut trailing).await? != 0 {
+                return Err(std::io::Error::other(
+                    "renderer sent trailing protocol data",
+                ));
+            }
             let status = child.wait().await?;
             if !status.success() {
                 return Err(std::io::Error::other(format!(
@@ -581,7 +588,7 @@ impl WireLink {
         }
         validate_reference(self.destination.as_deref())?;
         validate_reference(self.blocked_scheme.as_deref())?;
-        Ok(LinkReference {
+        let link = LinkReference {
             number: self.number,
             destination: self.destination,
             kind: match self.kind {
@@ -593,7 +600,13 @@ impl WireLink {
                 WireLinkKind::Blocked => LinkKind::Blocked,
             },
             blocked_scheme: self.blocked_scheme,
-        })
+        };
+        if !link_reference_is_consistent(&link) {
+            return Err(protocol_error(
+                "renderer link metadata contradicts its destination",
+            ));
+        }
+        Ok(link)
     }
 }
 
@@ -625,7 +638,7 @@ impl WireImage {
         }
         validate_reference(self.alt.as_deref())?;
         validate_reference(self.location.as_deref())?;
-        Ok(ImageReference {
+        let image = ImageReference {
             number: self.number,
             alt: self.alt,
             source: match self.source {
@@ -637,7 +650,13 @@ impl WireImage {
                 WireImageSource::Missing => ImageSource::Missing,
             },
             location: self.location,
-        })
+        };
+        if !image_reference_is_consistent(&image) {
+            return Err(protocol_error(
+                "renderer image metadata contradicts its location",
+            ));
+        }
+        Ok(image)
     }
 }
 

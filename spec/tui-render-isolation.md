@@ -42,9 +42,11 @@ warnings, and a truncation flag. It never emits terminal escape sequences.
 
 The parent validates the protocol version, collection sizes, total spans,
 bytes, terminal cells, line widths, sequential reference numbering, allowed
-styles, and all displayed strings. C0/C1 controls and Unicode bidi
-embedding/override controls are rejected. Only the parent constructs Ratatui
-objects and writes to the user's terminal.
+styles, all displayed strings, and end-of-frame with no trailing bytes. It
+independently parses every actionable link or image location and rejects a
+worker-supplied kind which contradicts the destination scheme. C0/C1 controls
+and Unicode bidi embedding/override controls are rejected. Only the parent
+constructs Ratatui objects and writes to the user's terminal.
 
 ## Failure behavior
 

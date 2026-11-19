@@ -597,6 +597,53 @@ fn classify_image(raw: Option<&str>) -> (ImageSource, Option<String>) {
     }
 }
 
+pub(crate) fn link_reference_is_consistent(link: &LinkReference) -> bool {
+    if link.kind == LinkKind::Blocked {
+        return link.destination.is_none()
+            && link
+                .blocked_scheme
+                .as_deref()
+                .is_none_or(valid_blocked_scheme);
+    }
+    if link.blocked_scheme.is_some() {
+        return false;
+    }
+    let Some(destination) = link.destination.as_deref() else {
+        return false;
+    };
+    let classified = classify_link(destination);
+    classified.kind == link.kind
+        && classified.destination.as_deref() == Some(destination)
+        && classified.blocked_scheme.is_none()
+}
+
+fn valid_blocked_scheme(scheme: &str) -> bool {
+    if scheme.len() > 32 {
+        return false;
+    }
+    let mut bytes = scheme.bytes();
+    bytes.next().is_some_and(|byte| byte.is_ascii_lowercase())
+        && bytes.all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'+' | b'-' | b'.')
+        })
+        && !matches!(scheme, "http" | "https" | "mailto" | "cid")
+}
+
+pub(crate) fn image_reference_is_consistent(image: &ImageReference) -> bool {
+    match image.source {
+        ImageSource::Remote | ImageSource::ContentId | ImageSource::Relative => {
+            let Some(location) = image.location.as_deref() else {
+                return false;
+            };
+            let (source, canonical_location) = classify_image(Some(location));
+            source == image.source && canonical_location.as_deref() == Some(location)
+        }
+        ImageSource::Embedded | ImageSource::Blocked | ImageSource::Missing => {
+            image.location.is_none()
+        }
+    }
+}
+
 pub(crate) fn render_document(
     document: &HtmlDocument,
     width: u16,
