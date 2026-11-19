@@ -119,6 +119,11 @@ impl SpamClassifier {
         if let Some(event) = event {
             let _ = self.0.inner.events.send(event);
         }
+        // Spam evidence is message-scoped. Re-evaluate exactly the processed
+        // messages instead of scanning a large profile after every batch.
+        for message_id in &ids {
+            self.0.heuristics().evaluate_message(*message_id).await?;
+        }
         let status = self.status().await?;
         Ok(SpamReclassificationResult {
             processed: ids.len(),

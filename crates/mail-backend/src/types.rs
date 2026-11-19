@@ -1668,6 +1668,15 @@ pub struct FilterRuleApplication {
 pub struct FilterRulePreview {
     pub matching_messages: u64,
     pub affected_messages: u64,
+    /// Messages which cannot be decided until their body is downloaded.
+    #[serde(default)]
+    pub pending_content_messages: u64,
+    /// Encrypted messages which require an explicit, user-present decryption.
+    #[serde(default)]
+    pub pending_decryption_messages: u64,
+    /// A bounded set of exact evaluations suitable for a rule editor.
+    #[serde(default)]
+    pub samples: Vec<FilterRuleMessagePreview>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -1675,6 +1684,50 @@ pub struct FilterRuleReplay {
     pub matching_messages: u64,
     pub newly_applied_messages: u64,
     pub already_applied_messages: u64,
+    #[serde(default)]
+    pub pending_content_messages: u64,
+    #[serde(default)]
+    pub pending_decryption_messages: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AutomationEvaluationStatus {
+    Matched,
+    NotMatched,
+    PendingContent,
+    PendingDecryption,
+    Failed,
+}
+
+/// One exact, side-effect-free condition decision. Message field values are
+/// intentionally absent so traces cannot become a second plaintext cache.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct FilterConditionTrace {
+    pub index: usize,
+    pub condition: FilterCondition,
+    pub status: AutomationEvaluationStatus,
+    pub detail: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct FilterRuleMessagePreview {
+    pub message_id: MessageId,
+    pub status: AutomationEvaluationStatus,
+    pub would_change: bool,
+    pub evidence_revision: String,
+    pub trace: Vec<FilterConditionTrace>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct FilterRuleEvaluation {
+    pub rule_id: FilterRuleId,
+    pub rule_revision: u32,
+    pub message_id: MessageId,
+    pub status: AutomationEvaluationStatus,
+    pub evidence_revision: String,
+    pub trace: Vec<FilterConditionTrace>,
+    pub evaluated_at: i64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -1788,8 +1841,19 @@ pub struct HeuristicFinding {
 #[serde(rename_all = "snake_case")]
 pub enum HeuristicEvaluationStatus {
     Complete,
+    PendingContent,
+    PendingDecryption,
     NotEvaluatedBudget,
     Failed,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct HeuristicTraceStep {
+    pub sequence: u32,
+    pub kind: String,
+    pub expression: Option<String>,
+    pub outcome: Option<bool>,
+    pub detail: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -1799,7 +1863,69 @@ pub struct HeuristicEvaluation {
     pub heuristic_version: u32,
     pub status: HeuristicEvaluationStatus,
     pub detail: Option<String>,
+    /// Hash of the exact structured inputs used by this heuristic. It is safe
+    /// to persist and changes when an applicable evidence model changes.
+    #[serde(default)]
+    pub evidence_revision: String,
+    #[serde(default)]
+    pub compiler_version: u32,
+    /// Control-flow explanation only; message plaintext and field values are
+    /// never copied into this trace.
+    #[serde(default)]
+    pub trace: Vec<HeuristicTraceStep>,
     pub evaluated_at: i64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct HeuristicPreviewFinding {
+    pub code: String,
+    pub presentation: FindingPresentation,
+    pub severity: FindingSeverity,
+    pub target_kind: FindingTargetKind,
+    pub target_id: Option<String>,
+    pub text: Option<String>,
+    pub evidence: serde_json::Value,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct HeuristicMessagePreview {
+    pub message_id: MessageId,
+    pub status: HeuristicEvaluationStatus,
+    pub evidence_revision: String,
+    pub findings: Vec<HeuristicPreviewFinding>,
+    pub trace: Vec<HeuristicTraceStep>,
+    pub detail: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct HeuristicPreview {
+    pub evaluated_messages: u64,
+    pub affected_messages: u64,
+    pub finding_count: u64,
+    pub pending_content_messages: u64,
+    pub pending_decryption_messages: u64,
+    pub failed_messages: u64,
+    pub samples: Vec<HeuristicMessagePreview>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AutomationReevaluation {
+    pub evaluated_messages: u64,
+    pub remaining_stale_messages: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AutomationEvaluationFailure {
+    pub message_id: MessageId,
+    pub detail: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct EncryptedAutomationReport {
+    pub evaluated_messages: Vec<MessageId>,
+    pub filter_applications: u64,
+    pub heuristic_findings: u64,
+    pub failures: Vec<AutomationEvaluationFailure>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

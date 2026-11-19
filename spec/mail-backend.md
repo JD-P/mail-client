@@ -441,14 +441,17 @@ filesystem and network access are compile errors. Every program has static and
 runtime step limits, collection limits, finding limits and string limits.
 
 Native extractors produce reusable typed features such as MIME attachments,
-parsed links and registrable domains. The implemented, non-removable native
+parsed links and registrable domains. The restricted language also exposes
+typed OpenPGP evidence, trusted delivery-time DKIM/DMARC/SPF observations,
+provider and local spam assessments, and the durable thread trust boundary.
+SPF remains low-level evidence and is not promoted to normal identity UI.
+The implemented, non-removable native
 pass materializes identity contradictions, DKIM alignment failures, misleading
 destinations, remote-resource and credential-form presence, UTS #39 domain
 confusables, executable/type/filename evidence and bounded ZIP directory
 metadata. It uses a finite finding vocabulary and versioned evidence just like
-user rules. OpenPGP, trusted provider evidence and richer local semantic intent
-remain future work. Programs consume these features; they do not implement
-parsers or cryptography.
+user rules. Programs consume these features; they do not implement parsers or
+cryptography.
 
 The native pass is deliberately passive. Its HTML tokenizer has token, anchor,
 form, resource and string budgets and cannot execute script, submit a form,
@@ -480,12 +483,30 @@ identical re-evaluation. Programs cannot inject HTML, control layout or invent
 callbacks. Frontends switch over the finite presentation enum and distinguish
 built-in, user-authored and third-party-authored findings.
 
-Before activation, the current compile API provides parse/validation errors,
-estimated maximum cost and required features. Sample-message preview,
-affected-message counts and richer explanation traces remain API work. The
-implemented grammar and reviewed examples are documented in
+Before activation, the compile API provides parse/validation errors, estimated
+maximum cost and required features. Candidate heuristics can be run without
+side effects across the local corpus: the preview reports evaluated and
+affected-message counts, finding counts, incomplete/decryption-required counts,
+and detailed traces for caller-selected samples. Filter preview provides the
+same tri-state behavior plus exact would-change counts and bounded samples.
+
+Persisted evaluations record the heuristic/compiler or filter-rule version, a
+SHA-256 revision of only the structured inputs the program depends on, and a
+control-flow trace. Traces describe branches, loops, returns and emitted finding
+codes, but never copy message field values or plaintext into a second cache.
+Evidence changes make evaluations stale and schedule bounded re-evaluation.
+The implemented grammar and reviewed examples are documented in
 `lizard-rules.md`; generated programs receive no authority until the user
 previews and activates them.
+
+Body-dependent automation has two explicit pending states. Header-first mail is
+`pending_content` until hydration succeeds. Encrypted mail is
+`pending_decryption` unless an authenticated decrypted derivative already
+exists in Turso under the user's encrypted-search policy. A user-present
+`evaluate_encrypted_automation` pass decrypts each selected message once and
+shares that in-memory view with every applicable rule and heuristic. Enabling
+search may allow reuse of the verified Turso derivative, but Tantivy is always
+disposable and is never a correctness or security oracle for automation.
 
 ### Sorting
 

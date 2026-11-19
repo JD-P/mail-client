@@ -425,6 +425,13 @@ fn extract_links(
     links
 }
 
+/// Rebuild the bounded link projection for authenticated decrypted plain
+/// text. OpenPGP HTML is deliberately never accepted by this path.
+pub(crate) fn extract_plain_text_links(body_text: &str, limits: &IngestLimits) -> Vec<MessageLink> {
+    let mut limited = false;
+    extract_links(body_text, None, limits, &mut limited)
+}
+
 struct HtmlLinkSink {
     hrefs: RefCell<Vec<String>>,
     tokens: Cell<usize>,

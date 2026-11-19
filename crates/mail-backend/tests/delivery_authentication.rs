@@ -1,9 +1,9 @@
 use lizard_mail_backend::{
     AccountKind, AuthenticationMethodKind, AuthenticationMethodResult,
     AuthenticationResultsHeaderKind, AuthenticationResultsTrust, Backend, BackendConfig,
-    BackendError, DkimAuthenticationStatus, FolderKind, ImapFetchedHeaders, ImapSecurity,
-    ImapSettings, IngestMessage, MessageContentAvailability, NewAccount, NewFolder,
-    RemoteMessageIdentity,
+    BackendError, DkimAuthenticationStatus, FolderKind, HeuristicSourceKind, ImapFetchedHeaders,
+    ImapSecurity, ImapSettings, IngestMessage, MessageContentAvailability, NewAccount, NewFolder,
+    NewHeuristic, RemoteMessageIdentity,
 };
 
 fn authentication_headers() -> &'static str {
@@ -170,16 +170,66 @@ async fn provider_results_are_account_scoped_and_never_replace_independent_dkim(
         .iter()
         .all(|finding| !finding.code.to_ascii_lowercase().contains("spf")));
 
+    let delivery_rule = NewHeuristic {
+        name: "Trusted DMARC pass".into(),
+        source_kind: HeuristicSourceKind::User,
+        enabled: true,
+        source: r#"
+@heuristic
+def detect(message):
+    if message.authentication.delivery.dmarc.status == "pass":
+        yield Finding(
+            code="trusted_dmarc_pass",
+            presentation=MessageAnnotation,
+            severity=Information,
+        )
+"#
+        .into(),
+    };
+    let preview = backend
+        .heuristics()
+        .preview(&delivery_rule, &[id])
+        .await
+        .unwrap();
+    assert_eq!(preview.affected_messages, 1);
+    assert_eq!(preview.samples[0].findings[0].code, "trusted_dmarc_pass");
+    let delivery_rule = backend.heuristics().add(delivery_rule).await.unwrap();
+    backend.heuristics().evaluate_message(id).await.unwrap();
+    let before_revision = backend
+        .heuristics()
+        .evaluations(id)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|evaluation| evaluation.heuristic_id == delivery_rule.id)
+        .unwrap()
+        .evidence_revision;
+
     backend
         .accounts()
         .set_trusted_authserv_ids(account.id, vec!["different.provider.example".into()])
         .await
         .unwrap();
+    backend.heuristics().evaluate_message(id).await.unwrap();
     let message = backend.messages().get(id).await.unwrap();
     assert_eq!(
         message.delivery_authentication.observations[0].headers[0].trust,
         AuthenticationResultsTrust::AuthservIdNotTrusted
     );
+    assert!(message
+        .findings
+        .iter()
+        .all(|finding| finding.code != "trusted_dmarc_pass"));
+    let after_revision = backend
+        .heuristics()
+        .evaluations(id)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|evaluation| evaluation.heuristic_id == delivery_rule.id)
+        .unwrap()
+        .evidence_revision;
+    assert_ne!(before_revision, after_revision);
 }
 
 #[tokio::test]

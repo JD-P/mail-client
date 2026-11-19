@@ -11,7 +11,7 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 version INTEGER NOT NULL
             );
             INSERT INTO schema_meta(version)
-                SELECT 19 WHERE NOT EXISTS (SELECT 1 FROM schema_meta);
+                SELECT 20 WHERE NOT EXISTS (SELECT 1 FROM schema_meta);
 
             CREATE TABLE IF NOT EXISTS accounts (
                 id TEXT PRIMARY KEY,
@@ -541,6 +541,17 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 PRIMARY KEY(rule_id, rule_revision, message_id)
             );
 
+            CREATE TABLE IF NOT EXISTS filter_rule_evaluations (
+                rule_id TEXT NOT NULL REFERENCES filter_rules(id) ON DELETE CASCADE,
+                rule_revision INTEGER NOT NULL,
+                message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+                status TEXT NOT NULL,
+                evidence_revision TEXT NOT NULL,
+                trace_json TEXT NOT NULL,
+                evaluated_at INTEGER NOT NULL,
+                PRIMARY KEY(rule_id, message_id)
+            );
+
             CREATE TABLE IF NOT EXISTS saved_searches (
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
@@ -613,6 +624,9 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 heuristic_version INTEGER NOT NULL,
                 status TEXT NOT NULL,
                 detail TEXT,
+                evidence_revision TEXT NOT NULL DEFAULT '',
+                compiler_version INTEGER NOT NULL DEFAULT 1,
+                trace_json TEXT NOT NULL DEFAULT '[]',
                 evaluated_at INTEGER NOT NULL,
                 PRIMARY KEY(message_id, heuristic_id)
             );
@@ -1233,7 +1247,45 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
             .await?;
         version = 19;
     }
-    if version != 19 {
+    if version == 19 {
+        let mut rows = connection
+            .query("PRAGMA table_info(heuristic_evaluations)", ())
+            .await?;
+        let mut columns = HashSet::new();
+        while let Some(row) = rows.next().await? {
+            columns.insert(row.get::<String>(1)?);
+        }
+        drop(rows);
+        if !columns.contains("evidence_revision") {
+            connection
+                .execute(
+                    "ALTER TABLE heuristic_evaluations ADD COLUMN evidence_revision TEXT NOT NULL DEFAULT ''",
+                    (),
+                )
+                .await?;
+        }
+        if !columns.contains("compiler_version") {
+            connection
+                .execute(
+                    "ALTER TABLE heuristic_evaluations ADD COLUMN compiler_version INTEGER NOT NULL DEFAULT 1",
+                    (),
+                )
+                .await?;
+        }
+        if !columns.contains("trace_json") {
+            connection
+                .execute(
+                    "ALTER TABLE heuristic_evaluations ADD COLUMN trace_json TEXT NOT NULL DEFAULT '[]'",
+                    (),
+                )
+                .await?;
+        }
+        connection
+            .execute("UPDATE schema_meta SET version = 20", ())
+            .await?;
+        version = 20;
+    }
+    if version != 20 {
         return Err(crate::BackendError::InvalidInput(format!(
             "unsupported database schema version {version}"
         )));
@@ -1257,6 +1309,8 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 ON openpgp_secret_key_providers(account_id, kind, fingerprint);
             CREATE INDEX IF NOT EXISTS account_identities_account
                 ON account_identities(account_id, is_default DESC, created_at, id);
+            CREATE INDEX IF NOT EXISTS filter_rule_evaluations_message
+                ON filter_rule_evaluations(message_id, rule_id);
             CREATE UNIQUE INDEX IF NOT EXISTS account_identities_one_default
                 ON account_identities(account_id) WHERE is_default = 1;
             "#,
@@ -1448,7 +1502,7 @@ mod tests {
             .await
             .unwrap();
         let row = rows.next().await.unwrap().unwrap();
-        assert_eq!(row.get::<i64>(0).unwrap(), 19);
+        assert_eq!(row.get::<i64>(0).unwrap(), 20);
         assert_eq!(row.get::<String>(1).unwrap(), r#"{"received_at":123}"#);
         drop(rows);
 
@@ -1491,7 +1545,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap(),
-            19
+            20
         );
         drop(rows);
 
@@ -1628,7 +1682,7 @@ mod tests {
             .await
             .unwrap();
         let row = rows.next().await.unwrap().unwrap();
-        assert_eq!(row.get::<i64>(0).unwrap(), 19);
+        assert_eq!(row.get::<i64>(0).unwrap(), 20);
         assert_eq!(row.get::<String>(1).unwrap(), "CaseSensitive@example.test");
         assert!(row.get::<bool>(2).unwrap());
         assert!(row.get::<bool>(3).unwrap());

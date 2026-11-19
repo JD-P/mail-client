@@ -520,6 +520,15 @@ impl OpenPgp {
     /// Verify the OpenPGP/MIME envelope again using the current certificate
     /// set. This never decrypts or prompts for a software key/PIN.
     pub async fn refresh_message(&self, message_id: MessageId) -> Result<OpenPgpMessageSecurity> {
+        let evidence = self.refresh_message_evidence(message_id).await?;
+        self.0.heuristics().evaluate_message(message_id).await?;
+        Ok(evidence)
+    }
+
+    pub(crate) async fn refresh_message_evidence(
+        &self,
+        message_id: MessageId,
+    ) -> Result<OpenPgpMessageSecurity> {
         let raw = self.0.messages().raw(message_id).await?;
         let from_address = self
             .0
@@ -556,7 +565,7 @@ impl OpenPgp {
         let mut seen = HashSet::new();
         for message_id in message_ids {
             if seen.insert(*message_id) {
-                self.refresh_message(*message_id).await?;
+                self.refresh_message_evidence(*message_id).await?;
             }
         }
         Ok(())
@@ -650,7 +659,7 @@ impl OpenPgp {
             store_evidence_on(&connection, message_id, &security, now).await?;
         }
 
-        Ok(OpenPgpDecryptedMessage {
+        let decrypted = OpenPgpDecryptedMessage {
             message_id,
             body_text: parsed.body_text,
             subject: parsed.subject,
@@ -660,7 +669,12 @@ impl OpenPgp {
             attachments: parsed.attachments,
             security,
             persisted_for_search: persist,
-        })
+        };
+        self.0
+            .heuristics()
+            .evaluate_message_with_decrypted(message_id, &decrypted)
+            .await?;
+        Ok(decrypted)
     }
 
     /// Stream one attachment from an encrypted message. The complete OpenPGP
@@ -1580,7 +1594,7 @@ impl OpenPgp {
         Ok((recipients, missing))
     }
 
-    async fn load_cached_decrypted(
+    pub(crate) async fn load_cached_decrypted(
         &self,
         message_id: MessageId,
     ) -> Result<Option<OpenPgpDecryptedMessage>> {

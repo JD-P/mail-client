@@ -25,7 +25,10 @@ use std::{
     collections::{HashMap, HashSet},
     mem,
     str::FromStr,
-    sync::{Arc, Weak},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Weak,
+    },
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{broadcast, Mutex, RwLock};
@@ -199,6 +202,8 @@ pub(crate) struct Inner {
     dkim_verifier: DkimVerifier,
     pub(crate) events: broadcast::Sender<BackendEvent>,
     download_locks: Mutex<HashMap<MessageId, Weak<Mutex<()>>>>,
+    automation_reevaluation: Mutex<()>,
+    automation_reevaluation_requested: AtomicBool,
 }
 
 impl Backend {
@@ -260,6 +265,8 @@ impl Backend {
                 dkim_verifier,
                 events,
                 download_locks: Mutex::new(HashMap::new()),
+                automation_reevaluation: Mutex::new(()),
+                automation_reevaluation_requested: AtomicBool::new(false),
             }),
         };
         backend.drain_credential_cleanup(64).await?;
@@ -268,6 +275,7 @@ impl Backend {
         backend.backfill_delivery_authentication().await?;
         backend.backfill_thread_projection().await?;
         backend.backfill_mime_projection().await?;
+        backend.heuristics().refresh_compiled_programs().await?;
         let (_, security_remaining) = backend.heuristics().backfill_builtin(64).await?;
         if security_remaining {
             backend.schedule_security_backfill();
@@ -275,6 +283,9 @@ impl Backend {
         let initial_spam = backend.spam_classifier().reclassify_pending(256).await?;
         if initial_spam.remaining > 0 {
             backend.schedule_spam_reclassification();
+        }
+        if backend.automation_backfill_required().await? {
+            backend.schedule_automation_reevaluation();
         }
         Ok(backend)
     }
@@ -461,6 +472,78 @@ impl Backend {
                 tokio::task::yield_now().await;
             }
         });
+    }
+
+    pub(crate) fn schedule_automation_reevaluation(&self) {
+        self.inner
+            .automation_reevaluation_requested
+            .store(true, Ordering::Release);
+        let backend = self.clone();
+        tokio::spawn(async move {
+            let Ok(_guard) = backend.inner.automation_reevaluation.try_lock() else {
+                return;
+            };
+            loop {
+                if !backend
+                    .inner
+                    .automation_reevaluation_requested
+                    .swap(false, Ordering::AcqRel)
+                {
+                    break;
+                }
+                let Ok(_) = backend.filter_rules().reevaluate_stale(usize::MAX).await else {
+                    break;
+                };
+                let Ok(_) = backend.heuristics().reevaluate_stale(usize::MAX).await else {
+                    break;
+                };
+                tokio::task::yield_now().await;
+            }
+        });
+    }
+
+    pub(crate) fn schedule_heuristic_reevaluation(&self) {
+        let backend = self.clone();
+        tokio::spawn(async move {
+            let _guard = backend.inner.automation_reevaluation.lock().await;
+            let _ = backend.heuristics().reevaluate_stale(usize::MAX).await;
+        });
+    }
+
+    async fn automation_backfill_required(&self) -> Result<bool> {
+        let connection = self.inner.connection.lock().await;
+        let mut rows = connection
+            .query(
+                r#"SELECT
+                    EXISTS(
+                        SELECT 1 FROM heuristic_evaluations
+                        WHERE compiler_version != ?1 OR evidence_revision = ''
+                    ) OR EXISTS(
+                        SELECT 1 FROM messages m
+                        JOIN heuristics h ON h.enabled = 1 AND h.deleted_at IS NULL
+                        WHERE NOT EXISTS (
+                            SELECT 1 FROM heuristic_evaluations e
+                            WHERE e.message_id = m.id AND e.heuristic_id = h.id
+                                AND e.heuristic_version = h.version
+                        ) LIMIT 1
+                    ) OR EXISTS(
+                        SELECT 1 FROM messages m
+                        JOIN filter_rules r ON r.enabled = 1 AND r.deleted_at IS NULL
+                        WHERE NOT EXISTS (
+                            SELECT 1 FROM filter_rule_evaluations e
+                            WHERE e.message_id = m.id AND e.rule_id = r.id
+                                AND e.rule_revision = r.revision
+                        ) LIMIT 1
+                    )"#,
+                (i64::from(crate::heuristic::HEURISTIC_COMPILER_VERSION),),
+            )
+            .await?;
+        Ok(rows
+            .next()
+            .await?
+            .map(|row| row.get::<bool>(0))
+            .transpose()?
+            .unwrap_or(false))
     }
 
     async fn recover_interrupted_downloads(&self) -> Result<()> {
@@ -694,6 +777,57 @@ impl Backend {
 
     pub fn spam_classifier(&self) -> crate::SpamClassifier {
         crate::SpamClassifier::new(self.clone())
+    }
+
+    /// Explicit user-present pass for encrypted mail. Each message is
+    /// decrypted once, then the authenticated in-memory view is shared by all
+    /// filters and heuristics. Tantivy is never consulted for correctness.
+    pub async fn evaluate_encrypted_automation(
+        &self,
+        message_ids: &[MessageId],
+    ) -> crate::EncryptedAutomationReport {
+        // Suppress the background stale worker while the transient plaintext
+        // view is in use; otherwise it could race this pass and persist a
+        // pending-decryption result after the exact manual result.
+        let _reevaluation_guard = self.inner.automation_reevaluation.lock().await;
+        let mut report = crate::EncryptedAutomationReport {
+            evaluated_messages: Vec::new(),
+            filter_applications: 0,
+            heuristic_findings: 0,
+            failures: Vec::new(),
+        };
+        let mut seen = HashSet::new();
+        for message_id in message_ids.iter().copied() {
+            if !seen.insert(message_id) {
+                continue;
+            }
+            let result = async {
+                let decrypted = self.openpgp().decrypt_message(message_id).await?;
+                let applications = self
+                    .filter_rules()
+                    .evaluate_message_with_decrypted(message_id, &decrypted)
+                    .await?;
+                let findings = self
+                    .heuristics()
+                    .evaluate_message_with_decrypted(message_id, &decrypted)
+                    .await?;
+                Ok::<_, BackendError>((applications.len(), findings.len()))
+            }
+            .await;
+            match result {
+                Ok((applications, findings)) => {
+                    report.evaluated_messages.push(message_id);
+                    report.filter_applications += applications as u64;
+                    report.heuristic_findings += findings as u64;
+                }
+                Err(error) => report.failures.push(crate::AutomationEvaluationFailure {
+                    message_id,
+                    detail: error.to_string(),
+                }),
+            }
+        }
+        drop(_reevaluation_guard);
+        report
     }
 
     pub fn sync(&self) -> Sync {
@@ -1511,7 +1645,7 @@ impl Backend {
         if removed_projection {
             self.inner.storage.measure().await?;
         }
-        self.openpgp().refresh_message(message_id).await?;
+        self.openpgp().refresh_message_evidence(message_id).await?;
         self.flush_search_projection().await?;
         let _ = self.inner.events.send(event);
         self.evaluate_automation(&[message_id]).await?;
@@ -2643,6 +2777,7 @@ impl Accounts {
         transaction.commit().await?;
         drop(connection);
         let _ = self.0.inner.events.send(event);
+        self.0.schedule_heuristic_reevaluation();
         self.get(id).await
     }
 }
@@ -3383,6 +3518,7 @@ impl Messages {
             self.0.spam_classifier().reclassify_pending(64).await?;
             self.0.schedule_spam_reclassification();
         }
+        self.0.heuristics().evaluate_message(id).await?;
         Ok(())
     }
 
@@ -3725,6 +3861,7 @@ impl Contacts {
         drop(connection);
         self.0.flush_search_projection().await?;
         let _ = self.0.inner.events.send(event);
+        self.0.schedule_heuristic_reevaluation();
         Ok(value)
     }
 
@@ -3867,6 +4004,7 @@ impl Contacts {
         drop(connection);
         self.0.flush_search_projection().await?;
         let _ = self.0.inner.events.send(event);
+        self.0.schedule_heuristic_reevaluation();
         self.get(id).await
     }
 
@@ -3987,6 +4125,7 @@ impl Contacts {
         drop(connection);
         self.0.flush_search_projection().await?;
         let _ = self.0.inner.events.send(event);
+        self.0.schedule_heuristic_reevaluation();
         Ok(())
     }
 }

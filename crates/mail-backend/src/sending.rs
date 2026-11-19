@@ -728,6 +728,9 @@ impl Outbox {
         transaction.commit().await?;
         drop(connection);
         let _ = self.0.inner.events.send(event);
+        if openpgp.effective == OpenPgpDraftMode::EncryptAndSign {
+            self.0.schedule_heuristic_reevaluation();
+        }
         Ok(submission)
     }
 

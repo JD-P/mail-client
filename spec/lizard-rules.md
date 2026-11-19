@@ -74,7 +74,41 @@ message.size_bytes
 message.has_attachment
 message.attachments
 message.links
+message.authentication.dkim.status
+message.authentication.dkim.has_aligned_pass
+message.authentication.delivery.dkim.status
+message.authentication.delivery.dmarc.status
+message.authentication.delivery.spf.status
+message.authentication.delivery.trusted_header_count
+message.openpgp.encryption.status
+message.openpgp.encrypted
+message.openpgp.signature.has_valid
+message.openpgp.signature.has_invalid
+message.openpgp.signature.count
+message.openpgp.protected_headers
+message.openpgp.protected_header_mismatch
+message.openpgp.decrypted_derivative_stored
+message.spam.inbox_class
+message.spam.provider.verdict
+message.spam.local.verdict
+message.spam.local.score_basis_points
+message.spam.local.model_version
+message.spam.user_classification
+message.thread.sender_trust
+message.thread.source
+message.thread.openpgp_required
 ```
+
+Delivery authentication fields use only account-scoped trusted
+Authentication-Results headers. Attacker-supplied copies are excluded. A
+method status is `not_evaluated` when no trusted result exists and `conflicting`
+when trusted observations disagree. SPF is exposed for low-level diagnostics;
+it does not establish the identity language used by the normal UI.
+
+Optional spam fields are `None` until their corresponding local assessment or
+user decision exists. Spam scores are integer basis points so the restricted
+language needs no floating-point semantics. OpenPGP and thread fields are
+structured evidence; accessing them never invokes a key provider.
 
 Attachment loop bindings expose:
 
@@ -143,11 +177,25 @@ Strings and evidence dictionaries also have explicit limits.
 
 Programs execute during ingestion after immutable message storage. A runtime
 budget failure or type error produces a persisted evaluation status instead of
-granting partial findings or aborting later heuristic evaluation.
+granting partial findings or aborting later heuristic evaluation. Every
+evaluation also stores the source/compiler version, a dependency-scoped input
+revision and a plaintext-free control-flow trace. Evidence revisions changing
+schedule bounded reevaluation.
+
+A body-, link- or attachment-dependent program does not receive an empty value
+when content is unavailable. Header-first messages become `pending_content`.
+Encrypted messages become `pending_decryption` unless a verified Turso-backed
+decrypted derivative exists. An explicit user-present encrypted-mail pass may
+unlock a software key or YubiKey, decrypts each selected message once, and runs
+all applicable automation against the authenticated in-memory view. Tantivy is
+never consulted for an automation decision.
 
 ## Filter rules
 
 Filter rules do not use this language. They contain an ordered vector of typed
-`FilterCondition` values with an implicit AND and short-circuit on the first
-false condition. Their only actions are local message placement and `Stop`.
-Applications record the exact condition/action version for later explanation.
+`FilterCondition` values with an implicit AND. The evaluator records every
+condition decision; a definite false wins over a content/decryption-pending
+condition, avoiding an unnecessary prompt. Their authority is limited to local
+placement, remote move/trash/delete through the durable IMAP mutation outbox,
+and `Stop`. Applications record the exact condition/action version for undo,
+while separate evaluations record input revisions and explanation traces.

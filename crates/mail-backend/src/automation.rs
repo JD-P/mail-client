@@ -1,18 +1,37 @@
 use crate::backend::{enqueue_search_on, insert_event, not_found, parse_id};
-use crate::heuristic::{compile_program, run_program, CompiledHeuristic, HeuristicRunError};
+use crate::heuristic::{
+    compile_program, run_program_traced, CompiledHeuristic, HeuristicRunError,
+    HEURISTIC_COMPILER_VERSION,
+};
 use crate::{
-    Backend, BackendError, FilterAction, FilterCondition, FilterRule, FilterRuleApplication,
-    FilterRuleId, FilterRulePreview, FilterRuleReplay, FilterRuleUndo, FindingId, FolderId,
-    Heuristic, HeuristicEvaluation, HeuristicEvaluationStatus, HeuristicFinding, HeuristicId,
-    HeuristicSourceKind, ImapMutationId, ImapMutationOperation, ImapMutationStatus, Message,
-    MessageId, NewFilterRule, NewHeuristic, Result,
+    AutomationEvaluationStatus, AutomationReevaluation, Backend, BackendError, FilterAction,
+    FilterCondition, FilterConditionTrace, FilterRule, FilterRuleApplication, FilterRuleEvaluation,
+    FilterRuleId, FilterRuleMessagePreview, FilterRulePreview, FilterRuleReplay, FilterRuleUndo,
+    FindingId, FolderId, Heuristic, HeuristicEvaluation, HeuristicEvaluationStatus,
+    HeuristicFinding, HeuristicId, HeuristicMessagePreview, HeuristicPreview,
+    HeuristicPreviewFinding, HeuristicSourceKind, HeuristicTraceStep, ImapMutationId,
+    ImapMutationOperation, ImapMutationStatus, Message, MessageContentAvailability, MessageId,
+    NewFilterRule, NewHeuristic, OpenPgpDecryptedMessage, OpenPgpEncryptionStatus, Result,
 };
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use turso::{params_from_iter, Value};
 use uuid::Uuid;
+
+const PREVIEW_SAMPLE_LIMIT: usize = 20;
+const FILTER_PREVIEW_FROM: &str = r#"FROM messages m
+    LEFT JOIN openpgp_decrypted_messages odm ON odm.message_id = m.id
+    LEFT JOIN openpgp_message_evidence opme ON opme.message_id = m.id"#;
+
+#[derive(Clone, Copy)]
+enum FilterSqlOutcome {
+    Matched,
+    PendingContent,
+    PendingDecryption,
+}
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct FilterPriorState {
@@ -20,6 +39,89 @@ struct FilterPriorState {
     captured: bool,
     local_folder_ids: Vec<FolderId>,
     remote_mutation_ids: Vec<ImapMutationId>,
+}
+
+struct FilterDecision {
+    message_id: MessageId,
+    status: AutomationEvaluationStatus,
+    evidence_revision: String,
+    trace: Vec<FilterConditionTrace>,
+}
+
+impl FilterDecision {
+    fn preview(&self, would_change: bool) -> FilterRuleMessagePreview {
+        FilterRuleMessagePreview {
+            message_id: self.message_id,
+            status: self.status,
+            would_change,
+            evidence_revision: self.evidence_revision.clone(),
+            trace: self.trace.clone(),
+        }
+    }
+}
+
+struct HeuristicDecision {
+    message_id: MessageId,
+    status: HeuristicEvaluationStatus,
+    detail: Option<String>,
+    findings: Vec<crate::heuristic::ProducedFinding>,
+    evidence_revision: String,
+    trace: Vec<HeuristicTraceStep>,
+}
+
+struct PreparedHeuristicMessage {
+    message: Message,
+    thread_openpgp_required: bool,
+    evidence_revision: String,
+    pending: Option<(HeuristicEvaluationStatus, &'static str)>,
+}
+
+impl HeuristicDecision {
+    fn pending(
+        message_id: MessageId,
+        status: HeuristicEvaluationStatus,
+        evidence_revision: String,
+        detail: &str,
+    ) -> Self {
+        Self {
+            message_id,
+            status,
+            detail: Some(detail.into()),
+            findings: Vec::new(),
+            evidence_revision,
+            trace: vec![HeuristicTraceStep {
+                sequence: 0,
+                kind: "pending".into(),
+                expression: None,
+                outcome: None,
+                detail: detail.into(),
+            }],
+        }
+    }
+
+    fn preview(self, message_id: MessageId) -> HeuristicMessagePreview {
+        debug_assert_eq!(self.message_id, message_id);
+        HeuristicMessagePreview {
+            message_id,
+            status: self.status,
+            evidence_revision: self.evidence_revision,
+            findings: self
+                .findings
+                .into_iter()
+                .map(|finding| HeuristicPreviewFinding {
+                    code: finding.code,
+                    presentation: finding.presentation,
+                    severity: finding.severity,
+                    target_kind: finding.target_kind,
+                    target_id: finding.target_id,
+                    text: finding.text,
+                    evidence: finding.evidence,
+                })
+                .collect(),
+            trace: self.trace,
+            detail: self.detail,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -233,11 +335,11 @@ impl FilterRules {
         let message = self.0.messages().get(message_id).await?;
         let mut applications = Vec::new();
         for rule in rules {
-            if !rule
-                .conditions
-                .iter()
-                .all(|condition| filter_matches(condition, &message))
-            {
+            let decision = self
+                .evaluate_rule(&rule.conditions, &message, None, true)
+                .await?;
+            self.store_evaluation(&rule, &decision).await?;
+            if decision.status != AutomationEvaluationStatus::Matched {
                 continue;
             }
             if let Some(application) = self.apply_rule(&rule, message_id).await? {
@@ -258,21 +360,66 @@ impl FilterRules {
     /// change, without recording applications or queuing server mutations.
     pub async fn preview(&self, rule: &NewFilterRule) -> Result<FilterRulePreview> {
         validate_filter_rule(&self.0, rule).await?;
-        let (matching, matching_parameters) = filter_match_sql(&rule.conditions)?;
+        let (matching, matching_parameters) =
+            filter_sql_predicate(&rule.conditions, FilterSqlOutcome::Matched)?;
         let (affected, mut parameters) = filter_affected_sql(&rule.actions);
         parameters.extend(matching_parameters);
         let sql = format!(
-            "SELECT count(*), COALESCE(sum(CASE WHEN {affected} THEN 1 ELSE 0 END), 0) FROM messages m WHERE {matching}"
+            "SELECT count(*), COALESCE(sum(CASE WHEN {affected} THEN 1 ELSE 0 END), 0) {FILTER_PREVIEW_FROM} WHERE {matching}"
         );
-        let connection = self.0.inner.connection.lock().await;
-        let mut rows = connection.query(sql, params_from_iter(parameters)).await?;
-        let row = rows.next().await?.ok_or_else(|| {
-            BackendError::InvalidInput("filter preview count returned no row".into())
-        })?;
+        let (matching_messages, affected_messages) = {
+            let connection = self.0.inner.connection.lock().await;
+            let mut rows = connection.query(sql, params_from_iter(parameters)).await?;
+            let row = rows.next().await?.ok_or_else(|| {
+                BackendError::InvalidInput("filter preview count returned no row".into())
+            })?;
+            (
+                database_u64(row.get(0)?, "matching message count")?,
+                database_u64(row.get(1)?, "affected message count")?,
+            )
+        };
+        let pending_decryption_messages = self
+            .count_filter_outcome(&rule.conditions, FilterSqlOutcome::PendingDecryption)
+            .await?;
+        let pending_content_messages = self
+            .count_filter_outcome(&rule.conditions, FilterSqlOutcome::PendingContent)
+            .await?;
+        let mut samples = Vec::new();
+        for message_id in self.sample_message_ids(PREVIEW_SAMPLE_LIMIT).await? {
+            let message = self.0.messages().get(message_id).await?;
+            let decision = self
+                .evaluate_rule(&rule.conditions, &message, None, true)
+                .await?;
+            let would_change = if decision.status == AutomationEvaluationStatus::Matched {
+                self.would_affect(message_id, &rule.actions).await?
+            } else {
+                false
+            };
+            samples.push(decision.preview(would_change));
+        }
         Ok(FilterRulePreview {
-            matching_messages: database_u64(row.get(0)?, "matching message count")?,
-            affected_messages: database_u64(row.get(1)?, "affected message count")?,
+            matching_messages,
+            affected_messages,
+            pending_content_messages,
+            pending_decryption_messages,
+            samples,
         })
+    }
+
+    /// Explain one sample without applying the candidate rule.
+    pub async fn preview_message(
+        &self,
+        rule: &NewFilterRule,
+        message_id: MessageId,
+    ) -> Result<FilterRuleMessagePreview> {
+        validate_filter_rule(&self.0, rule).await?;
+        let message = self.0.messages().get(message_id).await?;
+        let decision = self
+            .evaluate_rule(&rule.conditions, &message, None, true)
+            .await?;
+        let would_change = decision.status == AutomationEvaluationStatus::Matched
+            && self.would_affect(message_id, &rule.actions).await?;
+        Ok(decision.preview(would_change))
     }
 
     /// Apply exactly the current rule revision to all existing matches.
@@ -285,10 +432,30 @@ impl FilterRules {
                 "a disabled filter rule cannot be replayed".into(),
             ));
         }
-        let ids = self.matching_message_ids(&rule.conditions).await?;
+        let ids = self.all_message_ids().await?;
+        let mut matching_messages = 0u64;
         let mut newly_applied_messages = 0u64;
         let mut already_applied_messages = 0u64;
+        let mut pending_content_messages = 0u64;
+        let mut pending_decryption_messages = 0u64;
         for message_id in &ids {
+            let message = self.0.messages().get(*message_id).await?;
+            let decision = self
+                .evaluate_rule(&rule.conditions, &message, None, true)
+                .await?;
+            self.store_evaluation(&rule, &decision).await?;
+            match decision.status {
+                AutomationEvaluationStatus::Matched => matching_messages += 1,
+                AutomationEvaluationStatus::PendingContent => {
+                    pending_content_messages += 1;
+                    continue;
+                }
+                AutomationEvaluationStatus::PendingDecryption => {
+                    pending_decryption_messages += 1;
+                    continue;
+                }
+                _ => continue,
+            }
             if self.apply_rule(&rule, *message_id).await?.is_some() {
                 newly_applied_messages += 1;
             } else {
@@ -296,9 +463,11 @@ impl FilterRules {
             }
         }
         Ok(FilterRuleReplay {
-            matching_messages: ids.len() as u64,
+            matching_messages,
             newly_applied_messages,
             already_applied_messages,
+            pending_content_messages,
+            pending_decryption_messages,
         })
     }
 
@@ -484,13 +653,136 @@ impl FilterRules {
         })
     }
 
-    async fn matching_message_ids(&self, conditions: &[FilterCondition]) -> Result<Vec<MessageId>> {
-        let (predicate, parameters) = filter_match_sql(conditions)?;
+    pub(crate) async fn evaluate_message_with_decrypted(
+        &self,
+        message_id: MessageId,
+        decrypted: &OpenPgpDecryptedMessage,
+    ) -> Result<Vec<FilterRuleApplication>> {
+        let rules = self
+            .list()
+            .await?
+            .into_iter()
+            .filter(|rule| rule.enabled)
+            .collect::<Vec<_>>();
+        let message = self.0.messages().get(message_id).await?;
+        let mut applications = Vec::new();
+        for rule in rules {
+            let decision = self
+                .evaluate_rule(&rule.conditions, &message, Some(decrypted), false)
+                .await?;
+            self.store_evaluation(&rule, &decision).await?;
+            if decision.status != AutomationEvaluationStatus::Matched {
+                continue;
+            }
+            if let Some(application) = self.apply_rule(&rule, message_id).await? {
+                applications.push(application);
+            }
+            if rule
+                .actions
+                .iter()
+                .any(|action| matches!(action, FilterAction::Stop))
+            {
+                break;
+            }
+        }
+        Ok(applications)
+    }
+
+    pub async fn evaluations(&self, message_id: MessageId) -> Result<Vec<FilterRuleEvaluation>> {
         let connection = self.0.inner.connection.lock().await;
         let mut rows = connection
             .query(
-                format!("SELECT m.id FROM messages m WHERE {predicate} ORDER BY m.id"),
-                params_from_iter(parameters),
+                "SELECT rule_id, rule_revision, message_id, status, evidence_revision, trace_json, evaluated_at FROM filter_rule_evaluations WHERE message_id = ?1 ORDER BY rule_id",
+                (message_id.to_string(),),
+            )
+            .await?;
+        let mut values = Vec::new();
+        while let Some(row) = rows.next().await? {
+            values.push(FilterRuleEvaluation {
+                rule_id: parse_id(row.get::<String>(0)?, "filter rule")?,
+                rule_revision: database_u32(row.get(1)?, "filter rule revision")?,
+                message_id: parse_id(row.get::<String>(2)?, "message")?,
+                status: parse_automation_status(&row.get::<String>(3)?)?,
+                evidence_revision: row.get(4)?,
+                trace: serde_json::from_str(&row.get::<String>(5)?)?,
+                evaluated_at: row.get(6)?,
+            });
+        }
+        Ok(values)
+    }
+
+    pub async fn reevaluate_stale(&self, limit: usize) -> Result<AutomationReevaluation> {
+        let rules = self
+            .list()
+            .await?
+            .into_iter()
+            .filter(|rule| rule.enabled)
+            .collect::<Vec<_>>();
+        if rules.is_empty() {
+            return Ok(AutomationReevaluation {
+                evaluated_messages: 0,
+                remaining_stale_messages: 0,
+            });
+        }
+        let mut evaluated_messages = 0u64;
+        let mut remaining_stale_messages = 0u64;
+        for message_id in self.all_message_ids().await? {
+            let message = self.0.messages().get(message_id).await?;
+            let mut decisions = Vec::with_capacity(rules.len());
+            let mut stale = false;
+            for rule in &rules {
+                let decision = self
+                    .evaluate_rule(&rule.conditions, &message, None, true)
+                    .await?;
+                stale |= self.evaluation_is_stale(rule, &decision).await?;
+                decisions.push((rule, decision));
+            }
+            if !stale {
+                continue;
+            }
+            if evaluated_messages as usize >= limit.max(1) {
+                remaining_stale_messages += 1;
+                continue;
+            }
+            for (rule, decision) in decisions {
+                self.store_evaluation(rule, &decision).await?;
+                if decision.status == AutomationEvaluationStatus::Matched {
+                    let _ = self.apply_rule(rule, message_id).await?;
+                    if rule
+                        .actions
+                        .iter()
+                        .any(|action| matches!(action, FilterAction::Stop))
+                    {
+                        break;
+                    }
+                }
+            }
+            evaluated_messages += 1;
+        }
+        Ok(AutomationReevaluation {
+            evaluated_messages,
+            remaining_stale_messages,
+        })
+    }
+
+    async fn all_message_ids(&self) -> Result<Vec<MessageId>> {
+        let connection = self.0.inner.connection.lock().await;
+        let mut rows = connection
+            .query("SELECT id FROM messages ORDER BY received_at, id", ())
+            .await?;
+        let mut ids = Vec::new();
+        while let Some(row) = rows.next().await? {
+            ids.push(parse_id(row.get::<String>(0)?, "message")?);
+        }
+        Ok(ids)
+    }
+
+    async fn sample_message_ids(&self, limit: usize) -> Result<Vec<MessageId>> {
+        let connection = self.0.inner.connection.lock().await;
+        let mut rows = connection
+            .query(
+                "SELECT id FROM messages ORDER BY received_at DESC, id DESC LIMIT ?1",
+                (i64::try_from(limit).unwrap_or(i64::MAX),),
             )
             .await?;
         let mut ids = Vec::new();
@@ -498,6 +790,175 @@ impl FilterRules {
             ids.push(parse_id(row.get::<String>(0)?, "message")?);
         }
         Ok(ids)
+    }
+
+    async fn count_filter_outcome(
+        &self,
+        conditions: &[FilterCondition],
+        outcome: FilterSqlOutcome,
+    ) -> Result<u64> {
+        let (predicate, parameters) = filter_sql_predicate(conditions, outcome)?;
+        let connection = self.0.inner.connection.lock().await;
+        let mut rows = connection
+            .query(
+                format!("SELECT count(*) {FILTER_PREVIEW_FROM} WHERE {predicate}"),
+                params_from_iter(parameters),
+            )
+            .await?;
+        let row = rows.next().await?.ok_or_else(|| {
+            BackendError::InvalidInput("filter pending count returned no row".into())
+        })?;
+        database_u64(row.get(0)?, "pending filter message count")
+    }
+
+    async fn would_affect(&self, message_id: MessageId, actions: &[FilterAction]) -> Result<bool> {
+        let (predicate, mut parameters) = filter_affected_sql(actions);
+        parameters.push(Value::Text(message_id.to_string()));
+        let connection = self.0.inner.connection.lock().await;
+        let mut rows = connection
+            .query(
+                format!(
+                    "SELECT CASE WHEN {predicate} THEN 1 ELSE 0 END FROM messages m WHERE m.id = ?"
+                ),
+                params_from_iter(parameters),
+            )
+            .await?;
+        rows.next()
+            .await?
+            .map(|row| row.get::<bool>(0))
+            .transpose()?
+            .ok_or_else(|| not_found("message", message_id))
+    }
+
+    async fn evaluate_rule(
+        &self,
+        conditions: &[FilterCondition],
+        message: &Message,
+        decrypted: Option<&OpenPgpDecryptedMessage>,
+        allow_cached: bool,
+    ) -> Result<FilterDecision> {
+        let needs_protected = conditions
+            .iter()
+            .any(filter_condition_needs_protected_content);
+        let mut decrypted_owned = None;
+        let encrypted = message.openpgp.encryption != OpenPgpEncryptionStatus::NotEncrypted;
+        if needs_protected && encrypted && decrypted.is_none() && allow_cached {
+            decrypted_owned = self
+                .0
+                .openpgp()
+                .load_cached_decrypted(message.summary.id)
+                .await?;
+        }
+        let decrypted = decrypted.or(decrypted_owned.as_ref());
+        let projected = project_decrypted_message(message, decrypted, &self.0);
+        let mut trace = Vec::with_capacity(conditions.len());
+        let mut saw_pending_content = false;
+        let mut saw_pending_decryption = false;
+        let mut saw_false = false;
+        for (index, condition) in conditions.iter().enumerate() {
+            let (status, detail) = if filter_condition_needs_protected_content(condition)
+                && encrypted
+                && decrypted.is_none()
+                && message.summary.content_availability != MessageContentAvailability::Complete
+            {
+                saw_pending_content = true;
+                (
+                    AutomationEvaluationStatus::PendingContent,
+                    "requires the complete encrypted message before decryption".into(),
+                )
+            } else if filter_condition_needs_protected_content(condition)
+                && encrypted
+                && decrypted.is_none()
+            {
+                saw_pending_decryption = true;
+                (
+                    AutomationEvaluationStatus::PendingDecryption,
+                    "requires authenticated decrypted message content".into(),
+                )
+            } else if filter_condition_needs_downloaded_content(condition)
+                && message.summary.content_availability != MessageContentAvailability::Complete
+            {
+                saw_pending_content = true;
+                (
+                    AutomationEvaluationStatus::PendingContent,
+                    "requires a complete locally downloaded message".into(),
+                )
+            } else if filter_matches(condition, &projected) {
+                (
+                    AutomationEvaluationStatus::Matched,
+                    "condition matched".into(),
+                )
+            } else {
+                saw_false = true;
+                (
+                    AutomationEvaluationStatus::NotMatched,
+                    "condition did not match".into(),
+                )
+            };
+            trace.push(FilterConditionTrace {
+                index,
+                condition: condition.clone(),
+                status,
+                detail,
+            });
+        }
+        let status = if saw_false {
+            AutomationEvaluationStatus::NotMatched
+        } else if saw_pending_decryption {
+            AutomationEvaluationStatus::PendingDecryption
+        } else if saw_pending_content {
+            AutomationEvaluationStatus::PendingContent
+        } else {
+            AutomationEvaluationStatus::Matched
+        };
+        let features = filter_required_features(conditions);
+        Ok(FilterDecision {
+            message_id: message.summary.id,
+            status,
+            evidence_revision: evidence_revision(&projected, &features, false)?,
+            trace,
+        })
+    }
+
+    async fn store_evaluation(&self, rule: &FilterRule, decision: &FilterDecision) -> Result<()> {
+        let now = Utc::now().timestamp();
+        let connection = self.0.inner.connection.lock().await;
+        connection
+            .execute(
+                "INSERT INTO filter_rule_evaluations(rule_id, rule_revision, message_id, status, evidence_revision, trace_json, evaluated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) ON CONFLICT(rule_id, message_id) DO UPDATE SET rule_revision = excluded.rule_revision, status = excluded.status, evidence_revision = excluded.evidence_revision, trace_json = excluded.trace_json, evaluated_at = excluded.evaluated_at",
+                turso::params![
+                    rule.id.to_string(),
+                    i64::from(rule.revision),
+                    decision.message_id.to_string(),
+                    automation_status_text(decision.status),
+                    decision.evidence_revision.clone(),
+                    serde_json::to_string(&decision.trace)?,
+                    now,
+                ],
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn evaluation_is_stale(
+        &self,
+        rule: &FilterRule,
+        decision: &FilterDecision,
+    ) -> Result<bool> {
+        let connection = self.0.inner.connection.lock().await;
+        let mut rows = connection
+            .query(
+                "SELECT rule_revision, evidence_revision FROM filter_rule_evaluations WHERE rule_id = ?1 AND message_id = ?2",
+                (rule.id.to_string(), decision.message_id.to_string()),
+            )
+            .await?;
+        let Some(row) = rows.next().await? else {
+            return Ok(true);
+        };
+        Ok(
+            database_u32(row.get(0)?, "filter rule revision")? != rule.revision
+                || row.get::<String>(1)? != decision.evidence_revision,
+        )
     }
 
     pub(crate) async fn has_enabled(&self) -> Result<bool> {
@@ -742,6 +1203,69 @@ impl Heuristics {
         Self(backend)
     }
 
+    /// Recompile persisted source with the current restricted-language
+    /// compiler. Evaluation rows carry the compiler version, so this updates
+    /// executable IR without pretending the user edited the heuristic.
+    pub(crate) async fn refresh_compiled_programs(&self) -> Result<()> {
+        let sources = {
+            let connection = self.0.inner.connection.lock().await;
+            let mut rows = connection
+                .query(
+                    "SELECT id, version, source FROM heuristics WHERE deleted_at IS NULL AND source != ?1 ORDER BY id",
+                    (crate::security::definition().source,),
+                )
+                .await?;
+            let mut values = Vec::new();
+            while let Some(row) = rows.next().await? {
+                values.push((
+                    row.get::<String>(0)?,
+                    database_u32(row.get(1)?, "heuristic version")?,
+                    row.get::<String>(2)?,
+                ));
+            }
+            values
+        };
+        let mut compiled = Vec::with_capacity(sources.len());
+        for (id, version, source) in sources {
+            compiled.push((id, version, compile_program(&source)?));
+        }
+        if compiled.is_empty() {
+            return Ok(());
+        }
+        let mut connection = self.0.inner.connection.lock().await;
+        let transaction = connection.transaction().await?;
+        for (id, version, program) in compiled {
+            let compiled_json = serde_json::to_string(&program)?;
+            let features_json = serde_json::to_string(&program.required_features)?;
+            transaction
+                .execute(
+                    "UPDATE heuristics SET compiled_json = ?1, required_features_json = ?2, maximum_steps = ?3 WHERE id = ?4 AND version = ?5 AND deleted_at IS NULL",
+                    turso::params![
+                        compiled_json.clone(),
+                        features_json.clone(),
+                        i64::from(program.maximum_steps),
+                        id.clone(),
+                        i64::from(version),
+                    ],
+                )
+                .await?;
+            transaction
+                .execute(
+                    "UPDATE heuristic_versions SET compiled_json = ?1, required_features_json = ?2, maximum_steps = ?3 WHERE heuristic_id = ?4 AND version = ?5",
+                    turso::params![
+                        compiled_json,
+                        features_json,
+                        i64::from(program.maximum_steps),
+                        id,
+                        i64::from(version),
+                    ],
+                )
+                .await?;
+        }
+        transaction.commit().await?;
+        Ok(())
+    }
+
     pub async fn add(&self, heuristic: NewHeuristic) -> Result<Heuristic> {
         validate_heuristic_input(&heuristic)?;
         let program = compile_program(&heuristic.source)?;
@@ -803,6 +1327,7 @@ impl Heuristics {
         .await?;
         transaction.commit().await?;
         let _ = self.0.inner.events.send(event);
+        self.0.schedule_heuristic_reevaluation();
         Ok(value)
     }
 
@@ -883,6 +1408,7 @@ impl Heuristics {
         .await?;
         transaction.commit().await?;
         let _ = self.0.inner.events.send(event);
+        self.0.schedule_heuristic_reevaluation();
         Ok(value)
     }
 
@@ -955,23 +1481,162 @@ impl Heuristics {
         let message = self.0.messages().get(message_id).await?;
         let mut all_findings = self.evaluate_builtin(&message).await?;
         for (heuristic, program) in programs {
-            let (status, detail, findings) = match run_program(&program, &message) {
-                Ok(findings) => (HeuristicEvaluationStatus::Complete, None, findings),
-                Err(HeuristicRunError::Budget) => (
-                    HeuristicEvaluationStatus::NotEvaluatedBudget,
-                    Some("heuristic exceeded its runtime budget".into()),
-                    Vec::new(),
-                ),
-                Err(HeuristicRunError::Failed(error)) => {
-                    (HeuristicEvaluationStatus::Failed, Some(error), Vec::new())
-                }
-            };
+            let decision = self
+                .evaluate_program(&program, &message, None, true)
+                .await?;
             all_findings.extend(
-                self.replace_findings(&heuristic, message_id, status, detail, findings)
-                    .await?,
+                self.replace_findings(
+                    &heuristic,
+                    message_id,
+                    decision.status,
+                    decision.detail,
+                    decision.findings,
+                    decision.evidence_revision,
+                    decision.trace,
+                )
+                .await?,
             );
         }
         Ok(all_findings)
+    }
+
+    pub(crate) async fn evaluate_message_with_decrypted(
+        &self,
+        message_id: MessageId,
+        decrypted: &OpenPgpDecryptedMessage,
+    ) -> Result<Vec<HeuristicFinding>> {
+        let programs = self.load_enabled_programs().await?;
+        let message = self.0.messages().get(message_id).await?;
+        let mut all_findings = self.evaluate_builtin(&message).await?;
+        for (heuristic, program) in programs {
+            let decision = self
+                .evaluate_program(&program, &message, Some(decrypted), false)
+                .await?;
+            all_findings.extend(
+                self.replace_findings(
+                    &heuristic,
+                    message_id,
+                    decision.status,
+                    decision.detail,
+                    decision.findings,
+                    decision.evidence_revision,
+                    decision.trace,
+                )
+                .await?,
+            );
+        }
+        Ok(all_findings)
+    }
+
+    /// Compile a candidate, count exact outcomes over the local corpus, and
+    /// return detailed traces for selected sample messages. This never stores
+    /// findings or prompts for decryption.
+    pub async fn preview(
+        &self,
+        heuristic: &NewHeuristic,
+        sample_message_ids: &[MessageId],
+    ) -> Result<HeuristicPreview> {
+        validate_heuristic_input(heuristic)?;
+        let program = compile_program(&heuristic.source)?;
+        let ids = self.all_message_ids().await?;
+        let requested = sample_message_ids.iter().copied().collect::<HashSet<_>>();
+        let automatic_samples = requested.is_empty();
+        let mut seen_requested = HashSet::new();
+        let mut preview = HeuristicPreview {
+            evaluated_messages: 0,
+            affected_messages: 0,
+            finding_count: 0,
+            pending_content_messages: 0,
+            pending_decryption_messages: 0,
+            failed_messages: 0,
+            samples: Vec::new(),
+        };
+        for message_id in ids {
+            let message = self.0.messages().get(message_id).await?;
+            let decision = self
+                .evaluate_program(&program, &message, None, true)
+                .await?;
+            preview.evaluated_messages += 1;
+            match decision.status {
+                HeuristicEvaluationStatus::Complete => {
+                    if !decision.findings.is_empty() {
+                        preview.affected_messages += 1;
+                    }
+                    preview.finding_count += decision.findings.len() as u64;
+                }
+                HeuristicEvaluationStatus::PendingContent => preview.pending_content_messages += 1,
+                HeuristicEvaluationStatus::PendingDecryption => {
+                    preview.pending_decryption_messages += 1
+                }
+                HeuristicEvaluationStatus::NotEvaluatedBudget
+                | HeuristicEvaluationStatus::Failed => preview.failed_messages += 1,
+            }
+            if requested.contains(&message_id)
+                || (automatic_samples && preview.samples.len() < PREVIEW_SAMPLE_LIMIT)
+            {
+                seen_requested.insert(message_id);
+                preview.samples.push(decision.preview(message_id));
+            }
+        }
+        if !automatic_samples && seen_requested.len() != requested.len() {
+            let missing = requested
+                .difference(&seen_requested)
+                .next()
+                .copied()
+                .expect("different set sizes have a missing value");
+            return Err(not_found("message", missing));
+        }
+        Ok(preview)
+    }
+
+    pub async fn reevaluate_stale(&self, limit: usize) -> Result<AutomationReevaluation> {
+        let programs = self.load_enabled_programs().await?;
+        let contact_revision = self.contact_model_revision().await?;
+        let builtin_features = vec![
+            "built_in_security".into(),
+            format!("contact_model:{contact_revision}"),
+        ];
+        let mut evaluated_messages = 0u64;
+        let mut remaining_stale_messages = 0u64;
+        for message_id in self.all_message_ids().await? {
+            let message = self.0.messages().get(message_id).await?;
+            let builtin = crate::security::definition();
+            let builtin_revision = evidence_revision(&message, &builtin_features, false)?;
+            let mut stale = self
+                .evaluation_record_is_stale(
+                    builtin.id,
+                    builtin.version,
+                    message_id,
+                    &builtin_revision,
+                )
+                .await?;
+            for (heuristic, program) in &programs {
+                let prepared = self
+                    .prepare_program_message(program, &message, None, true)
+                    .await?;
+                stale |= self
+                    .evaluation_record_is_stale(
+                        heuristic.id,
+                        heuristic.version,
+                        message_id,
+                        &prepared.evidence_revision,
+                    )
+                    .await?;
+            }
+            if !stale {
+                continue;
+            }
+            if evaluated_messages as usize >= limit.max(1) {
+                remaining_stale_messages += 1;
+            } else {
+                self.evaluate_message(message_id).await?;
+                evaluated_messages += 1;
+            }
+        }
+        Ok(AutomationReevaluation {
+            evaluated_messages,
+            remaining_stale_messages,
+        })
     }
 
     pub(crate) async fn evaluate_builtin_message(
@@ -985,14 +1650,48 @@ impl Heuristics {
     async fn evaluate_builtin(&self, message: &Message) -> Result<Vec<HeuristicFinding>> {
         let heuristic = crate::security::definition();
         let evaluation = crate::security::evaluate(&self.0, message).await?;
+        let contact_revision = self.contact_model_revision().await?;
+        let revision = evidence_revision(
+            message,
+            &[
+                "built_in_security".into(),
+                format!("contact_model:{contact_revision}"),
+            ],
+            false,
+        )?;
+        let trace = vec![HeuristicTraceStep {
+            sequence: 0,
+            kind: "built_in_security".into(),
+            expression: None,
+            outcome: Some(!evaluation.findings.is_empty()),
+            detail: format!("produced {} finding(s)", evaluation.findings.len()),
+        }];
         self.replace_findings(
             &heuristic,
             message.summary.id,
             evaluation.status,
             evaluation.detail,
             evaluation.findings,
+            revision,
+            trace,
         )
         .await
+    }
+
+    async fn contact_model_revision(&self) -> Result<i64> {
+        let connection = self.0.inner.connection.lock().await;
+        let mut rows = connection
+            .query(
+                "SELECT COALESCE(max(sequence), 0) FROM changes WHERE kind IN ('contact_added', 'contact_updated', 'contact_removed')",
+                (),
+            )
+            .await?;
+        Ok(rows
+            .next()
+            .await?
+            .map(|row| row.get::<i64>(0))
+            .transpose()?
+            .unwrap_or(0))
     }
 
     pub(crate) async fn backfill_builtin(&self, limit: usize) -> Result<(usize, bool)> {
@@ -1095,7 +1794,7 @@ impl Heuristics {
         let connection = self.0.inner.connection.lock().await;
         let mut rows = connection
             .query(
-                "SELECT message_id, heuristic_id, heuristic_version, status, detail, evaluated_at FROM heuristic_evaluations WHERE message_id = ?1 ORDER BY heuristic_id",
+                "SELECT message_id, heuristic_id, heuristic_version, status, detail, evidence_revision, compiler_version, trace_json, evaluated_at FROM heuristic_evaluations WHERE message_id = ?1 ORDER BY heuristic_id",
                 (message_id.to_string(),),
             )
             .await?;
@@ -1107,10 +1806,189 @@ impl Heuristics {
                 heuristic_version: database_u32(row.get(2)?, "heuristic version")?,
                 status: parse_evaluation_status(&row.get::<String>(3)?)?,
                 detail: row.get(4)?,
-                evaluated_at: row.get(5)?,
+                evidence_revision: row.get(5)?,
+                compiler_version: database_u32(row.get(6)?, "heuristic compiler version")?,
+                trace: serde_json::from_str(&row.get::<String>(7)?)?,
+                evaluated_at: row.get(8)?,
             });
         }
         Ok(values)
+    }
+
+    async fn all_message_ids(&self) -> Result<Vec<MessageId>> {
+        let connection = self.0.inner.connection.lock().await;
+        let mut rows = connection
+            .query("SELECT id FROM messages ORDER BY received_at, id", ())
+            .await?;
+        let mut ids = Vec::new();
+        while let Some(row) = rows.next().await? {
+            ids.push(parse_id(row.get::<String>(0)?, "message")?);
+        }
+        Ok(ids)
+    }
+
+    async fn evaluate_program(
+        &self,
+        program: &CompiledHeuristic,
+        message: &Message,
+        decrypted: Option<&OpenPgpDecryptedMessage>,
+        allow_cached: bool,
+    ) -> Result<HeuristicDecision> {
+        let prepared = self
+            .prepare_program_message(program, message, decrypted, allow_cached)
+            .await?;
+        if let Some((status, detail)) = prepared.pending {
+            return Ok(HeuristicDecision::pending(
+                message.summary.id,
+                status,
+                prepared.evidence_revision,
+                detail,
+            ));
+        }
+        Ok(
+            match run_program_traced(program, &prepared.message, prepared.thread_openpgp_required) {
+                Ok((findings, trace)) => HeuristicDecision {
+                    message_id: message.summary.id,
+                    status: HeuristicEvaluationStatus::Complete,
+                    detail: None,
+                    findings,
+                    evidence_revision: prepared.evidence_revision,
+                    trace,
+                },
+                Err((HeuristicRunError::Budget, trace)) => HeuristicDecision {
+                    message_id: message.summary.id,
+                    status: HeuristicEvaluationStatus::NotEvaluatedBudget,
+                    detail: Some("heuristic exceeded its runtime budget".into()),
+                    findings: Vec::new(),
+                    evidence_revision: prepared.evidence_revision,
+                    trace,
+                },
+                Err((HeuristicRunError::Failed(error), trace)) => HeuristicDecision {
+                    message_id: message.summary.id,
+                    status: HeuristicEvaluationStatus::Failed,
+                    detail: Some(error),
+                    findings: Vec::new(),
+                    evidence_revision: prepared.evidence_revision,
+                    trace,
+                },
+            },
+        )
+    }
+
+    async fn prepare_program_message(
+        &self,
+        program: &CompiledHeuristic,
+        message: &Message,
+        decrypted: Option<&OpenPgpDecryptedMessage>,
+        allow_cached: bool,
+    ) -> Result<PreparedHeuristicMessage> {
+        let needs_decryption = program.required_features.iter().any(|feature| {
+            matches!(
+                feature.as_str(),
+                "body_text" | "attachments" | "links" | "protected_headers"
+            )
+        });
+        let needs_download = program
+            .required_features
+            .iter()
+            .any(|feature| matches!(feature.as_str(), "body_text" | "attachments" | "links"));
+        let encrypted = message.openpgp.encryption != OpenPgpEncryptionStatus::NotEncrypted;
+        let mut decrypted_owned = None;
+        if needs_decryption && encrypted && decrypted.is_none() && allow_cached {
+            decrypted_owned = self
+                .0
+                .openpgp()
+                .load_cached_decrypted(message.summary.id)
+                .await?;
+        }
+        let decrypted = decrypted.or(decrypted_owned.as_ref());
+        let projected = project_decrypted_message(message, decrypted, &self.0);
+        let thread_openpgp_required = if program
+            .required_features
+            .iter()
+            .any(|feature| feature == "thread_security")
+        {
+            self.thread_openpgp_required(message.summary.thread_id)
+                .await?
+        } else {
+            false
+        };
+        let evidence_revision = evidence_revision(
+            &projected,
+            &program.required_features,
+            thread_openpgp_required,
+        )?;
+        let pending = if needs_decryption
+            && encrypted
+            && decrypted.is_none()
+            && message.summary.content_availability != MessageContentAvailability::Complete
+        {
+            Some((
+                HeuristicEvaluationStatus::PendingContent,
+                "requires the complete encrypted message before decryption",
+            ))
+        } else if needs_decryption && encrypted && decrypted.is_none() {
+            Some((
+                HeuristicEvaluationStatus::PendingDecryption,
+                "requires authenticated decrypted message content",
+            ))
+        } else if needs_download
+            && message.summary.content_availability != MessageContentAvailability::Complete
+        {
+            Some((
+                HeuristicEvaluationStatus::PendingContent,
+                "requires a complete locally downloaded message",
+            ))
+        } else {
+            None
+        };
+        Ok(PreparedHeuristicMessage {
+            message: projected,
+            thread_openpgp_required,
+            evidence_revision,
+            pending,
+        })
+    }
+
+    async fn thread_openpgp_required(&self, thread_id: crate::ThreadId) -> Result<bool> {
+        let connection = self.0.inner.connection.lock().await;
+        let mut rows = connection
+            .query(
+                "SELECT openpgp_encryption_required FROM threads WHERE id = ?1",
+                (thread_id.to_string(),),
+            )
+            .await?;
+        Ok(rows
+            .next()
+            .await?
+            .map(|row| row.get::<bool>(0))
+            .transpose()?
+            .unwrap_or(false))
+    }
+
+    async fn evaluation_record_is_stale(
+        &self,
+        heuristic_id: HeuristicId,
+        heuristic_version: u32,
+        message_id: MessageId,
+        evidence_revision: &str,
+    ) -> Result<bool> {
+        let connection = self.0.inner.connection.lock().await;
+        let mut rows = connection
+            .query(
+                "SELECT heuristic_version, evidence_revision, compiler_version FROM heuristic_evaluations WHERE message_id = ?1 AND heuristic_id = ?2",
+                (message_id.to_string(), heuristic_id.to_string()),
+            )
+            .await?;
+        let Some(row) = rows.next().await? else {
+            return Ok(true);
+        };
+        Ok(
+            database_u32(row.get(0)?, "heuristic version")? != heuristic_version
+                || row.get::<String>(1)? != evidence_revision
+                || database_u32(row.get(2)?, "heuristic compiler version")?
+                    != HEURISTIC_COMPILER_VERSION,
+        )
     }
 
     async fn load_enabled_programs(&self) -> Result<Vec<(Heuristic, CompiledHeuristic)>> {
@@ -1137,6 +2015,8 @@ impl Heuristics {
         status: HeuristicEvaluationStatus,
         detail: Option<String>,
         findings: Vec<crate::heuristic::ProducedFinding>,
+        evidence_revision: String,
+        trace: Vec<HeuristicTraceStep>,
     ) -> Result<Vec<HeuristicFinding>> {
         let now = Utc::now().timestamp();
         let mut values = Vec::with_capacity(findings.len());
@@ -1234,13 +2114,16 @@ impl Heuristics {
         }
         transaction
             .execute(
-                "INSERT INTO heuristic_evaluations(message_id, heuristic_id, heuristic_version, status, detail, evaluated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6) ON CONFLICT(message_id, heuristic_id) DO UPDATE SET heuristic_version = excluded.heuristic_version, status = excluded.status, detail = excluded.detail, evaluated_at = excluded.evaluated_at",
+                "INSERT INTO heuristic_evaluations(message_id, heuristic_id, heuristic_version, status, detail, evidence_revision, compiler_version, trace_json, evaluated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) ON CONFLICT(message_id, heuristic_id) DO UPDATE SET heuristic_version = excluded.heuristic_version, status = excluded.status, detail = excluded.detail, evidence_revision = excluded.evidence_revision, compiler_version = excluded.compiler_version, trace_json = excluded.trace_json, evaluated_at = excluded.evaluated_at",
                 turso::params![
                     message_id.to_string(),
                     heuristic.id.to_string(),
                     i64::from(heuristic.version),
                     evaluation_status_text(status),
                     detail.clone(),
+                    evidence_revision.clone(),
+                    i64::from(HEURISTIC_COMPILER_VERSION),
+                    serde_json::to_string(&trace)?,
                     now,
                 ],
             )
@@ -1257,6 +2140,8 @@ impl Heuristics {
                 "status": status,
                 "finding_count": values.len(),
                 "detail": detail,
+                "evidence_revision": evidence_revision,
+                "compiler_version": HEURISTIC_COMPILER_VERSION,
             }),
         )
         .await?;
@@ -1266,72 +2151,131 @@ impl Heuristics {
     }
 }
 
-fn filter_match_sql(conditions: &[FilterCondition]) -> Result<(String, Vec<Value>)> {
-    let mut clauses = Vec::with_capacity(conditions.len());
+fn filter_sql_predicate(
+    conditions: &[FilterCondition],
+    outcome: FilterSqlOutcome,
+) -> Result<(String, Vec<Value>)> {
+    let encrypted = "COALESCE(json_extract(opme.evidence_json, '$.encryption'), 'not_encrypted') != 'not_encrypted'";
+    let decrypt_pending = |condition: &FilterCondition| {
+        if filter_condition_needs_protected_content(condition) {
+            format!(
+                "({encrypted} AND odm.message_id IS NULL AND m.content_availability = 'complete')"
+            )
+        } else {
+            "0".into()
+        }
+    };
+    let content_pending = |condition: &FilterCondition| {
+        let mut clauses = Vec::new();
+        if filter_condition_needs_protected_content(condition) {
+            clauses.push(format!(
+                "({encrypted} AND odm.message_id IS NULL AND m.content_availability != 'complete')"
+            ));
+        }
+        if filter_condition_needs_downloaded_content(condition) {
+            clauses.push(format!(
+                "(NOT ({encrypted}) AND m.content_availability != 'complete')"
+            ));
+        }
+        if clauses.is_empty() {
+            "0".into()
+        } else {
+            format!("({})", clauses.join(" OR "))
+        }
+    };
+
     let mut parameters = Vec::new();
+    let mut clauses = Vec::with_capacity(conditions.len());
+    let mut decrypt_pending_clauses = Vec::new();
+    let mut content_pending_clauses = Vec::new();
     for condition in conditions {
-        match condition {
+        let expression = match condition {
             FilterCondition::SenderAddressEquals { value } => {
-                clauses.push("lower(m.from_address) = lower(?)");
                 parameters.push(Value::Text(value.clone()));
+                "lower(COALESCE(CASE WHEN odm.message_id IS NOT NULL THEN odm.from_address ELSE m.from_address END, '')) = lower(?)".into()
             }
             FilterCondition::SenderDomainEquals { value } => {
-                clauses.push("lower(substr(m.from_address, instr(m.from_address, '@') + 1)) = lower(?) AND instr(m.from_address, '@') > 0");
                 parameters.push(Value::Text(value.clone()));
+                "instr(COALESCE(CASE WHEN odm.message_id IS NOT NULL THEN odm.from_address ELSE m.from_address END, ''), '@') > 0 AND lower(substr(COALESCE(CASE WHEN odm.message_id IS NOT NULL THEN odm.from_address ELSE m.from_address END, ''), instr(COALESCE(CASE WHEN odm.message_id IS NOT NULL THEN odm.from_address ELSE m.from_address END, ''), '@') + 1)) = lower(?)".into()
             }
             FilterCondition::SubjectContains { value } => {
-                clauses.push("instr(lower(COALESCE(m.subject, '')), lower(?)) > 0");
                 parameters.push(Value::Text(value.clone()));
+                "instr(lower(COALESCE(CASE WHEN odm.message_id IS NOT NULL THEN odm.subject ELSE m.subject END, '')), lower(?)) > 0".into()
             }
             FilterCondition::BodyContains { value } => {
-                clauses.push("instr(lower(m.body_text), lower(?)) > 0");
                 parameters.push(Value::Text(value.clone()));
+                "instr(lower(COALESCE(odm.body_text, m.body_text, '')), lower(?)) > 0".into()
             }
-            FilterCondition::HasAttachment { value } => {
-                clauses.push(if *value {
-                    "m.has_attachment = 1"
-                } else {
-                    "m.has_attachment = 0"
-                });
-            }
+            FilterCondition::HasAttachment { value } => format!(
+                "COALESCE(odm.has_attachment, m.has_attachment) = {}",
+                i64::from(*value)
+            ),
             FilterCondition::AttachmentDeclaredType { value } => {
-                clauses.push("EXISTS (SELECT 1 FROM attachments a WHERE a.message_id = m.id AND lower(a.declared_media_type) = lower(?))");
                 parameters.push(Value::Text(value.clone()));
+                parameters.push(Value::Text(value.clone()));
+                "((odm.message_id IS NOT NULL AND EXISTS (SELECT 1 FROM json_each(odm.attachments_json) da WHERE lower(json_extract(da.value, '$.declared_media_type')) = lower(?))) OR (odm.message_id IS NULL AND EXISTS (SELECT 1 FROM attachments a WHERE a.message_id = m.id AND lower(a.declared_media_type) = lower(?))))".into()
             }
             FilterCondition::SizeAtLeast { bytes } => {
-                clauses.push("m.size_bytes >= ?");
                 parameters.push(Value::Integer(i64::try_from(*bytes).map_err(|_| {
                     BackendError::InvalidInput("filter byte size exceeds database range".into())
                 })?));
+                "m.size_bytes >= ?".into()
             }
             FilterCondition::SizeAtMost { bytes } => {
-                clauses.push("m.size_bytes <= ?");
                 parameters.push(Value::Integer(i64::try_from(*bytes).map_err(|_| {
                     BackendError::InvalidInput("filter byte size exceeds database range".into())
                 })?));
+                "m.size_bytes <= ?".into()
             }
             FilterCondition::DeliveredTo { address } => {
-                clauses.push("EXISTS (SELECT 1 FROM json_each(m.delivered_to_addresses) WHERE lower(value) = lower(?))");
                 parameters.push(Value::Text(address.clone()));
+                "EXISTS (SELECT 1 FROM json_each(m.delivered_to_addresses) WHERE lower(value) = lower(?))".into()
             }
             FilterCondition::Account { id } => {
-                clauses.push("EXISTS (SELECT 1 FROM message_instances mi WHERE mi.message_id = m.id AND mi.account_id = ?)");
                 parameters.push(Value::Text(id.to_string()));
+                "EXISTS (SELECT 1 FROM message_instances mi WHERE mi.message_id = m.id AND mi.account_id = ?)".into()
             }
             FilterCondition::DeliveryFolder { id } => {
-                clauses.push("EXISTS (SELECT 1 FROM message_instances mi WHERE mi.message_id = m.id AND mi.folder_id = ?)");
                 parameters.push(Value::Text(id.to_string()));
+                "EXISTS (SELECT 1 FROM message_instances mi WHERE mi.message_id = m.id AND mi.folder_id = ?)".into()
             }
-        }
+        };
+        let decryption = decrypt_pending(condition);
+        let content = content_pending(condition);
+        clauses.push(match outcome {
+            FilterSqlOutcome::Matched => {
+                format!("(NOT ({decryption}) AND NOT ({content}) AND ({expression}))")
+            }
+            FilterSqlOutcome::PendingContent | FilterSqlOutcome::PendingDecryption => {
+                format!("(({decryption}) OR ({content}) OR ({expression}))")
+            }
+        });
+        decrypt_pending_clauses.push(decryption);
+        content_pending_clauses.push(content);
     }
-    Ok((
-        if clauses.is_empty() {
-            "1".into()
-        } else {
-            clauses.join(" AND ")
-        },
-        parameters,
-    ))
+    if conditions.is_empty() {
+        return Ok((
+            if matches!(outcome, FilterSqlOutcome::Matched) {
+                "1".into()
+            } else {
+                "0".into()
+            },
+            parameters,
+        ));
+    }
+    let viable = clauses.join(" AND ");
+    let any_decryption = decrypt_pending_clauses.join(" OR ");
+    let any_content = content_pending_clauses.join(" OR ");
+    let predicate = match outcome {
+        FilterSqlOutcome::Matched => viable,
+        FilterSqlOutcome::PendingDecryption => {
+            format!("({viable}) AND ({any_decryption})")
+        }
+        FilterSqlOutcome::PendingContent => {
+            format!("({viable}) AND NOT ({any_decryption}) AND ({any_content})")
+        }
+    };
+    Ok((predicate, parameters))
 }
 
 fn filter_affected_sql(actions: &[FilterAction]) -> (String, Vec<Value>) {
@@ -1415,6 +2359,16 @@ fn parse_mutation_status_for_undo(value: &str) -> Result<ImapMutationStatus> {
 
 async fn validate_filter_rule(backend: &Backend, rule: &NewFilterRule) -> Result<()> {
     require_name("filter rule", &rule.name)?;
+    if rule.conditions.len() > 256 {
+        return Err(BackendError::InvalidInput(
+            "filter rules may contain at most 256 conditions".into(),
+        ));
+    }
+    if rule.actions.len() > 256 {
+        return Err(BackendError::InvalidInput(
+            "filter rules may contain at most 256 actions".into(),
+        ));
+    }
     // An empty conjunction is a useful explicit catch-all. A Stop-only rule is
     // likewise a useful exemption barrier before a lower-priority catch-all.
     if rule.actions.is_empty() {
@@ -1616,6 +2570,153 @@ fn filter_matches(condition: &FilterCondition, message: &Message) -> bool {
     }
 }
 
+fn filter_condition_needs_downloaded_content(condition: &FilterCondition) -> bool {
+    matches!(
+        condition,
+        FilterCondition::BodyContains { .. } | FilterCondition::AttachmentDeclaredType { .. }
+    )
+}
+
+fn filter_condition_needs_protected_content(condition: &FilterCondition) -> bool {
+    matches!(
+        condition,
+        FilterCondition::SenderAddressEquals { .. }
+            | FilterCondition::SenderDomainEquals { .. }
+            | FilterCondition::SubjectContains { .. }
+            | FilterCondition::BodyContains { .. }
+            | FilterCondition::HasAttachment { .. }
+            | FilterCondition::AttachmentDeclaredType { .. }
+    )
+}
+
+fn filter_required_features(conditions: &[FilterCondition]) -> Vec<String> {
+    let mut features = std::collections::BTreeSet::new();
+    for condition in conditions {
+        let feature = match condition {
+            FilterCondition::SenderAddressEquals { .. }
+            | FilterCondition::SenderDomainEquals { .. }
+            | FilterCondition::SubjectContains { .. }
+            | FilterCondition::HasAttachment { .. } => "protected_headers",
+            FilterCondition::SizeAtLeast { .. }
+            | FilterCondition::SizeAtMost { .. }
+            | FilterCondition::DeliveredTo { .. } => "headers",
+            FilterCondition::BodyContains { .. } => "body_text",
+            FilterCondition::AttachmentDeclaredType { .. } => "attachments",
+            FilterCondition::Account { .. } | FilterCondition::DeliveryFolder { .. } => "delivery",
+        };
+        features.insert(feature.into());
+    }
+    features.into_iter().collect()
+}
+
+fn project_decrypted_message(
+    message: &Message,
+    decrypted: Option<&OpenPgpDecryptedMessage>,
+    backend: &Backend,
+) -> Message {
+    let Some(decrypted) = decrypted else {
+        return message.clone();
+    };
+    let mut projected = message.clone();
+    projected.summary.subject = decrypted.subject.clone();
+    projected.summary.from_address = decrypted.from_address.clone();
+    projected.summary.has_attachment = !decrypted.attachments.is_empty();
+    projected.body_text = decrypted.body_text.clone();
+    projected.body_html = None;
+    projected.to_addresses = decrypted.to_addresses.clone();
+    projected.cc_addresses = decrypted.cc_addresses.clone();
+    projected.attachments = decrypted.attachments.clone();
+    projected.links =
+        crate::mime::extract_plain_text_links(&decrypted.body_text, &backend.inner.config.limits);
+    projected.openpgp = decrypted.security.clone();
+    projected
+}
+
+fn evidence_revision(
+    message: &Message,
+    features: &[String],
+    thread_openpgp_required: bool,
+) -> Result<String> {
+    let mut evidence = serde_json::Map::new();
+    let encrypted = message.openpgp.encryption != OpenPgpEncryptionStatus::NotEncrypted;
+    let encrypted_identity = || {
+        json!({
+            "immutable_message_id": message.summary.id,
+            "openpgp": message.openpgp,
+        })
+    };
+    evidence.insert("message_id".into(), json!(message.summary.id));
+    evidence.insert(
+        "content_availability".into(),
+        json!(message.summary.content_availability),
+    );
+    for feature in features {
+        let value = match feature.as_str() {
+            "headers" => json!({
+                "subject": message.summary.subject,
+                "from_address": message.summary.from_address,
+                "from_name": message.summary.from_name,
+                "size_bytes": message.summary.size_bytes,
+                "has_attachment": message.summary.has_attachment,
+                "delivered_to": message.delivered_to_addresses,
+            }),
+            "protected_headers" if encrypted => encrypted_identity(),
+            "protected_headers" => {
+                json!({
+                    "subject": message.summary.subject,
+                    "from_address": message.summary.from_address,
+                    "from_name": message.summary.from_name,
+                    "has_attachment": message.summary.has_attachment,
+                })
+            }
+            "delivery" => json!(message.instances),
+            "authentication" => json!(message.dkim),
+            "delivery_authentication" => json!(message.delivery_authentication),
+            "openpgp" => json!(message.openpgp),
+            "spam" => json!({
+                "inbox_class": message.summary.inbox_class,
+                "user": message.user_classification,
+                "provider": message.provider_spam,
+                "local": message.local_spam,
+            }),
+            "thread_security" => json!({
+                "membership": message.threading,
+                "openpgp_required": thread_openpgp_required,
+            }),
+            "body_text" | "attachments" | "links" if encrypted => encrypted_identity(),
+            "body_text" => json!({
+                "sha256": hex::encode(Sha256::digest(message.body_text.as_bytes())),
+                "bytes": message.body_text.len(),
+            }),
+            "attachments" => json!(message.attachments),
+            "links" => json!(message.links),
+            "built_in_security" => json!({
+                "headers": {
+                    "subject": message.summary.subject,
+                    "from_address": message.summary.from_address,
+                    "from_name": message.summary.from_name,
+                },
+                "body_sha256": hex::encode(Sha256::digest(message.body_text.as_bytes())),
+                "attachments": message.attachments,
+                "links": message.links,
+                "dkim": message.dkim,
+                "delivery_authentication": message.delivery_authentication,
+                "openpgp": message.openpgp,
+                "spam": {
+                    "user": message.user_classification,
+                    "provider": message.provider_spam,
+                    "local": message.local_spam,
+                },
+                "threading": message.threading,
+            }),
+            _ => json!(null),
+        };
+        evidence.insert(feature.clone(), value);
+    }
+    let bytes = serde_json::to_vec(&evidence)?;
+    Ok(hex::encode(Sha256::digest(bytes)))
+}
+
 fn filter_rule_from_row(row: &turso::Row) -> Result<FilterRule> {
     Ok(FilterRule {
         id: parse_id(row.get::<String>(0)?, "filter rule")?,
@@ -1768,6 +2869,8 @@ pub(crate) fn parse_target_kind(value: &str) -> Result<crate::FindingTargetKind>
 fn evaluation_status_text(value: HeuristicEvaluationStatus) -> &'static str {
     match value {
         HeuristicEvaluationStatus::Complete => "complete",
+        HeuristicEvaluationStatus::PendingContent => "pending_content",
+        HeuristicEvaluationStatus::PendingDecryption => "pending_decryption",
         HeuristicEvaluationStatus::NotEvaluatedBudget => "not_evaluated_budget",
         HeuristicEvaluationStatus::Failed => "failed",
     }
@@ -1776,10 +2879,35 @@ fn evaluation_status_text(value: HeuristicEvaluationStatus) -> &'static str {
 fn parse_evaluation_status(value: &str) -> Result<HeuristicEvaluationStatus> {
     match value {
         "complete" => Ok(HeuristicEvaluationStatus::Complete),
+        "pending_content" => Ok(HeuristicEvaluationStatus::PendingContent),
+        "pending_decryption" => Ok(HeuristicEvaluationStatus::PendingDecryption),
         "not_evaluated_budget" => Ok(HeuristicEvaluationStatus::NotEvaluatedBudget),
         "failed" => Ok(HeuristicEvaluationStatus::Failed),
         _ => Err(BackendError::InvalidInput(
             "database contains invalid heuristic evaluation status".into(),
+        )),
+    }
+}
+
+fn automation_status_text(value: AutomationEvaluationStatus) -> &'static str {
+    match value {
+        AutomationEvaluationStatus::Matched => "matched",
+        AutomationEvaluationStatus::NotMatched => "not_matched",
+        AutomationEvaluationStatus::PendingContent => "pending_content",
+        AutomationEvaluationStatus::PendingDecryption => "pending_decryption",
+        AutomationEvaluationStatus::Failed => "failed",
+    }
+}
+
+fn parse_automation_status(value: &str) -> Result<AutomationEvaluationStatus> {
+    match value {
+        "matched" => Ok(AutomationEvaluationStatus::Matched),
+        "not_matched" => Ok(AutomationEvaluationStatus::NotMatched),
+        "pending_content" => Ok(AutomationEvaluationStatus::PendingContent),
+        "pending_decryption" => Ok(AutomationEvaluationStatus::PendingDecryption),
+        "failed" => Ok(AutomationEvaluationStatus::Failed),
+        _ => Err(BackendError::InvalidInput(
+            "database contains invalid automation evaluation status".into(),
         )),
     }
 }

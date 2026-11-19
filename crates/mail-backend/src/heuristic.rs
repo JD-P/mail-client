@@ -1,6 +1,7 @@
 use crate::{
-    Attachment, BackendError, FindingPresentation, FindingSeverity, FindingTargetKind,
-    HeuristicCompilation, Message, Result,
+    Attachment, AuthenticationMethodKind, AuthenticationMethodResult, AuthenticationResultsTrust,
+    BackendError, FindingPresentation, FindingSeverity, FindingTargetKind, HeuristicCompilation,
+    HeuristicTraceStep, Message, Result,
 };
 use rustpython_parser::{ast, Parse};
 use serde::{Deserialize, Serialize};
@@ -14,6 +15,8 @@ const MAX_LINKS: u32 = 2_048;
 const MAX_FINDINGS: usize = 2_048;
 const MAX_EVIDENCE_FIELDS: usize = 32;
 const MAX_STATIC_TEXT_BYTES: usize = 2_048;
+const MAX_TRACE_STEPS: usize = 1_024;
+pub(crate) const HEURISTIC_COMPILER_VERSION: u32 = 2;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct CompiledHeuristic {
@@ -181,18 +184,26 @@ pub(crate) fn compile_program(source: &str) -> Result<CompiledHeuristic> {
     })
 }
 
-pub(crate) fn run_program(
+pub(crate) fn run_program_traced(
     program: &CompiledHeuristic,
     message: &Message,
-) -> std::result::Result<Vec<ProducedFinding>, HeuristicRunError> {
+    thread_openpgp_required: bool,
+) -> std::result::Result<
+    (Vec<ProducedFinding>, Vec<HeuristicTraceStep>),
+    (HeuristicRunError, Vec<HeuristicTraceStep>),
+> {
     let mut runtime = Runtime {
         message,
+        thread_openpgp_required,
         locals: HashMap::new(),
         steps: 0,
         findings: Vec::new(),
+        trace: Vec::new(),
     };
-    let _ = runtime.execute_block(&program.body)?;
-    Ok(runtime.findings)
+    if let Err(error) = runtime.execute_block(&program.body) {
+        return Err((error, runtime.trace));
+    }
+    Ok((runtime.findings, runtime.trace))
 }
 
 #[derive(Default)]
@@ -465,10 +476,33 @@ impl Compiler {
             | ["message", "sender", "domain"]
             | ["message", "sender", "registrable_domain"]
             | ["message", "sender", "claimed_name"]
-            | ["message", "size_bytes"]
-            | ["message", "has_attachment"] => "headers",
+            | ["message", "has_attachment"] => "protected_headers",
+            ["message", "size_bytes"] => "headers",
             ["message", "authentication", "dkim", "status"]
             | ["message", "authentication", "dkim", "has_aligned_pass"] => "authentication",
+            ["message", "authentication", "delivery", "dkim", "status"]
+            | ["message", "authentication", "delivery", "dmarc", "status"]
+            | ["message", "authentication", "delivery", "spf", "status"]
+            | ["message", "authentication", "delivery", "trusted_header_count"] => {
+                "delivery_authentication"
+            }
+            ["message", "openpgp", "encryption", "status"]
+            | ["message", "openpgp", "encrypted"]
+            | ["message", "openpgp", "signature", "has_valid"]
+            | ["message", "openpgp", "signature", "has_invalid"]
+            | ["message", "openpgp", "signature", "count"]
+            | ["message", "openpgp", "protected_headers"]
+            | ["message", "openpgp", "protected_header_mismatch"]
+            | ["message", "openpgp", "decrypted_derivative_stored"] => "openpgp",
+            ["message", "spam", "inbox_class"]
+            | ["message", "spam", "provider", "verdict"]
+            | ["message", "spam", "local", "verdict"]
+            | ["message", "spam", "local", "score_basis_points"]
+            | ["message", "spam", "local", "model_version"]
+            | ["message", "spam", "user_classification"] => "spam",
+            ["message", "thread", "sender_trust"]
+            | ["message", "thread", "source"]
+            | ["message", "thread", "openpgp_required"] => "thread_security",
             ["message", "body_text"] => "body_text",
             [binding, "id" | "ordinal" | "name" | "declared_type" | "size" | "inline"]
                 if self.bindings.get(*binding) == Some(&BindingKind::Attachment) =>
@@ -618,9 +652,11 @@ impl Compiler {
 
 struct Runtime<'a> {
     message: &'a Message,
+    thread_openpgp_required: bool,
     locals: HashMap<String, RuntimeValue>,
     steps: u32,
     findings: Vec<ProducedFinding>,
+    trace: Vec<HeuristicTraceStep>,
 }
 
 #[derive(Clone, Debug)]
@@ -639,6 +675,35 @@ enum Flow {
 }
 
 impl Runtime<'_> {
+    fn record_trace(
+        &mut self,
+        kind: &str,
+        expression: Option<String>,
+        outcome: Option<bool>,
+        detail: impl Into<String>,
+    ) {
+        if self.trace.len() >= MAX_TRACE_STEPS {
+            return;
+        }
+        if self.trace.len() + 1 == MAX_TRACE_STEPS {
+            self.trace.push(HeuristicTraceStep {
+                sequence: self.trace.len() as u32,
+                kind: "truncated".into(),
+                expression: None,
+                outcome: None,
+                detail: "explanation trace reached its 1024-step limit".into(),
+            });
+            return;
+        }
+        self.trace.push(HeuristicTraceStep {
+            sequence: self.trace.len() as u32,
+            kind: kind.into(),
+            expression,
+            outcome,
+            detail: detail.into(),
+        });
+    }
+
     fn step(&mut self) -> std::result::Result<(), HeuristicRunError> {
         self.steps = self.steps.saturating_add(1);
         if self.steps > MAX_RUNTIME_STEPS {
@@ -656,8 +721,15 @@ impl Runtime<'_> {
             self.step()?;
             match statement {
                 Statement::Let { name, value } => {
-                    let value = self.evaluate(value)?;
-                    self.locals.insert(name.clone(), value);
+                    let expression = describe_expression(value);
+                    let runtime_value = self.evaluate(value)?;
+                    self.locals.insert(name.clone(), runtime_value);
+                    self.record_trace(
+                        "binding",
+                        Some(expression),
+                        None,
+                        format!("bound local {name}"),
+                    );
                 }
                 Statement::If {
                     condition,
@@ -665,6 +737,16 @@ impl Runtime<'_> {
                     else_body,
                 } => {
                     let matches = self.evaluate(condition)?.truthy();
+                    self.record_trace(
+                        "condition",
+                        Some(describe_expression(condition)),
+                        Some(matches),
+                        if matches {
+                            "then branch"
+                        } else {
+                            "else branch"
+                        },
+                    );
                     let body = if matches { then_body } else { else_body };
                     if matches!(self.execute_block(body)?, Flow::Return) {
                         return Ok(Flow::Return);
@@ -672,6 +754,12 @@ impl Runtime<'_> {
                 }
                 Statement::ForAttachments { binding, body } => {
                     let attachments = self.message.attachments.clone();
+                    self.record_trace(
+                        "loop",
+                        Some("message.attachments".into()),
+                        None,
+                        format!("evaluated {} attachment(s) as {binding}", attachments.len()),
+                    );
                     for attachment in attachments.into_iter().take(MAX_ATTACHMENTS as usize) {
                         self.step()?;
                         self.locals
@@ -685,6 +773,12 @@ impl Runtime<'_> {
                 }
                 Statement::ForLinks { binding, body } => {
                     let links = self.message.links.clone();
+                    self.record_trace(
+                        "loop",
+                        Some("message.links".into()),
+                        None,
+                        format!("evaluated {} link(s) as {binding}", links.len()),
+                    );
                     for link in links.into_iter().take(MAX_LINKS as usize) {
                         self.step()?;
                         self.locals
@@ -701,9 +795,18 @@ impl Runtime<'_> {
                         return Err(HeuristicRunError::Budget);
                     }
                     let finding = self.materialize(template)?;
+                    self.record_trace(
+                        "finding",
+                        None,
+                        Some(true),
+                        format!("yielded finding {}", template.code),
+                    );
                     self.findings.push(finding);
                 }
-                Statement::Return => return Ok(Flow::Return),
+                Statement::Return => {
+                    self.record_trace("return", None, None, "evaluation returned early");
+                    return Ok(Flow::Return);
+                }
             }
         }
         Ok(Flow::Continue)
@@ -924,6 +1027,142 @@ impl Runtime<'_> {
                         && signature.from_domain_aligned == Some(true)
                 }))
             }
+            ["message", "authentication", "delivery", method, "status"] => {
+                let kind = match *method {
+                    "dkim" => AuthenticationMethodKind::Dkim,
+                    "dmarc" => AuthenticationMethodKind::Dmarc,
+                    "spf" => AuthenticationMethodKind::Spf,
+                    _ => return Err(runtime_error("unknown delivery authentication method")),
+                };
+                RuntimeValue::String(trusted_delivery_result(self.message, kind))
+            }
+            ["message", "authentication", "delivery", "trusted_header_count"] => {
+                RuntimeValue::Integer(
+                    self.message
+                        .delivery_authentication
+                        .observations
+                        .iter()
+                        .flat_map(|observation| &observation.headers)
+                        .filter(|header| header.trust == AuthenticationResultsTrust::Trusted)
+                        .count() as i64,
+                )
+            }
+            ["message", "openpgp", "encryption", "status"] => RuntimeValue::String(
+                openpgp_encryption_status(self.message.openpgp.encryption).into(),
+            ),
+            ["message", "openpgp", "encrypted"] => RuntimeValue::Bool(
+                self.message.openpgp.encryption != crate::OpenPgpEncryptionStatus::NotEncrypted,
+            ),
+            ["message", "openpgp", "signature", "has_valid"] => RuntimeValue::Bool(
+                self.message
+                    .openpgp
+                    .signatures
+                    .iter()
+                    .any(|signature| signature.status == crate::OpenPgpSignatureStatus::Valid),
+            ),
+            ["message", "openpgp", "signature", "has_invalid"] => {
+                RuntimeValue::Bool(self.message.openpgp.signatures.iter().any(|signature| {
+                    matches!(
+                        signature.status,
+                        crate::OpenPgpSignatureStatus::Invalid
+                            | crate::OpenPgpSignatureStatus::Obsolete
+                    )
+                }))
+            }
+            ["message", "openpgp", "signature", "count"] => {
+                RuntimeValue::Integer(self.message.openpgp.signatures.len() as i64)
+            }
+            ["message", "openpgp", "protected_headers"] => {
+                RuntimeValue::Bool(self.message.openpgp.protected_headers)
+            }
+            ["message", "openpgp", "protected_header_mismatch"] => {
+                RuntimeValue::Bool(self.message.openpgp.protected_header_mismatch)
+            }
+            ["message", "openpgp", "decrypted_derivative_stored"] => {
+                RuntimeValue::Bool(self.message.openpgp.decrypted_derivative_stored)
+            }
+            ["message", "spam", "inbox_class"] => RuntimeValue::String(
+                match self.message.summary.inbox_class {
+                    crate::InboxClass::Warm => "warm",
+                    crate::InboxClass::Cold => "cold",
+                    crate::InboxClass::Spam => "spam",
+                }
+                .into(),
+            ),
+            ["message", "spam", "provider", "verdict"] => RuntimeValue::String(
+                match self.message.provider_spam.verdict {
+                    crate::ProviderSpamVerdict::Unknown => "unknown",
+                    crate::ProviderSpamVerdict::Spam => "spam",
+                    crate::ProviderSpamVerdict::NotSpam => "not_spam",
+                    crate::ProviderSpamVerdict::Conflicting => "conflicting",
+                }
+                .into(),
+            ),
+            ["message", "spam", "local", "verdict"] => self
+                .message
+                .local_spam
+                .as_ref()
+                .map(|assessment| {
+                    RuntimeValue::String(
+                        match assessment.verdict {
+                            crate::LocalSpamVerdict::Spam => "spam",
+                            crate::LocalSpamVerdict::NotSpam => "not_spam",
+                            crate::LocalSpamVerdict::Uncertain => "uncertain",
+                        }
+                        .into(),
+                    )
+                })
+                .unwrap_or(RuntimeValue::Null),
+            ["message", "spam", "local", "score_basis_points"] => self
+                .message
+                .local_spam
+                .as_ref()
+                .map(|assessment| {
+                    RuntimeValue::Integer((assessment.score * 10_000.0).round() as i64)
+                })
+                .unwrap_or(RuntimeValue::Null),
+            ["message", "spam", "local", "model_version"] => self
+                .message
+                .local_spam
+                .as_ref()
+                .map(|assessment| {
+                    RuntimeValue::Integer(
+                        i64::try_from(assessment.model_version).unwrap_or(i64::MAX),
+                    )
+                })
+                .unwrap_or(RuntimeValue::Null),
+            ["message", "spam", "user_classification"] => self
+                .message
+                .user_classification
+                .map(|classification| {
+                    RuntimeValue::String(
+                        match classification {
+                            crate::UserClassification::Spam => "spam",
+                            crate::UserClassification::NotSpam => "not_spam",
+                        }
+                        .into(),
+                    )
+                })
+                .unwrap_or(RuntimeValue::Null),
+            ["message", "thread", "sender_trust"] => RuntimeValue::String(
+                match self.message.threading.sender_trust {
+                    crate::ThreadSenderTrust::Known => "known",
+                    crate::ThreadSenderTrust::Unknown => "unknown",
+                }
+                .into(),
+            ),
+            ["message", "thread", "source"] => RuntimeValue::String(
+                match self.message.threading.source {
+                    crate::ThreadingSource::Root => "root",
+                    crate::ThreadingSource::References => "references",
+                    crate::ThreadingSource::InReplyTo => "in_reply_to",
+                    crate::ThreadingSource::NormalizedSubject => "normalized_subject",
+                }
+                .into(),
+            ),
+            ["message", "thread", "openpgp_required"] => {
+                RuntimeValue::Bool(self.thread_openpgp_required)
+            }
             [local] => self
                 .locals
                 .get(*local)
@@ -969,6 +1208,157 @@ impl Runtime<'_> {
             _ => return Err(runtime_error(format!("unknown field `{}`", path.join(".")))),
         };
         Ok(value)
+    }
+}
+
+fn describe_expression(expression: &Expression) -> String {
+    let rendered = render_expression(expression);
+    if rendered.len() <= 512 {
+        rendered
+    } else {
+        let mut value = rendered.chars().take(509).collect::<String>();
+        value.push_str("...");
+        value
+    }
+}
+
+fn render_expression(expression: &Expression) -> String {
+    match expression {
+        Expression::Null => "None".into(),
+        Expression::Bool(value) => if *value { "True" } else { "False" }.into(),
+        Expression::Integer(value) => value.to_string(),
+        Expression::String(value) => {
+            serde_json::to_string(value).unwrap_or_else(|_| "\"?\"".into())
+        }
+        Expression::Path(path) => path.join("."),
+        Expression::And(values) => join_expressions(values, " and "),
+        Expression::Or(values) => join_expressions(values, " or "),
+        Expression::Not(value) => format!("not ({})", render_expression(value)),
+        Expression::Negate(value) => format!("-({})", render_expression(value)),
+        Expression::Arithmetic {
+            left,
+            operation,
+            right,
+        } => format!(
+            "({} {} {})",
+            render_expression(left),
+            match operation {
+                Arithmetic::Add => "+",
+                Arithmetic::Subtract => "-",
+                Arithmetic::Multiply => "*",
+                Arithmetic::FloorDivide => "//",
+                Arithmetic::Remainder => "%",
+            },
+            render_expression(right)
+        ),
+        Expression::Compare {
+            left,
+            operations,
+            comparators,
+        } => {
+            let mut rendered = render_expression(left);
+            for (operation, comparator) in operations.iter().zip(comparators) {
+                rendered.push(' ');
+                rendered.push_str(match operation {
+                    Comparison::Equal => "==",
+                    Comparison::NotEqual => "!=",
+                    Comparison::Less => "<",
+                    Comparison::LessOrEqual => "<=",
+                    Comparison::Greater => ">",
+                    Comparison::GreaterOrEqual => ">=",
+                    Comparison::Is => "is",
+                    Comparison::IsNot => "is not",
+                });
+                rendered.push(' ');
+                rendered.push_str(&render_expression(comparator));
+            }
+            rendered
+        }
+        Expression::Contains {
+            value,
+            needle,
+            case_sensitive,
+        } => format!(
+            "{}.{}({})",
+            render_expression(value),
+            if *case_sensitive {
+                "contains_exact_case"
+            } else {
+                "contains"
+            },
+            render_expression(needle)
+        ),
+        Expression::StartsWith { value, prefix, .. } => format!(
+            "{}.starts_with({})",
+            render_expression(value),
+            render_expression(prefix)
+        ),
+        Expression::EndsWith { value, suffix, .. } => format!(
+            "{}.ends_with({})",
+            render_expression(value),
+            render_expression(suffix)
+        ),
+        Expression::Lower(value) => format!("{}.lower()", render_expression(value)),
+        Expression::IsMissing(value) => {
+            format!("{}.is_missing()", render_expression(value))
+        }
+    }
+}
+
+fn join_expressions(values: &[Expression], separator: &str) -> String {
+    let values = values
+        .iter()
+        .map(render_expression)
+        .collect::<Vec<_>>()
+        .join(separator);
+    format!("({values})")
+}
+
+fn trusted_delivery_result(message: &Message, kind: AuthenticationMethodKind) -> String {
+    let mut results = BTreeSet::new();
+    for header in message
+        .delivery_authentication
+        .observations
+        .iter()
+        .flat_map(|observation| &observation.headers)
+        .filter(|header| header.trust == AuthenticationResultsTrust::Trusted)
+    {
+        for method in header.methods.iter().filter(|method| method.kind == kind) {
+            results.insert(authentication_result_text(method.result));
+        }
+    }
+    match results.len() {
+        0 => "not_evaluated".into(),
+        1 => results.into_iter().next().unwrap().into(),
+        _ => "conflicting".into(),
+    }
+}
+
+fn authentication_result_text(result: AuthenticationMethodResult) -> &'static str {
+    match result {
+        AuthenticationMethodResult::None => "none",
+        AuthenticationMethodResult::Pass => "pass",
+        AuthenticationMethodResult::Fail => "fail",
+        AuthenticationMethodResult::SoftFail => "soft_fail",
+        AuthenticationMethodResult::Neutral => "neutral",
+        AuthenticationMethodResult::Policy => "policy",
+        AuthenticationMethodResult::TemporaryError => "temporary_error",
+        AuthenticationMethodResult::PermanentError => "permanent_error",
+        AuthenticationMethodResult::Unknown => "unknown",
+    }
+}
+
+fn openpgp_encryption_status(status: crate::OpenPgpEncryptionStatus) -> &'static str {
+    match status {
+        crate::OpenPgpEncryptionStatus::NotEncrypted => "not_encrypted",
+        crate::OpenPgpEncryptionStatus::Encrypted => "encrypted",
+        crate::OpenPgpEncryptionStatus::Decrypted => "decrypted",
+        crate::OpenPgpEncryptionStatus::MissingSecretKey => "missing_secret_key",
+        crate::OpenPgpEncryptionStatus::ProviderUnavailable => "provider_unavailable",
+        crate::OpenPgpEncryptionStatus::InteractionRequired => "interaction_required",
+        crate::OpenPgpEncryptionStatus::FailedIntegrity => "failed_integrity",
+        crate::OpenPgpEncryptionStatus::Unsupported => "unsupported",
+        crate::OpenPgpEncryptionStatus::Malformed => "malformed",
     }
 }
 
@@ -1308,7 +1698,10 @@ def detect(message):
             )
 "#;
         let compiled = compile_program(source).unwrap();
-        assert_eq!(compiled.required_features, vec!["attachments", "headers"]);
+        assert_eq!(
+            compiled.required_features,
+            vec!["attachments", "protected_headers"]
+        );
         assert!(compiled.maximum_steps <= MAX_COMPILED_STEPS);
     }
 
