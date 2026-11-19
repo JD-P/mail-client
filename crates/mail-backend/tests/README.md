@@ -40,9 +40,11 @@ cargo test -p lizard-mail-backend --test imap_account_engine -- --ignored --noca
 
 `imap_worker.rs` proves that a failed disposable worker becomes an account
 error without terminating the parent and that sandbox setup either enforces
-its file/network restrictions or fails closed. Its ignored Dovecot case covers
-isolated header sync, on-demand body retrieval and parent-side Tantivy
-publication on a Linux x86-64 host with Landlock ABI 6:
+its file/network restrictions or fails closed. It also requires an attempted
+x32-numbered syscall to terminate the worker with `SIGSYS`, preventing the
+alternate ABI from bypassing exact native syscall checks. Its ignored Dovecot
+case covers isolated header sync, on-demand body retrieval and parent-side
+Tantivy publication on a Linux x86-64 host with Landlock ABI 6:
 
 ```sh
 cargo test -p lizard-mail-backend --test imap_worker -- --ignored --nocapture

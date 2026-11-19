@@ -54,6 +54,22 @@ fn worker_path() -> PathBuf {
 }
 
 #[test]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn worker_seccomp_kills_x32_syscall_numbers() {
+    use std::os::unix::process::ExitStatusExt;
+
+    let status = std::process::Command::new(worker_path())
+        .arg("--seccomp-x32-self-test")
+        .status()
+        .unwrap();
+    assert_eq!(
+        status.signal(),
+        Some(libc::SIGSYS),
+        "x32-numbered syscall was not killed by seccomp: {status}"
+    );
+}
+
+#[test]
 #[cfg(target_os = "linux")]
 fn worker_sandbox_is_fail_closed() {
     let profile = tempfile::tempdir().unwrap();

@@ -87,6 +87,13 @@ scoping prevents a compromised worker from signaling the parent. Landlock and
 seccomp are additive: sandbox setup must report fully enforced Landlock plus
 `no_new_privs`, or the worker terminates before opening the backend.
 
+On x86-64, seccomp reports the same audit architecture for native and x32 ABI
+calls. The filter therefore kills any syscall number carrying
+`__X32_SYSCALL_BIT` before comparing native syscall numbers; otherwise an
+x32-enabled kernel could bypass an exact-number denylist. A subprocess test
+issues an x32-numbered syscall and requires termination by `SIGSYS`, including
+on kernels where x32 itself is disabled.
+
 ## Explicit compatibility escape hatch
 
 `Backend::managed_imap_account_engine_in_process` preserves an explicit

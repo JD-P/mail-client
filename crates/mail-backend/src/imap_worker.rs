@@ -31,6 +31,8 @@ const WORKER_PROTOCOL_VERSION: u32 = 1;
 const MAX_WORKER_REQUEST_BYTES: usize = 2 * 1024 * 1024;
 const MAX_WORKER_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_WORKER_ERROR_CHARS: usize = 4 * 1024;
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+const X32_SYSCALL_BIT: u32 = 0x4000_0000;
 
 #[derive(Clone, Debug)]
 pub struct ImapSyncIsolationConfig {
@@ -637,6 +639,10 @@ pub(crate) fn run_worker_process() -> std::result::Result<(), String> {
             .ok_or("sandbox self-test requires a profile directory")?;
         return sandbox_self_test(Path::new(&profile));
     }
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    if mode.as_deref() == Some(std::ffi::OsStr::new("--seccomp-x32-self-test")) {
+        return seccomp_x32_self_test();
+    }
     if mode.as_deref() != Some(std::ffi::OsStr::new("--worker-v1")) {
         return Err("this executable is an internal isolated worker".into());
     }
@@ -1001,6 +1007,7 @@ fn enter_seccomp() -> std::result::Result<(), String> {
     unsafe {
         const LD: u16 = 0x20;
         const JEQ: u16 = 0x15;
+        const JSET: u16 = 0x45;
         const RET: u16 = 0x06;
         const AND: u16 = 0x54;
         const ALLOW: u32 = 0x7fff0000;
@@ -1018,11 +1025,22 @@ fn enter_seccomp() -> std::result::Result<(), String> {
             jf,
             k,
         };
+        let jump_set = |k, jt, jf| libc::sock_filter {
+            code: JSET,
+            jt,
+            jf,
+            k,
+        };
         let mut code = vec![
             stmt(LD, 4),
             jump(0xc000003e, 1, 0),
             stmt(RET, KILL),
             stmt(LD, 0),
+            // AUDIT_ARCH_X86_64 is shared by the native and x32 ABIs.  Exact
+            // native syscall-number checks are bypassable unless the x32 bit
+            // is rejected before the denylist is evaluated.
+            jump_set(X32_SYSCALL_BIT, 0, 1),
+            stmt(RET, KILL),
         ];
         for syscall in [
             libc::SYS_execve,
@@ -1094,6 +1112,27 @@ fn enter_seccomp() -> std::result::Result<(), String> {
         }
     }
     Ok(())
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn seccomp_x32_self_test() -> std::result::Result<(), String> {
+    // SAFETY: PR_SET_NO_NEW_PRIVS takes an integer flag and is required before
+    // an unprivileged process may install a seccomp filter directly.
+    if unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) } != 0 {
+        return Err(format!(
+            "could not enable no-new-privileges for x32 self-test: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    enter_seccomp()?;
+    // The filter must kill the process while evaluating this number, even on
+    // kernels where the x32 ABI itself is disabled and would return ENOSYS.
+    // SAFETY: this deliberately issues a no-argument getpid-shaped syscall in
+    // a disposable regression-test process.
+    unsafe {
+        libc::syscall((libc::SYS_getpid as u32 | X32_SYSCALL_BIT) as libc::c_long);
+    }
+    Err("seccomp accepted an x32-numbered syscall".into())
 }
 
 #[cfg(all(target_os = "linux", not(target_arch = "x86_64")))]
