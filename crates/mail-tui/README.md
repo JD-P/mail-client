@@ -5,10 +5,14 @@ working terminal client for the opinionated Warm/Cold/Spam workflow specified
 in [`../../spec/tui-workflows.md`](../../spec/tui-workflows.md).
 The exact implementation boundary is tracked in
 [`../../spec/tui-implementation-status.md`](../../spec/tui-implementation-status.md).
+The Linux worker threat model and failure policy are documented in
+[`../../spec/tui-render-isolation.md`](../../spec/tui-render-isolation.md).
 
-Run the client against a Lizard backend profile:
+Build both the client and its isolated renderer worker, then run the client
+against a Lizard backend profile:
 
 ```sh
+cargo build -p lizard-mail-tui --bins
 cargo run -p lizard-mail-tui -- /path/to/profile
 ```
 
@@ -27,10 +31,23 @@ text. It is deliberately separate from the graphical Lizard renderer: terminal
 cells are not pixels, and pretending otherwise makes inaccessible, unstable
 mail.
 
-The renderer has no network or filesystem capability. Remote and embedded
-images become labelled placeholders; links become inert numbered references;
-forms and active content are omitted. Author colors and layout CSS are ignored
-so that hostile mail cannot make text invisible against the terminal theme.
+The normal CLI never parses sender-authored HTML in its main process. On Linux
+x86-64 it invokes a fresh worker for each distinct message/terminal width. The
+worker must enter an empty Landlock ruleset, a seccomp filter, and fixed
+address-space/CPU/file limits before reading the request. It receives pipes,
+not a terminal, and returns semantic text over a length-prefixed protocol. The
+parent validates every line, span, style, reference, control character and
+output budget before Ratatui sees it. If any boundary is unavailable or the
+worker crashes, times out, or returns malformed output, the reader displays the
+backend's safe plain-text body; it never retries HTML in-process.
+
+The rendering core itself performs no network or filesystem operations. Remote
+and embedded images become labelled placeholders; links become inert numbered
+references; forms and active content are omitted. Author colors and layout CSS
+are ignored so that hostile mail cannot make text invisible against the
+terminal theme. `HtmlRenderer` remains public for conformance tests and
+controlled embedders; applications handling hostile mail should use
+`IsolatedHtmlRenderer` or an equivalent process boundary.
 
 ## Terminal mapping
 

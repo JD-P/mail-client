@@ -2,11 +2,12 @@ use std::{collections::BTreeMap, fmt, io::Cursor};
 
 use html5ever::{parse_document, tendril::TendrilSink};
 use markup5ever_rcdom::{Handle, NodeData, RcDom};
+use serde::{Deserialize, Serialize};
 
 use crate::render::{RenderOptions, RenderedPage};
 
 /// Hard limits applied before and after the HTML5 parser boundary.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Limits {
     pub max_input_bytes: usize,
     pub max_markup_tokens: usize,

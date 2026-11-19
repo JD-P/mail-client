@@ -1,10 +1,16 @@
 use chrono::{Duration, Utc};
 use lizard_mail_backend::{
     AccountId, Backend, Contact, ContactAddress, ContactSuggestion, FindingPresentation,
-    FindingSeverity, NewContact, NewContactRelationship, RelationshipKind, RemoteContentPolicy,
-    Result, Thread, ThreadFilter, ThreadSummary, ThreadWorkStatus, WarmRoute, WorkflowView,
+    FindingSeverity, MessageId, NewContact, NewContactRelationship, RelationshipKind,
+    RemoteContentPolicy, Result, Thread, ThreadFilter, ThreadSummary, ThreadWorkStatus, WarmRoute,
+    WorkflowView,
 };
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    hash::{DefaultHasher, Hash, Hasher},
+};
+
+use crate::{IsolatedHtmlRenderer, RenderedPage};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Screen {
@@ -20,6 +26,13 @@ pub enum Screen {
 pub struct OnboardingEdit {
     pub display_name: String,
     pub relationship: NewContactRelationship,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ReaderHtmlKey {
+    message_id: MessageId,
+    content_hash: u64,
+    width: u16,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -67,6 +80,10 @@ pub struct MailApp {
     pub contact_names: HashMap<String, String>,
     pub status: Option<String>,
     pub security_override: bool,
+    reader_html: Option<RenderedPage>,
+    reader_html_error: Option<String>,
+    reader_html_key: Option<ReaderHtmlKey>,
+    html_renderer: IsolatedHtmlRenderer,
     pub quit: bool,
 }
 
@@ -110,6 +127,10 @@ impl MailApp {
             contact_names: HashMap::new(),
             status: None,
             security_override: false,
+            reader_html: None,
+            reader_html_error: None,
+            reader_html_key: None,
+            html_renderer: IsolatedHtmlRenderer::default(),
             quit: false,
         };
         app.rebuild_contact_names();
@@ -234,6 +255,62 @@ impl MailApp {
             })
     }
 
+    /// Prepares the current HTML body outside the terminal drawing closure.
+    ///
+    /// The renderer is a disposable Linux worker. Failure is deliberately not
+    /// fatal to the mail client: the UI falls back to the backend's bounded
+    /// plain-text body and never retries the same failed content every frame.
+    pub async fn prepare_reader_html(&mut self, width: u16) {
+        if self.screen != Screen::Reader || self.reader_is_blocked() {
+            self.clear_reader_html();
+            return;
+        }
+        let Some(message) = self
+            .current_thread
+            .as_ref()
+            .and_then(|thread| thread.messages.last())
+        else {
+            self.clear_reader_html();
+            return;
+        };
+        let Some(html) = message.body_html.as_deref() else {
+            self.clear_reader_html();
+            return;
+        };
+        let mut hasher = DefaultHasher::new();
+        html.hash(&mut hasher);
+        let key = ReaderHtmlKey {
+            message_id: message.summary.id,
+            content_hash: hasher.finish(),
+            width,
+        };
+        if self.reader_html_key == Some(key) {
+            return;
+        }
+        let html = html.as_bytes().to_vec();
+        self.reader_html = None;
+        self.reader_html_error = None;
+        self.reader_html_key = Some(key);
+        match self.html_renderer.render(&html, width).await {
+            Ok(page) => self.reader_html = Some(page),
+            Err(error) => self.reader_html_error = Some(error.to_string()),
+        }
+    }
+
+    /// Overrides the worker command for embedders and isolation failure tests.
+    pub fn set_html_renderer(&mut self, renderer: IsolatedHtmlRenderer) {
+        self.html_renderer = renderer;
+        self.clear_reader_html();
+    }
+
+    pub fn reader_html(&self) -> Option<&RenderedPage> {
+        self.reader_html.as_ref()
+    }
+
+    pub fn reader_html_error(&self) -> Option<&str> {
+        self.reader_html_error.as_deref()
+    }
+
     pub fn display_sender(&self, address: Option<&str>, claimed_name: Option<&str>) -> String {
         let Some(address) = address else {
             return "unknown sender".into();
@@ -253,6 +330,7 @@ impl MailApp {
         self.selected = 0;
         self.current_thread = None;
         self.security_override = false;
+        self.clear_reader_html();
         self.refresh().await
     }
 
@@ -264,6 +342,7 @@ impl MailApp {
                     self.current_thread = Some(self.backend.threads().get(id).await?);
                     self.screen = Screen::Reader;
                     self.security_override = false;
+                    self.clear_reader_html();
                 }
             }
             Screen::Onboarding => self.begin_suggestion_edit(),
@@ -278,6 +357,7 @@ impl MailApp {
                 self.screen = self.previous_screen;
                 self.current_thread = None;
                 self.security_override = false;
+                self.clear_reader_html();
                 self.refresh().await?;
             }
             Screen::OnboardingEdit => {
@@ -308,6 +388,7 @@ impl MailApp {
             if self.screen == Screen::Reader {
                 self.screen = self.previous_screen;
                 self.current_thread = None;
+                self.clear_reader_html();
             }
             self.refresh().await?;
         }
@@ -330,6 +411,7 @@ impl MailApp {
             if self.screen == Screen::Reader {
                 self.screen = self.previous_screen;
                 self.current_thread = None;
+                self.clear_reader_html();
             }
             self.refresh().await?;
         }
@@ -496,6 +578,12 @@ impl MailApp {
                     .insert(address.address.to_lowercase(), contact.display_name.clone());
             }
         }
+    }
+
+    fn clear_reader_html(&mut self) {
+        self.reader_html = None;
+        self.reader_html_error = None;
+        self.reader_html_key = None;
     }
 }
 

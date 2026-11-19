@@ -38,6 +38,8 @@ async fn run(
     app: &mut MailApp,
 ) -> Result<(), Box<dyn Error>> {
     while !app.quit {
+        let render_width = terminal.size()?.width.saturating_sub(2);
+        app.prepare_reader_html(render_width).await;
         terminal.draw(|frame| lizard_mail_tui::ui::draw(frame, app))?;
         let Event::Key(key) = event::read()? else {
             continue;

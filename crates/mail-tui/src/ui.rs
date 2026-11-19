@@ -1,5 +1,4 @@
 use crate::app::{MailApp, Screen};
-use crate::{HtmlRenderer, RenderOptions};
 use lizard_mail_backend::{DkimAuthenticationStatus, ThreadWorkStatus, WorkflowView};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -220,33 +219,22 @@ fn draw_reader(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
         chunks[0],
     );
 
-    if let Some(html) = &message.body_html {
-        match HtmlRenderer::default().render(
-            html.as_bytes(),
-            chunks[1].width.saturating_sub(2),
-            &RenderOptions::default(),
-        ) {
-            Ok(page) => frame.render_widget(
-                Paragraph::new(page.lines)
-                    .block(Block::default().borders(Borders::ALL).title("Message"))
-                    .wrap(Wrap { trim: false }),
-                chunks[1],
-            ),
-            Err(_) => frame.render_widget(
-                Paragraph::new(safe_text(&message.body_text))
-                    .block(
-                        Block::default()
-                            .borders(Borders::ALL)
-                            .title("Message · plain fallback"),
-                    )
-                    .wrap(Wrap { trim: false }),
-                chunks[1],
-            ),
-        }
+    if let Some(page) = app.reader_html() {
+        frame.render_widget(
+            Paragraph::new(page.lines.clone())
+                .block(Block::default().borders(Borders::ALL).title("Message"))
+                .wrap(Wrap { trim: false }),
+            chunks[1],
+        );
     } else {
+        let title = if message.body_html.is_some() {
+            "Message · safe plain-text fallback"
+        } else {
+            "Message"
+        };
         frame.render_widget(
             Paragraph::new(safe_text(&message.body_text))
-                .block(Block::default().borders(Borders::ALL).title("Message"))
+                .block(Block::default().borders(Borders::ALL).title(title))
                 .wrap(Wrap { trim: false }),
             chunks[1],
         );

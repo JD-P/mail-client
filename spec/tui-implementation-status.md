@@ -24,7 +24,10 @@ not implemented merely because it is described there.
 - Intrusive security interruptions which replace the ordinary reader and allow
   only an explicit restricted-view override where the finding permits it.
 - Warm red, Cold blue, and Spam amber workflow palettes.
-- Bounded terminal rendering of the supported HTML-mail subset.
+- Bounded terminal rendering of the supported HTML-mail subset. In the Linux
+  x86-64 CLI this runs in a disposable Landlock/seccomp worker; worker or
+  sandbox failure falls back to the stored plain-text part without parsing HTML
+  in the client process.
 
 ## Partially implemented
 

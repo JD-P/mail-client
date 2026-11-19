@@ -4622,17 +4622,23 @@ dependencies = [
 name = "lizard-mail-tui"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "chrono",
  "crossterm",
  "html5ever",
+ "landlock",
+ "libc",
  "lizard-mail-backend",
  "markup5ever_rcdom",
  "ratatui",
+ "serde",
+ "serde_json",
  "tempfile",
  "tokio",
  "unicode-segmentation",
  "unicode-width 0.2.3",
  "url",
+ "zeroize",
 ]
 
 [[package]]
