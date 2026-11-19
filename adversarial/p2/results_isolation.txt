@@ -1,0 +1,65 @@
+Pass 2 subsequent IMAP process-isolation hardening
+Reviewed vulnerable commit: 47eb6b29fde5807dd9204aee2c4049eb7dd0ddb2
+Resource-budget fix commit: 4d1ab6614bfcb103edb2d8cd721f63fdef0e96a4
+Isolation fix commit: 1699f224742e516c176fd5a68827c0256e903762
+Date: 2026-11-19 UTC
+
+The managed IMAP API now launches a fresh lizard-mail-sync-worker for every
+sync, body fetch and IDLE cycle. The parent resolves the endpoint and exactly
+one credential, owns the on-disk Tantivy writer and replays committed durable
+changes after the worker exits. Requests, responses and errors are bounded;
+secrets do not enter argv, environment variables or logs and their serialized
+buffers are zeroized.
+
+Linux x86-64 workers require fully enforced Landlock ABI 6, no-new-privileges,
+resource ceilings and seccomp. Filesystem access is limited to mail.db,
+mail.db-wal, blobs and partial downloads. In particular, the credentials and
+search-index trees are not readable. Network creation is limited to INET TCP
+streams, and connects are limited to the configured IMAP port and TCP 853.
+Execution, ptrace/cross-process memory, kernel keyring, mounts/namespaces,
+inbound/Unix/UDP/raw sockets, signaling outside the sandbox and filesystem
+ownership/mode/xattr mutation are denied. An unavailable or partially enforced
+sandbox aborts before the backend opens; there is no automatic in-process
+fallback.
+
+The explicit residual authority is recorded in spec/imap-sync-isolation.md.
+A worker compromise can corrupt or disclose the synchronized profile's mail
+database and blobs, and Landlock's network policy is port-based rather than
+address-based. The credential vault, other user files and the parent process
+are outside the intended authority.
+
+Verification:
+
+  cargo test -p lizard-mail-backend --locked
+    111 non-Docker tests passed; 7 Docker/kernel-dependent tests ignored.
+
+  cargo test -p lizard-mail-backend --test imap_worker --locked -- --nocapture
+    worker_sandbox_is_fail_closed passed.
+    worker_crash_is_an_account_error_not_a_backend_crash passed, including
+    explicit failed/resumable body state after a worker death.
+
+  cargo test -p lizard-mail-backend --test dovecot_imap -- --ignored --nocapture
+    pulls_real_mail_from_dovecot_incrementally passed.
+
+  cargo test -p lizard-mail-backend --test imap_account_engine \
+    owns_tls_auth_discovery_and_remote_reconciliation -- --ignored --nocapture
+    owns_tls_auth_discovery_and_remote_reconciliation passed.
+
+  cargo test -p lizard-mail-backend --test imap_worker \
+    sandboxed_worker_syncs_and_publishes_search_after_exit \
+    -- --ignored --nocapture
+    The test detected that this container's kernel reports Landlock
+    NotImplemented and verified that the worker refused to run. Consequently
+    the positive Dovecot-through-sandbox path could not execute on this host;
+    it remains an ignored integration test for a Landlock ABI 6 runner.
+
+  cargo clippy -p lizard-mail-backend --all-targets --locked -- \
+    -A clippy::result_large_err -A clippy::too_many_arguments \
+    -A clippy::type_complexity -A clippy::await_holding_lock \
+    -A clippy::useless_conversion -D warnings
+    passed; the allowed lints predate this hardening.
+
+The first parallel full-suite build exhausted the 63 GiB workspace while
+linking many copies of the large backend test binary. Rebuilding with
+CARGO_BUILD_JOBS=1 completed successfully. This was an executor storage
+failure, not a test failure.

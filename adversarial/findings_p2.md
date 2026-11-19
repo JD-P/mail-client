@@ -221,3 +221,21 @@ the client did let a malicious configured IMAP server kill the main backend
 reliably and cheaply. The later remediation adds the missing shared resource
 boundary and retains the provider as untrusted input rather than part of the
 availability TCB.
+
+## 5. Subsequent process isolation
+
+Commit `1699f224742e516c176fd5a68827c0256e903762` adds the defense-in-depth
+boundary proposed after this review. Managed IMAP synchronization, body fetch
+and IDLE now execute in fresh resource-limited workers. On Linux x86-64 the
+worker requires fully enforced Landlock ABI 6 plus seccomp; missing support
+fails closed. The worker receives one resolved credential, cannot read the
+profile credential vault or Tantivy tree, and cannot access other user files,
+execute programs, use ptrace, signal the parent, or create UDP/raw/Unix
+sockets. The parent remains alive across worker crashes and repairs an
+interrupted body download into explicit failed/resumable state.
+
+This is containment, not removal of parser risk. The worker necessarily has
+read/write access to the mail database and blobs, and its allowed outbound
+ports are not restricted to one destination address. Exact authority,
+verification and host limitations are recorded in
+`spec/imap-sync-isolation.md` and `adversarial/p2/results_isolation.txt`.
