@@ -8,15 +8,16 @@
   `adversarial/p1/openpgp-compression-bomb/` and
   `adversarial/p1/tui-bidi-queue/`; retained output is in
   `adversarial/p1/results_openpgp.txt` and
-  `adversarial/p1/results_tui_bidi.txt`.
+  `adversarial/p1/results_tui_bidi.txt`. Post-fix output is retained in
+  `adversarial/p1/results_remediation.txt`.
 - **Method:** mapped attacker-controlled mail through ingestion, MIME and
   archive parsing, authentication evidence, OpenPGP, threading, search,
   terminal presentation and the sandboxed Gecko-subset worker. Prioritized
   pre-limit allocations and places where attacker-controlled identity text
   crosses into trusted UI grammar. All exploit work was local; product source
   was not modified.
-- **Disposition:** **P1-A and P1-B confirmed at the reviewed commit. Neither
-  was remediated during this review.**
+- **Disposition:** **P1-A and P1-B confirmed at the reviewed commit and
+  remediated by `562aea7d3b29ec64c6e65851137caf557b01750b`.**
 
 ---
 
@@ -124,16 +125,23 @@ the 64 MiB configured value supplies no upper bound before allocation.
 
 ### 2.4 Remediation and regression boundary
 
-1. Replace `as_data_vec()` with a streaming read capped at
-   `min(max_message_bytes, MAX_DECRYPTED_BYTES) + 1`; stop immediately on the
-   sentinel byte and return `MessageTooLarge` without retaining it.
-2. Cap compressed-packet nesting before every `decompress()` operation.
-3. Keep authenticated-encryption/integrity failure semantics unchanged; the
-   output limit must not release unauthenticated plaintext to callers.
-4. Add the retained fixture as a regression with a counting/limiting sink.
-   Assert bounded bytes consumed, bounded nesting, the same limit for software
-   and GnuPG/YubiKey providers, and recovery by decrypting an ordinary next
-   message after rejection.
+Implemented in `562aea7d3b29ec64c6e65851137caf557b01750b`:
+
+1. Software-provider plaintext is authenticated and counted through a 64 KiB
+   streaming buffer. At most one MiB is retained during this first pass, and
+   the reader stops on the first byte beyond
+   `min(max_message_bytes, MAX_DECRYPTED_BYTES)`.
+2. Messages larger than the one-MiB inline buffer are decrypted a second time
+   into an exactly sized allocation only after the first pass reaches EOF and
+   completes rPGP's MDC/AEAD authentication. This avoids writing decrypted
+   mail to a temporary file while ensuring an oversized message is never
+   materialized.
+3. Compression nesting is capped at 16. GnuPG/YubiKey subprocess output now
+   uses the same configured limit as the software provider.
+4. Unit regressions cover exact-limit acceptance, the single sentinel byte,
+   and length-only handling of larger plaintext. The unchanged end-to-end
+   fixture now returns `MessageTooLarge` under the original 180,000 KiB
+   address-space ceiling with a 77,544 KiB peak RSS instead of aborting.
 
 ---
 
@@ -189,14 +197,15 @@ own voice.
 
 ### 3.3 Remediation and regression boundary
 
-1. Run participant, subject and any attacker-influenced status annotation
-   through a shared bidi/control sanitizer before truncating to terminal width.
-2. Prefer visible mnemonics (`⟦RLO⟧`) over silent replacement where space
-   permits; they explain why text looked suspicious.
-3. Test every screen with all nine bidi formatting controls, ANSI/OSC C0
-   controls, combining marks and zero-width format characters. Capture the
-   final Crossterm byte stream and assert that no active formatting control is
-   emitted.
+Implemented in `562aea7d3b29ec64c6e65851137caf557b01750b`:
+
+1. A single-line terminal sanitizer replaces C0 controls and all bidi
+   embeddings, overrides and isolates before queue width/truncation.
+2. The same boundary now covers queue participants and subjects, onboarding
+   identities, contact rows, DKIM labels and dynamic footer status text.
+3. A unit regression covers ESC, RLO, LRI, newline and tab. The unchanged
+   Crossterm capture now reports `terminal_contains_rlo=false` and contains
+   the UTF-8 replacement marker at the original RLO position.
 
 ---
 

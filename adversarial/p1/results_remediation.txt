@@ -1,0 +1,58 @@
+Reviewed commit: 4d04393b2fcd9f8cee25029279cc2fe3bd4a3b5c
+Fix commit: 562aea7d3b29ec64c6e65851137caf557b01750b
+Date: 2026-11-19 UTC
+
+P1-A — unchanged end-to-end OpenPGP harness
+Command: python3 adversarial/p1/openpgp-compression-bomb/run.py
+
+[control fixture]
+plaintext_bytes=1048576
+encrypted_bytes=1237
+outer_message_bytes=2161
+[control decrypt]
+elapsed_ms=156
+result=ok body_text_bytes=1048534
+exit_status=0
+wall_ms=306.0
+max_rss_kib=80424
+[candidate fixture]
+plaintext_bytes=134217728
+encrypted_bytes=130670
+outer_message_bytes=179279
+[candidate decrypt]
+elapsed_ms=1025
+result=error message is 67108865 bytes; configured maximum is 67108864
+exit_status=0
+wall_ms=1158.3
+max_rss_kib=78040
+[candidate under 180000 KiB RLIMIT_AS]
+elapsed_ms=906
+result=error message is 67108865 bytes; configured maximum is 67108864
+exit_status=0
+wall_ms=1098.5
+max_rss_kib=77544
+
+The variable profile/message UUIDs are omitted. The same fixed-size fixture
+that previously aborted under RLIMIT_AS now returns the configured error.
+
+P1-B — unchanged real Ratatui/Crossterm capture
+Command: CARGO_TARGET_DIR=target cargo run -q --locked --manifest-path adversarial/p1/tui-bidi-queue/Cargo.toml
+
+stored_subject="Invoice \\u{202e}moc.live@troppus"
+terminal_contains_rlo=false
+terminal_subject_window begins:
+[73, 110, 118, 111, 105, 99, 101, 32, 239, 191, 189, 109, 111, 99, 46, 108, 105, 118, 101, 64, 116, 114, 111, 112, 112, 117, 115]
+
+Bytes 239,191,189 are UTF-8 U+FFFD at the stored RLO's former position.
+
+Regression commands:
+
+- cargo test -p lizard-mail-backend --lib openpgp::tests --locked
+  Result: 8 passed, 0 failed.
+- cargo test -p lizard-mail-tui --locked
+  Result: 20 passed, 0 failed across unit and integration tests.
+- cargo clippy -p lizard-mail-backend -p lizard-mail-tui --all-targets --locked -- -D warnings
+  Result: blocked by pre-existing result_large_err lints in vendor/async-imap.
+- cargo clippy -p lizard-mail-backend -p lizard-mail-tui --all-targets --locked --no-deps -- -D warnings
+  Result: blocked by pre-existing lints in automation.rs, heuristic.rs,
+  thread.rs and a CalDAV test. No reported lint points to this remediation.

@@ -3,6 +3,11 @@
 This summary covers only the Lizard mail-client index. No httpd-rs search,
 finding, duration or point total is included.
 
+Both confirmed Pass-1 findings were remediated by
+`562aea7d3b29ec64c6e65851137caf557b01750b`. The yield calculation is a
+historical measure of confirmed defects and therefore does not remove fixed
+findings.
+
 ## Formula
 
 For each confirmed unique finding:

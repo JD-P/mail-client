@@ -10,6 +10,9 @@ mail-client-only. They must never be combined with the httpd-rs yield index.
 The index currently covers **Pass 1** against commit
 `4d04393b2fcd9f8cee25029279cc2fe3bd4a3b5c`: one high denial-of-service
 finding and one low integrity finding, contributing **101 adjusted points**.
+Both were remediated by
+`562aea7d3b29ec64c6e65851137caf557b01750b`; confirmed historical findings
+remain in the yield total.
 
 | Primary family | Confirmed findings | Adjusted points |
 |---|---:|---:|
@@ -30,7 +33,8 @@ zero-finding search, contributes its active duration.
 | `findings_p1.md` | Pass-1 analysis, impact, reproduction, remediation and negative observations |
 | `p1/openpgp-compression-bomb/` | End-to-end received-message OpenPGP expansion harness |
 | `p1/tui-bidi-queue/` | Real Ratatui/Crossterm queue-output harness |
-| `p1/results_*.txt` | Retained measurements from the reviewed commit |
+| `p1/results_openpgp.txt`, `p1/results_tui_bidi.txt` | Retained measurements from the reviewed commit |
+| `p1/results_remediation.txt` | Post-fix regression and resource measurements |
 | `p1/negative-results.txt` | Rejected hypotheses and scoped negative evidence |
 | `vulnerability-families.md` | Fixed classification/scoring contract and mail-client yield table |
 | `yield-index/searches.jsonl` | Mail-client logical searches and active segments |
