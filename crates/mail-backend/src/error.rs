@@ -16,6 +16,7 @@ pub enum ErrorCode {
     Parse,
     Query,
     Imap,
+    CalDav,
     CredentialStore,
     OpenPgp,
     SearchIndex,
@@ -58,6 +59,8 @@ pub enum BackendError {
     Query(#[from] QueryParseError),
     #[error("IMAP protocol error: {0}")]
     Imap(String),
+    #[error("CalDAV protocol error: {0}")]
+    CalDav(String),
     #[error("credential store error: {0}")]
     CredentialStore(String),
     #[error("OpenPGP error: {0}")]
@@ -88,6 +91,7 @@ impl BackendError {
             Self::Parse => ErrorCode::Parse,
             Self::Query(_) => ErrorCode::Query,
             Self::Imap(_) => ErrorCode::Imap,
+            Self::CalDav(_) => ErrorCode::CalDav,
             Self::CredentialStore(_) => ErrorCode::CredentialStore,
             Self::OpenPgp(_) => ErrorCode::OpenPgp,
             Self::SearchIndex(_) => ErrorCode::SearchIndex,

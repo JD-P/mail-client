@@ -11,7 +11,7 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 version INTEGER NOT NULL
             );
             INSERT INTO schema_meta(version)
-                SELECT 20 WHERE NOT EXISTS (SELECT 1 FROM schema_meta);
+                SELECT 21 WHERE NOT EXISTS (SELECT 1 FROM schema_meta);
 
             CREATE TABLE IF NOT EXISTS accounts (
                 id TEXT PRIMARY KEY,
@@ -28,6 +28,56 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 queued_at INTEGER NOT NULL,
                 attempts INTEGER NOT NULL DEFAULT 0,
                 last_error TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS calendar_accounts (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                base_url TEXT NOT NULL,
+                username TEXT NOT NULL,
+                credential_ref TEXT NOT NULL,
+                principal_url TEXT,
+                home_url TEXT,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS calendar_collections (
+                id TEXT PRIMARY KEY,
+                account_id TEXT NOT NULL REFERENCES calendar_accounts(id) ON DELETE CASCADE,
+                remote_url TEXT NOT NULL,
+                display_name TEXT NOT NULL,
+                description TEXT,
+                color TEXT,
+                supports_events INTEGER NOT NULL,
+                writable INTEGER NOT NULL,
+                sync_token TEXT,
+                ctag TEXT,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                UNIQUE(account_id, remote_url)
+            );
+
+            CREATE TABLE IF NOT EXISTS calendar_events (
+                id TEXT PRIMARY KEY,
+                calendar_id TEXT NOT NULL REFERENCES calendar_collections(id) ON DELETE CASCADE,
+                remote_href TEXT NOT NULL,
+                etag TEXT,
+                uid TEXT NOT NULL,
+                recurrence_id TEXT,
+                summary TEXT,
+                description TEXT,
+                location TEXT,
+                starts_at_json TEXT,
+                ends_at_json TEXT,
+                organizer TEXT,
+                attendees_json TEXT NOT NULL DEFAULT '[]',
+                status TEXT,
+                raw_icalendar TEXT NOT NULL,
+                source_message_id TEXT REFERENCES messages(id) ON DELETE SET NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                UNIQUE(calendar_id, remote_href)
             );
 
             CREATE TABLE IF NOT EXISTS account_storage_quotas (
@@ -667,6 +717,12 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 ON imap_mutation_conflicts(mutation_id, resolved_at, created_at);
             CREATE INDEX IF NOT EXISTS submissions_due
                 ON submissions(status, next_attempt_at, created_at, id);
+            CREATE INDEX IF NOT EXISTS calendar_collections_account
+                ON calendar_collections(account_id, display_name, id);
+            CREATE INDEX IF NOT EXISTS calendar_events_calendar
+                ON calendar_events(calendar_id, updated_at, id);
+            CREATE INDEX IF NOT EXISTS calendar_events_uid
+                ON calendar_events(calendar_id, uid, recurrence_id);
             "#,
         )
         .await?;
@@ -1285,7 +1341,15 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
             .await?;
         version = 20;
     }
-    if version != 20 {
+    if version == 20 {
+        // Version twenty-one calendar tables are created idempotently by the
+        // common schema batch above.
+        connection
+            .execute("UPDATE schema_meta SET version = 21", ())
+            .await?;
+        version = 21;
+    }
+    if version != 21 {
         return Err(crate::BackendError::InvalidInput(format!(
             "unsupported database schema version {version}"
         )));
@@ -1502,7 +1566,7 @@ mod tests {
             .await
             .unwrap();
         let row = rows.next().await.unwrap().unwrap();
-        assert_eq!(row.get::<i64>(0).unwrap(), 20);
+        assert_eq!(row.get::<i64>(0).unwrap(), 21);
         assert_eq!(row.get::<String>(1).unwrap(), r#"{"received_at":123}"#);
         drop(rows);
 
@@ -1545,7 +1609,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap(),
-            20
+            21
         );
         drop(rows);
 
@@ -1682,7 +1746,7 @@ mod tests {
             .await
             .unwrap();
         let row = rows.next().await.unwrap().unwrap();
-        assert_eq!(row.get::<i64>(0).unwrap(), 20);
+        assert_eq!(row.get::<i64>(0).unwrap(), 21);
         assert_eq!(row.get::<String>(1).unwrap(), "CaseSensitive@example.test");
         assert!(row.get::<bool>(2).unwrap());
         assert!(row.get::<bool>(3).unwrap());

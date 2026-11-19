@@ -61,3 +61,6 @@ id_type!(SubmissionId);
 id_type!(ImapMutationId);
 id_type!(ImapMutationConflictId);
 id_type!(SavedSearchId);
+id_type!(CalendarAccountId);
+id_type!(CalendarId);
+id_type!(CalendarEventId);

@@ -1,8 +1,9 @@
 use crate::{
-    AccountId, AccountIdentityId, ContactId, DraftAttachmentId, DraftId, FilterRuleId, FindingId,
-    FolderId, HeuristicId, ImapMutationConflictId, ImapMutationId, MessageId, SubmissionId,
-    ThreadId,
+    AccountId, AccountIdentityId, CalendarAccountId, CalendarEventId, CalendarId, ContactId,
+    DraftAttachmentId, DraftId, FilterRuleId, FindingId, FolderId, HeuristicId,
+    ImapMutationConflictId, ImapMutationId, MessageId, SubmissionId, ThreadId,
 };
+use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -133,6 +134,171 @@ pub struct NewAccount {
     /// An opaque reference into a platform credential store. Never a password.
     pub credential_ref: Option<String>,
     pub imap: Option<ImapSettings>,
+}
+
+/// A provider-neutral CalDAV account. `base_url` is an explicitly configured
+/// HTTPS origin or canonical CalDAV endpoint; discovered URLs may not escape
+/// that origin, preventing a server response from redirecting credentials.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CalendarAccount {
+    pub id: CalendarAccountId,
+    pub name: String,
+    pub base_url: String,
+    pub username: String,
+    pub credential_ref: String,
+    pub principal_url: Option<String>,
+    pub home_url: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct NewCalendarAccount {
+    pub name: String,
+    pub base_url: String,
+    pub username: String,
+    /// Opaque credential-store reference. Passwords and OAuth tokens never
+    /// enter the calendar database.
+    pub credential_ref: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CalendarCollection {
+    pub id: CalendarId,
+    pub account_id: CalendarAccountId,
+    pub remote_url: String,
+    pub display_name: String,
+    pub description: Option<String>,
+    pub color: Option<String>,
+    pub supports_events: bool,
+    pub writable: bool,
+    /// Last remote sync token which has been completely applied locally.
+    pub sync_token: Option<String>,
+    pub ctag: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+/// Lossless representation of the DATE and DATE-TIME forms used by RFC 5545.
+/// Floating times remain floating; the backend never guesses a timezone.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CalendarMoment {
+    Date {
+        value: NaiveDate,
+    },
+    Utc {
+        value: DateTime<Utc>,
+    },
+    Local {
+        value: NaiveDateTime,
+        timezone: String,
+    },
+    Floating {
+        value: NaiveDateTime,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CalendarAttendee {
+    pub address: String,
+    pub display_name: Option<String>,
+    pub role: Option<String>,
+    pub participation_status: Option<String>,
+    pub rsvp: Option<bool>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CalendarEvent {
+    pub id: CalendarEventId,
+    pub calendar_id: CalendarId,
+    pub remote_href: String,
+    pub etag: Option<String>,
+    pub uid: String,
+    pub recurrence_id: Option<String>,
+    pub summary: Option<String>,
+    pub description: Option<String>,
+    pub location: Option<String>,
+    pub starts_at: Option<CalendarMoment>,
+    pub ends_at: Option<CalendarMoment>,
+    pub organizer: Option<String>,
+    pub attendees: Vec<CalendarAttendee>,
+    pub status: Option<String>,
+    /// Complete calendar resource after HTTP or CalDAV XML transport decoding.
+    pub raw_icalendar: String,
+    pub source_message_id: Option<MessageId>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+/// Editable proposal. A mail message can prefill this structure, but no event
+/// is written until a caller explicitly submits it to a selected calendar.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CalendarEventDraft {
+    pub uid: Option<String>,
+    pub summary: String,
+    pub description: Option<String>,
+    pub location: Option<String>,
+    pub starts_at: Option<CalendarMoment>,
+    pub ends_at: Option<CalendarMoment>,
+    pub attendees: Vec<CalendarAttendee>,
+    pub status: Option<String>,
+    pub source_message_id: Option<MessageId>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CalendarEventFilter {
+    pub calendar_id: CalendarId,
+    pub page_size: usize,
+    pub cursor: Option<String>,
+}
+
+impl CalendarEventFilter {
+    pub fn new(calendar_id: CalendarId) -> Self {
+        Self {
+            calendar_id,
+            page_size: 50,
+            cursor: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CalendarDiscoveryReport {
+    pub account: CalendarAccount,
+    pub calendars: Vec<CalendarCollection>,
+    pub removed_calendar_ids: Vec<CalendarId>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CalendarSyncReport {
+    pub calendar_id: CalendarId,
+    pub full_sync: bool,
+    pub created: u64,
+    pub updated: u64,
+    pub deleted: u64,
+    pub sync_token: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CalDavEngineConfig {
+    pub request_timeout_seconds: u64,
+    pub max_xml_response_bytes: usize,
+    pub max_icalendar_resource_bytes: usize,
+    pub max_resources_per_response: usize,
+    pub max_xml_nodes: usize,
+}
+
+impl Default for CalDavEngineConfig {
+    fn default() -> Self {
+        Self {
+            request_timeout_seconds: 30,
+            max_xml_response_bytes: 16 * 1024 * 1024,
+            max_icalendar_resource_bytes: 4 * 1024 * 1024,
+            max_resources_per_response: 20_000,
+            max_xml_nodes: 250_000,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

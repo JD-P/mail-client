@@ -1689,6 +1689,8 @@ async fn native_credential_reference_count(connection: &turso::Connection) -> Re
                 UNION ALL
                 SELECT credential_ref FROM smtp_accounts WHERE credential_ref LIKE 'lizard-credential:v1:native:%'
                 UNION ALL
+                SELECT credential_ref FROM calendar_accounts WHERE credential_ref LIKE 'lizard-credential:v1:native:%'
+                UNION ALL
                 SELECT credential_ref FROM openpgp_secret_key_providers WHERE credential_ref LIKE 'lizard-credential:v1:native:%'
             )"#,
             (),

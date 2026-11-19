@@ -607,6 +607,29 @@ impl Backend {
         Accounts(self.clone())
     }
 
+    pub fn calendar_accounts(&self) -> crate::CalendarAccounts {
+        crate::CalendarAccounts::new(self.clone())
+    }
+
+    pub fn calendars(&self) -> crate::Calendars {
+        crate::Calendars::new(self.clone())
+    }
+
+    pub fn caldav_engine(
+        &self,
+        credentials: Arc<dyn crate::CalDavCredentialProvider>,
+        config: crate::CalDavEngineConfig,
+    ) -> Result<crate::CalDavEngine> {
+        crate::CalDavEngine::new(self.clone(), credentials, config)
+    }
+
+    pub fn managed_caldav_engine(
+        &self,
+        config: crate::CalDavEngineConfig,
+    ) -> Result<crate::CalDavEngine> {
+        self.caldav_engine(Arc::new(self.credentials()), config)
+    }
+
     pub fn account_identities(&self) -> crate::AccountIdentities {
         crate::AccountIdentities::new(self.clone())
     }
@@ -644,14 +667,17 @@ impl Backend {
         }
         let mut rows = connection
             .query(
-                "SELECT EXISTS(SELECT 1 FROM accounts WHERE credential_ref = ?1), EXISTS(SELECT 1 FROM smtp_accounts WHERE credential_ref = ?1)",
+                "SELECT EXISTS(SELECT 1 FROM accounts WHERE credential_ref = ?1), EXISTS(SELECT 1 FROM smtp_accounts WHERE credential_ref = ?1), EXISTS(SELECT 1 FROM calendar_accounts WHERE credential_ref = ?1), EXISTS(SELECT 1 FROM openpgp_secret_key_providers WHERE credential_ref = ?1)",
                 (reference,),
             )
             .await?;
         let row = rows.next().await?.ok_or_else(|| {
             BackendError::CredentialStore("could not check credential ownership".into())
         })?;
-        let shared = row.get::<bool>(0)? || row.get::<bool>(1)?;
+        let shared = row.get::<bool>(0)?
+            || row.get::<bool>(1)?
+            || row.get::<bool>(2)?
+            || row.get::<bool>(3)?;
         drop(rows);
         if shared {
             return Ok(false);

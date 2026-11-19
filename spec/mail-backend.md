@@ -54,6 +54,47 @@ Warm, Cold and Spam are canonical product-policy queries over backend facts.
 Ordinary folders, remote mailboxes, local labels and rule-produced placement
 are backend state.
 
+## Calendar integration
+
+The backend exposes a provider-neutral CalDAV layer so frontends can turn a
+mail obligation into a calendar proposal without coupling the mail model to
+Google Calendar, Fastmail or another provider. Calendar account rows contain
+an HTTPS endpoint, username and opaque credential reference. Password and
+OAuth credentials use the existing credential-provider boundary; token refresh
+and provider authorization remain the responsibility of the credential broker.
+
+`CalDavEngine` implements WebDAV principal and calendar-home discovery,
+calendar collection enumeration, complete VEVENT synchronization and RFC 6578
+sync-token deltas. It preserves the complete iCalendar resource while projecting
+bounded event metadata for local clients; event listings use opaque keyset
+cursors and capped pages rather than unbounded collection reads. Writes use
+ETags (`If-None-Match` for creation and `If-Match` for updates and deletion),
+so a concurrent remote edit becomes an explicit conflict rather than a silent
+overwrite. Loss of local state after a successful remote write is recoverable
+by the next sync.
+
+Server-supplied hrefs and redirects may not escape the explicitly configured
+HTTPS origin. XML, HTTP bodies, resource counts, attendee counts and individual
+iCalendar resources are bounded. A server that rejects its own sync token
+falls back to a full sync and the rejected token is discarded. Legal inbound
+CAL-ADDRESS values are retained, but new outbound attendees must be explicit
+email addresses.
+
+`Calendars::draft_from_message` only proposes a summary, description and local
+source-message association. It does not guess times, copy message recipients
+into attendees or write remote state. A frontend must let the user select the
+calendar, time and attendees before calling `create_event`; the private local
+message association is never included in the iCalendar data uploaded to the
+server.
+
+The initial boundary is VEVENT CRUD and synchronization. Recurrence rules and
+provider extensions remain lossless in the raw resource but are not expanded
+into occurrences locally. Scheduling replies, automatic invitation acceptance,
+VTODO, CardDAV and provider-specific Google APIs are outside this layer. Google
+Calendar integration therefore uses its CalDAV endpoint and a broker-issued
+OAuth token with calendar access rather than introducing Google-only backend
+objects.
+
 ## Local database
 
 Use local Turso as the authoritative metadata store and a separate native

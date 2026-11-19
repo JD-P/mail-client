@@ -11,6 +11,7 @@ mod authentication;
 mod automation;
 mod backend;
 mod blob;
+mod caldav;
 mod credential;
 mod delivery_auth;
 mod error;
@@ -39,14 +40,15 @@ mod types;
 
 pub use automation::{FilterRules, Heuristics};
 pub use backend::{Accounts, Backend, Contacts, Events, Folders, Messages, Search, Sync};
+pub use caldav::{CalDavCredentialProvider, CalDavEngine, CalendarAccounts, Calendars};
 pub use credential::{CredentialStorageKind, Credentials};
 pub use error::{BackendError, ErrorCode, Result};
 pub use event::{ChangeCursor, EventRecvError, EventSubscription};
 pub use heuristic::compile_heuristic;
 pub use id::{
-    AccountId, AccountIdentityId, ContactId, DraftAttachmentId, DraftId, FilterRuleId, FindingId,
-    FolderId, HeuristicId, ImapMutationConflictId, ImapMutationId, MessageId, SavedSearchId,
-    SubmissionId, ThreadId,
+    AccountId, AccountIdentityId, CalendarAccountId, CalendarEventId, CalendarId, ContactId,
+    DraftAttachmentId, DraftId, FilterRuleId, FindingId, FolderId, HeuristicId,
+    ImapMutationConflictId, ImapMutationId, MessageId, SavedSearchId, SubmissionId, ThreadId,
 };
 pub use identity::AccountIdentities;
 pub use imap::imap_fetch_message;
