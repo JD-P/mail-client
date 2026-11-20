@@ -971,7 +971,10 @@ attachments stream from hash-checked blobs under caller limits and safe export
 uses a caller-selected create-new path, never the untrusted filename. ZIP
 inspection checks entry, compressed-input, per-entry, total-output, path and
 compression-ratio budgets before expansion. The built-in security pass uses
-only ZIP directory metadata and never calls the expansion API. Document
+only ZIP directory metadata and never calls the expansion API. Both explicit
+ZIP inspection and expansion cross the disposable, fail-closed worker boundary
+specified in [archive-isolation.md](archive-isolation.md); managed IMAP reuses
+its already-established disposable sandbox. Document
 extraction is an optional trait boundary with byte, output and timeout budgets;
 implementations are required to run disposable sandbox workers.
 

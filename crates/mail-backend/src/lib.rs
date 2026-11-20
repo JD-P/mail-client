@@ -7,6 +7,7 @@
 //! credential-provider authentication, receive synchronization and a durable
 //! outbound mutation queue; it still shares the same ingestion path.
 
+mod archive_worker;
 mod authentication;
 mod automation;
 mod backend;
@@ -40,6 +41,7 @@ mod storage;
 mod thread;
 mod types;
 
+pub use archive_worker::ArchiveIsolationConfig;
 pub use automation::{FilterRules, Heuristics};
 pub use backend::{Accounts, Backend, Contacts, Events, Folders, Messages, Search, Sync};
 pub use caldav::{CalDavCredentialProvider, CalDavEngine, CalendarAccounts, Calendars};
@@ -80,4 +82,9 @@ pub use types::*;
 #[doc(hidden)]
 pub fn __run_imap_sync_worker() -> std::result::Result<(), String> {
     imap_worker::run_worker_process()
+}
+
+#[doc(hidden)]
+pub fn __run_archive_worker() -> std::result::Result<(), String> {
+    archive_worker::run_worker_process()
 }

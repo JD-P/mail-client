@@ -51,6 +51,10 @@ libc = "0.2"
 name = "lizard-mail-sync-worker"
 path = "src/bin/lizard-mail-sync-worker.rs"
 
+[[bin]]
+name = "lizard-mail-archive-worker"
+path = "src/bin/lizard-mail-archive-worker.rs"
+
 [dev-dependencies]
 rcgen = "0.14"
 tempfile = "3"

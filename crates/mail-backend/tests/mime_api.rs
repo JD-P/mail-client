@@ -1,11 +1,28 @@
 use base64::{engine::general_purpose::STANDARD, Engine};
 use futures_util::future::BoxFuture;
 use lizard_mail_backend::{
-    ArchiveInspectionState, ArchiveLimits, Backend, BackendConfig, BackendError,
-    DocumentExtractionLimits, DocumentExtractionRequest, DocumentExtractionResult, IngestMessage,
-    MimeDecodeState, MimeParseState, MimePartKind, SandboxedDocumentExtractor,
+    ArchiveInspectionState, ArchiveIsolationConfig, ArchiveLimits, Backend, BackendConfig,
+    BackendError, DocumentExtractionLimits, DocumentExtractionRequest, DocumentExtractionResult,
+    IngestMessage, MimeDecodeState, MimeParseState, MimePartKind, SandboxedDocumentExtractor,
 };
 use std::io::{Cursor, Write};
+use std::path::PathBuf;
+use std::process::Command;
+use std::time::Duration;
+
+fn archive_isolation() -> ArchiveIsolationConfig {
+    ArchiveIsolationConfig {
+        worker_path: PathBuf::from(env!("CARGO_BIN_EXE_lizard-mail-archive-worker")),
+        wall_timeout: Duration::from_secs(10),
+    }
+}
+
+fn archive_sandbox_available() -> bool {
+    Command::new(env!("CARGO_BIN_EXE_lizard-mail-archive-worker"))
+        .arg("--sandbox-self-test")
+        .output()
+        .is_ok_and(|output| output.status.success())
+}
 
 struct FixtureExtractor;
 
@@ -176,34 +193,60 @@ async fn materializes_mime_tree_and_streams_decoded_resources() {
         .await
         .is_err());
 
-    let inspection = backend
-        .mime()
-        .inspect_archive(id, &archive.id, ArchiveLimits::default())
-        .await
-        .unwrap();
-    assert_eq!(inspection.state, ArchiveInspectionState::Complete);
-    assert_eq!(inspection.entries[0].path, "folder/note.txt");
-    assert_eq!(
-        backend
+    if archive_sandbox_available() {
+        let inspection = backend
             .mime()
-            .read_archive_entry(id, &archive.id, 0, ArchiveLimits::default())
+            .inspect_archive_with_isolation(
+                id,
+                &archive.id,
+                ArchiveLimits::default(),
+                archive_isolation(),
+            )
             .await
-            .unwrap(),
-        b"archive payload"
-    );
-    let limited = backend
-        .mime()
-        .inspect_archive(
-            id,
-            &archive.id,
-            ArchiveLimits {
-                max_total_uncompressed_bytes: 2,
-                ..ArchiveLimits::default()
-            },
-        )
-        .await
-        .unwrap();
-    assert_eq!(limited.state, ArchiveInspectionState::Limited);
+            .unwrap();
+        assert_eq!(inspection.state, ArchiveInspectionState::Complete);
+        assert_eq!(inspection.entries[0].path, "folder/note.txt");
+        assert_eq!(
+            backend
+                .mime()
+                .read_archive_entry_with_isolation(
+                    id,
+                    &archive.id,
+                    0,
+                    ArchiveLimits::default(),
+                    archive_isolation(),
+                )
+                .await
+                .unwrap(),
+            b"archive payload"
+        );
+        let limited = backend
+            .mime()
+            .inspect_archive_with_isolation(
+                id,
+                &archive.id,
+                ArchiveLimits {
+                    max_total_uncompressed_bytes: 2,
+                    ..ArchiveLimits::default()
+                },
+                archive_isolation(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(limited.state, ArchiveInspectionState::Limited);
+    } else {
+        let error = backend
+            .mime()
+            .inspect_archive_with_isolation(
+                id,
+                &archive.id,
+                ArchiveLimits::default(),
+                archive_isolation(),
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("archive worker boundary"));
+    }
 
     let extracted = backend
         .mime()
@@ -252,16 +295,40 @@ async fn archive_paths_are_never_treated_as_export_paths() {
         .await
         .unwrap();
     let archive = backend.messages().get(id).await.unwrap().attachments[1].clone();
+    if !archive_sandbox_available() {
+        assert!(backend
+            .mime()
+            .inspect_archive_with_isolation(
+                id,
+                &archive.id,
+                ArchiveLimits::default(),
+                archive_isolation(),
+            )
+            .await
+            .is_err());
+        return;
+    }
     let inspection = backend
         .mime()
-        .inspect_archive(id, &archive.id, ArchiveLimits::default())
+        .inspect_archive_with_isolation(
+            id,
+            &archive.id,
+            ArchiveLimits::default(),
+            archive_isolation(),
+        )
         .await
         .unwrap();
     assert_eq!(inspection.state, ArchiveInspectionState::Limited);
     assert_eq!(inspection.entries[0].path, "[unsafe path omitted]");
     assert!(backend
         .mime()
-        .read_archive_entry(id, &archive.id, 0, ArchiveLimits::default())
+        .read_archive_entry_with_isolation(
+            id,
+            &archive.id,
+            0,
+            ArchiveLimits::default(),
+            archive_isolation(),
+        )
         .await
         .is_err());
 }

@@ -1,11 +1,28 @@
 use base64::Engine;
 use lizard_mail_backend::{
-    ArchiveInspectionState, ArchiveLimits, Backend, BackendConfig, ContactAddress, IngestMessage,
-    NewContact,
+    ArchiveInspectionState, ArchiveIsolationConfig, ArchiveLimits, Backend, BackendConfig,
+    ContactAddress, IngestMessage, NewContact,
 };
 use std::collections::BTreeSet;
 use std::io::{Cursor, Write};
+use std::path::PathBuf;
+use std::process::Command;
+use std::time::Duration;
 use zip::write::SimpleFileOptions;
+
+fn archive_isolation() -> ArchiveIsolationConfig {
+    ArchiveIsolationConfig {
+        worker_path: PathBuf::from(env!("CARGO_BIN_EXE_lizard-mail-archive-worker")),
+        wall_timeout: Duration::from_secs(10),
+    }
+}
+
+fn archive_sandbox_available() -> bool {
+    Command::new(env!("CARGO_BIN_EXE_lizard-mail-archive-worker"))
+        .arg("--sandbox-self-test")
+        .output()
+        .is_ok_and(|output| output.status.success())
+}
 
 fn message(
     from: &str,
@@ -419,15 +436,15 @@ async fn archive_security_reads_directory_metadata_but_never_inflates_entries() 
         .await
         .unwrap();
     let stored = backend.messages().get(id).await.unwrap();
-    assert_codes(
-        &stored,
-        &[
-            "attachment_type_mismatch",
-            "executable_attachment",
-            "executable_in_archive",
-            "uninspectable_archive",
-        ],
-    );
+    let mut expected = vec![
+        "attachment_type_mismatch",
+        "executable_attachment",
+        "uninspectable_archive",
+    ];
+    if archive_sandbox_available() {
+        expected.push("executable_in_archive");
+    }
+    assert_codes(&stored, &expected);
     for finding in stored
         .findings
         .iter()
@@ -452,16 +469,24 @@ async fn archive_security_reads_directory_metadata_but_never_inflates_entries() 
         max_total_uncompressed_bytes: 64 * 1024 * 1024,
         max_compression_ratio: 100,
     };
-    let inspection = backend
-        .mime()
-        .inspect_archive(id, &high_ratio.id, limits.clone())
-        .await
-        .unwrap();
-    assert_eq!(inspection.state, ArchiveInspectionState::Limited);
-    assert_eq!(inspection.entries[0].uncompressed_size, zeros.len() as u64);
-    assert!(backend
-        .mime()
-        .read_archive_entry(id, &high_ratio.id, 0, limits)
-        .await
-        .is_err());
+    if archive_sandbox_available() {
+        let inspection = backend
+            .mime()
+            .inspect_archive_with_isolation(id, &high_ratio.id, limits.clone(), archive_isolation())
+            .await
+            .unwrap();
+        assert_eq!(inspection.state, ArchiveInspectionState::Limited);
+        assert_eq!(inspection.entries[0].uncompressed_size, zeros.len() as u64);
+        assert!(backend
+            .mime()
+            .read_archive_entry_with_isolation(id, &high_ratio.id, 0, limits, archive_isolation(),)
+            .await
+            .is_err());
+    } else {
+        assert!(backend
+            .mime()
+            .inspect_archive_with_isolation(id, &high_ratio.id, limits, archive_isolation(),)
+            .await
+            .is_err());
+    }
 }

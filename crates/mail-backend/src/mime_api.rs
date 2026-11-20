@@ -1,15 +1,12 @@
 use crate::{
-    ArchiveEntry, ArchiveInspection, ArchiveInspectionState, ArchiveLimits, Backend, BackendError,
-    DocumentExtractionLimits, DocumentExtractionRequest, DocumentExtractionResult,
+    archive_worker::{self, ArchiveOperation, ArchiveOutput},
+    ArchiveInspection, ArchiveInspectionState, ArchiveIsolationConfig, ArchiveLimits, Backend,
+    BackendError, DocumentExtractionLimits, DocumentExtractionRequest, DocumentExtractionResult,
     MessageContentAvailability, MessageId, MimeDecodeState, MimeParseState, MimePart, MimePartKind,
     MimePartRole, MimeStructure, Result,
 };
 use futures_util::future::BoxFuture;
-use std::{
-    io::{Cursor, Read},
-    path::Path,
-    time::Duration,
-};
+use std::{path::Path, time::Duration};
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
 /// External document conversion boundary. Implementations must cross into a
@@ -216,7 +213,26 @@ impl Mime {
         attachment_id: &str,
         limits: ArchiveLimits,
     ) -> Result<ArchiveInspection> {
-        validate_archive_limits(&limits)?;
+        self.inspect_archive_with_isolation(
+            message_id,
+            attachment_id,
+            limits,
+            ArchiveIsolationConfig::default(),
+        )
+        .await
+    }
+
+    /// Inspect ZIP metadata in a disposable, fail-closed worker. The explicit
+    /// configuration exists for packaged applications and boundary tests; it
+    /// does not provide an in-process compatibility path.
+    pub async fn inspect_archive_with_isolation(
+        &self,
+        message_id: MessageId,
+        attachment_id: &str,
+        limits: ArchiveLimits,
+        isolation: ArchiveIsolationConfig,
+    ) -> Result<ArchiveInspection> {
+        archive_worker::validate_limits(&limits)?;
         if !self
             .attachment_media_type(message_id, attachment_id)
             .await?
@@ -232,9 +248,21 @@ impl Mime {
         let bytes = self
             .read_attachment(message_id, attachment_id, limits.max_archive_bytes)
             .await?;
-        tokio::task::spawn_blocking(move || inspect_zip(bytes, limits))
-            .await
-            .map_err(|error| BackendError::InvalidInput(format!("archive task failed: {error}")))?
+        // An IMAP sync worker is already disposable and its seccomp profile
+        // forbids nested exec. Reuse that established process boundary rather
+        // than weakening it. All ordinary backend callers use the dedicated
+        // archive worker below.
+        let output = if self.0.inner.search_deferred {
+            ArchiveOutput::Inspection(archive_worker::inspect_zip(&bytes, limits)?)
+        } else {
+            archive_worker::execute(bytes, limits, ArchiveOperation::Inspect, isolation).await?
+        };
+        match output {
+            ArchiveOutput::Inspection(inspection) => Ok(inspection),
+            ArchiveOutput::Entry(_) => Err(BackendError::InvalidInput(
+                "archive worker returned entry bytes for an inspection".into(),
+            )),
+        }
     }
 
     pub async fn read_archive_entry(
@@ -244,7 +272,27 @@ impl Mime {
         entry_index: u32,
         limits: ArchiveLimits,
     ) -> Result<Vec<u8>> {
-        validate_archive_limits(&limits)?;
+        self.read_archive_entry_with_isolation(
+            message_id,
+            attachment_id,
+            entry_index,
+            limits,
+            ArchiveIsolationConfig::default(),
+        )
+        .await
+    }
+
+    /// Expand exactly one ZIP entry in a disposable worker and validate its
+    /// byte count before returning it to the caller.
+    pub async fn read_archive_entry_with_isolation(
+        &self,
+        message_id: MessageId,
+        attachment_id: &str,
+        entry_index: u32,
+        limits: ArchiveLimits,
+        isolation: ArchiveIsolationConfig,
+    ) -> Result<Vec<u8>> {
+        archive_worker::validate_limits(&limits)?;
         if !self
             .attachment_media_type(message_id, attachment_id)
             .await?
@@ -257,9 +305,23 @@ impl Mime {
         let bytes = self
             .read_attachment(message_id, attachment_id, limits.max_archive_bytes)
             .await?;
-        tokio::task::spawn_blocking(move || read_zip_entry(bytes, entry_index, limits))
-            .await
-            .map_err(|error| BackendError::InvalidInput(format!("archive task failed: {error}")))?
+        let output = if self.0.inner.search_deferred {
+            ArchiveOutput::Entry(archive_worker::read_zip_entry(&bytes, entry_index, limits)?)
+        } else {
+            archive_worker::execute(
+                bytes,
+                limits,
+                ArchiveOperation::ReadEntry { entry_index },
+                isolation,
+            )
+            .await?
+        };
+        match output {
+            ArchiveOutput::Entry(bytes) => Ok(bytes),
+            ArchiveOutput::Inspection(_) => Err(BackendError::InvalidInput(
+                "archive worker returned metadata for an entry expansion".into(),
+            )),
+        }
     }
 
     pub async fn extract_document_text(
@@ -398,109 +460,6 @@ impl Mime {
             .await
             .map(|record| record.2.or(record.1))
     }
-}
-
-fn inspect_zip(bytes: Vec<u8>, limits: ArchiveLimits) -> Result<ArchiveInspection> {
-    let mut archive = match zip::ZipArchive::new(Cursor::new(bytes)) {
-        Ok(archive) => archive,
-        Err(error) => {
-            return Ok(ArchiveInspection {
-                state: ArchiveInspectionState::Invalid,
-                entries: Vec::new(),
-                total_uncompressed_bytes: 0,
-                detail: Some(error.to_string()),
-            });
-        }
-    };
-    let mut entries = Vec::new();
-    let mut total = 0u64;
-    let mut limited = archive.len() > limits.max_entries;
-    let mut encrypted = false;
-    for index in 0..archive.len().min(limits.max_entries) {
-        let file = archive
-            .by_index_raw(index)
-            .map_err(|error| BackendError::InvalidInput(error.to_string()))?;
-        let unsafe_name = file.enclosed_name().is_none();
-        let path = file
-            .enclosed_name()
-            .map(|path| path.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "[unsafe path omitted]".into());
-        encrypted |= file.encrypted();
-        let size = file.size();
-        let compressed = file.compressed_size();
-        total = total.saturating_add(size);
-        let ratio_exceeded = compressed == 0 && size > 0
-            || compressed > 0
-                && size > compressed.saturating_mul(u64::from(limits.max_compression_ratio));
-        limited |= unsafe_name
-            || size > limits.max_entry_bytes
-            || total > limits.max_total_uncompressed_bytes
-            || ratio_exceeded;
-        entries.push(ArchiveEntry {
-            index: index as u32,
-            path,
-            directory: file.is_dir(),
-            encrypted: file.encrypted(),
-            compressed_size: compressed,
-            uncompressed_size: size,
-        });
-    }
-    Ok(ArchiveInspection {
-        state: if encrypted {
-            ArchiveInspectionState::Encrypted
-        } else if limited {
-            ArchiveInspectionState::Limited
-        } else {
-            ArchiveInspectionState::Complete
-        },
-        entries,
-        total_uncompressed_bytes: total,
-        detail: limited.then(|| "archive expansion budget or safe-path rule was exceeded".into()),
-    })
-}
-
-fn read_zip_entry(bytes: Vec<u8>, entry_index: u32, limits: ArchiveLimits) -> Result<Vec<u8>> {
-    let inspection = inspect_zip(bytes.clone(), limits.clone())?;
-    if inspection.state != ArchiveInspectionState::Complete {
-        return Err(BackendError::Conflict(
-            "archive entry cannot be expanded unless inspection completed within budget".into(),
-        ));
-    }
-    let mut archive = zip::ZipArchive::new(Cursor::new(bytes))
-        .map_err(|error| BackendError::InvalidInput(error.to_string()))?;
-    let mut file = archive
-        .by_index(entry_index as usize)
-        .map_err(|error| BackendError::InvalidInput(error.to_string()))?;
-    if file.encrypted() || file.enclosed_name().is_none() || file.is_dir() {
-        return Err(BackendError::Conflict(
-            "archive entry is encrypted, unsafe, or not a regular file".into(),
-        ));
-    }
-    let mut output = Vec::with_capacity(file.size().min(limits.max_entry_bytes) as usize);
-    file.by_ref()
-        .take(limits.max_entry_bytes.saturating_add(1))
-        .read_to_end(&mut output)
-        .map_err(|error| BackendError::InvalidInput(error.to_string()))?;
-    if output.len() as u64 > limits.max_entry_bytes {
-        return Err(BackendError::InvalidInput(
-            "archive entry exceeded expansion budget".into(),
-        ));
-    }
-    Ok(output)
-}
-
-fn validate_archive_limits(limits: &ArchiveLimits) -> Result<()> {
-    if limits.max_archive_bytes == 0
-        || limits.max_entries == 0
-        || limits.max_entry_bytes == 0
-        || limits.max_total_uncompressed_bytes == 0
-        || limits.max_compression_ratio == 0
-    {
-        return Err(BackendError::InvalidInput(
-            "archive limits must be positive".into(),
-        ));
-    }
-    Ok(())
 }
 
 fn parse_attachment_id(value: &str) -> Result<u32> {

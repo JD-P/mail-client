@@ -50,6 +50,12 @@ Tantivy publication on a Linux x86-64 host with Landlock ABI 6:
 cargo test -p lizard-mail-backend --test imap_worker -- --ignored --nocapture
 ```
 
+`archive_worker.rs` exercises the disposable ZIP metadata/expansion boundary:
+full Landlock enforcement or fail-closed refusal, independent seccomp probes,
+x32 syscall termination, crash containment and bounded response validation.
+On a Landlock ABI 6 host, `mime_api.rs` also exercises successful metadata and
+single-entry round trips through the real worker.
+
 The container publishes Dovecot's IMAP and IMAPS ports on random loopback ports,
 creates an ephemeral test-only TLS certificate, and is force-removed by the test
 guard, including when an assertion unwinds.
