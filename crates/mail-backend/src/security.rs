@@ -2,8 +2,8 @@ use crate::heuristic::ProducedFinding;
 use crate::{
     ArchiveInspectionState, ArchiveLimits, Backend, DkimAuthenticationStatus, DkimSignatureStatus,
     FindingPresentation, FindingSeverity, FindingTargetKind, Heuristic, HeuristicEvaluationStatus,
-    HeuristicId, HeuristicSourceKind, Message, MessageContentAvailability, Result,
-    ThreadSenderTrust,
+    HeuristicId, HeuristicSourceKind, Message, MessageContentAvailability, OpenPgpSignatureStatus,
+    Result, ThreadSenderTrust,
 };
 use html5ever::tendril::StrTendril;
 use html5ever::tokenizer::states::RawKind;
@@ -13,7 +13,8 @@ use html5ever::tokenizer::{
 };
 use serde_json::json;
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::sync::OnceLock;
 use std::time::Duration;
 use turso::{params_from_iter, Connection, Value};
 use unicode_security::skeleton;
@@ -21,7 +22,7 @@ use url::{Host, Url};
 use uuid::Uuid;
 
 const BUILTIN_ID: Uuid = Uuid::from_u128(0x5f01da21_0f79_5f3e_b210_0d96438890ac);
-const BUILTIN_VERSION: u32 = 1;
+const BUILTIN_VERSION: u32 = 2;
 const BUILTIN_SOURCE: &str = "native:security-evidence";
 const MAX_FINDINGS: usize = 256;
 const MAX_HTML_TOKENS: usize = 100_000;
@@ -120,10 +121,12 @@ pub(crate) async fn initialize(connection: &mut Connection) -> Result<()> {
 pub(crate) async fn evaluate(backend: &Backend, message: &Message) -> Result<NativeEvaluation> {
     let context = contact_context(backend, message.summary.from_address.as_deref()).await?;
     let mut collector = FindingCollector::default();
+    sender_header_findings(backend, message, &mut collector).await?;
     identity_findings(backend, message, &context, &mut collector).await?;
 
     if message.summary.content_availability == MessageContentAvailability::Complete {
         dkim_findings(message, &mut collector);
+        openpgp_identity_findings(message, &mut collector);
         navigation_findings(message, &context, &mut collector);
         attachment_findings(backend, message, &mut collector).await;
     }
@@ -148,6 +151,76 @@ pub(crate) async fn evaluate(backend: &Backend, message: &Message) -> Result<Nat
     })
 }
 
+async fn sender_header_findings(
+    backend: &Backend,
+    message: &Message,
+    collector: &mut FindingCollector,
+) -> Result<()> {
+    // The MIME projection accepts an author only after proving the From shape
+    // is singular. Avoid rereading ordinary message blobs; raw-header
+    // diagnostics are needed only when that projection deliberately refused
+    // to establish an identity.
+    if message.summary.from_address.is_some() {
+        return Ok(());
+    }
+    let blob_hash = {
+        let connection = backend.inner.connection.lock().await;
+        let mut rows = connection
+            .query(
+                "SELECT blob_hash FROM messages WHERE id = ?1",
+                (message.summary.id.to_string(),),
+            )
+            .await?;
+        rows.next()
+            .await?
+            .map(|row| row.get::<String>(0))
+            .transpose()?
+    };
+    let Some(blob_hash) = blob_hash else {
+        return Ok(());
+    };
+    let raw = backend.inner.blobs.get(&blob_hash).await?;
+    let Some(parsed) = mail_parser::MessageParser::new().parse_headers(&raw) else {
+        collector.push(message_finding(
+            "malformed_sender_header",
+            FindingPresentation::OpenInterstitial,
+            FindingSeverity::Danger,
+            json!({"detail": "RFC 5322 headers could not be parsed"}),
+        ));
+        return Ok(());
+    };
+    let fields = parsed.all_from().collect::<Vec<_>>();
+    let contains_group = fields.iter().any(|field| {
+        field
+            .iter()
+            .any(|address| matches!(address, mail_parser::Address::Group(_)))
+    });
+    let mailboxes = fields
+        .iter()
+        .flat_map(|field| field.mailboxes())
+        .filter_map(|mailbox| mailbox.address())
+        .take(9)
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let overlong = mailboxes
+        .iter()
+        .any(|address| address.chars().count() > 320);
+    if fields.len() != 1 || mailboxes.len() != 1 || contains_group || overlong {
+        collector.push(message_finding(
+            "ambiguous_sender_header",
+            FindingPresentation::OpenInterstitial,
+            FindingSeverity::Danger,
+            json!({
+                "from_field_count": fields.len(),
+                "mailboxes": mailboxes.into_iter().take(8).collect::<Vec<_>>(),
+                "contains_group": contains_group,
+                "overlong": overlong,
+            }),
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Default)]
 struct FindingCollector {
     values: Vec<ProducedFinding>,
@@ -168,6 +241,7 @@ impl FindingCollector {
 struct ContactContext {
     matched_names: Vec<String>,
     all_names: HashSet<String>,
+    all_name_skeletons: HashSet<String>,
     meaningful_domains: BTreeSet<String>,
     limited: bool,
 }
@@ -193,8 +267,12 @@ async fn contact_context(backend: &Backend, from: Option<&str>) -> Result<Contac
         let address = row.get::<String>(1)?;
         let accepted_name = row.get::<Option<String>>(2)?;
         context.all_names.insert(normalize_name(&display_name));
+        context
+            .all_name_skeletons
+            .insert(skeleton_string(&display_name));
         if let Some(name) = accepted_name.as_deref() {
             context.all_names.insert(normalize_name(name));
+            context.all_name_skeletons.insert(skeleton_string(name));
         }
         if normalized_from.as_deref() == Some(normalize_address(&address).as_str()) {
             context.matched_names.push(display_name);
@@ -219,6 +297,73 @@ async fn identity_findings(
     collector: &mut FindingCollector,
 ) -> Result<()> {
     collector.limited |= context.limited;
+    if message
+        .summary
+        .from_address
+        .as_deref()
+        .is_some_and(has_invisible_or_bidi)
+        || message
+            .summary
+            .from_name
+            .as_deref()
+            .is_some_and(has_invisible_or_bidi)
+    {
+        collector.push(message_finding(
+            "invisible_or_bidi_sender_identity",
+            FindingPresentation::OpenInterstitial,
+            FindingSeverity::Danger,
+            json!({
+                "from_address": message.summary.from_address,
+                "claimed_name": message.summary.from_name,
+            }),
+        ));
+    }
+
+    if let Some(sender_domain) = message
+        .summary
+        .from_address
+        .as_deref()
+        .and_then(address_domain)
+    {
+        if let Some(embedded) = embedded_popular_domain(&sender_domain) {
+            collector.push(message_finding(
+                "embedded_popular_sender_domain",
+                FindingPresentation::OpenInterstitial,
+                FindingSeverity::Danger,
+                json!({
+                    "sender_domain": sender_domain,
+                    "actual_registrable_domain": registrable(&sender_domain),
+                    "embedded_popular_domain": embedded,
+                }),
+            ));
+        }
+        if let Some(confusable) = confusable_popular_domain(&sender_domain) {
+            collector.push(message_finding(
+                "confusable_popular_sender_domain",
+                FindingPresentation::OpenInterstitial,
+                FindingSeverity::Danger,
+                json!({
+                    "sender_domain": sender_domain,
+                    "confusable_with": confusable,
+                }),
+            ));
+        }
+        let sender_skeleton = skeleton_string(&sender_domain);
+        if let Some(confusable) = context.meaningful_domains.iter().find(|candidate| {
+            !candidate.eq_ignore_ascii_case(&sender_domain)
+                && skeleton_string(candidate) == sender_skeleton
+        }) {
+            collector.push(message_finding(
+                "confusable_sender_domain",
+                FindingPresentation::OpenInterstitial,
+                FindingSeverity::Danger,
+                json!({
+                    "sender_domain": sender_domain,
+                    "confusable_with": confusable,
+                }),
+            ));
+        }
+    }
     if let Some(claimed_name) = message.summary.from_name.as_deref() {
         let claimed = normalize_name(claimed_name);
         if !context.matched_names.is_empty()
@@ -237,7 +382,12 @@ async fn identity_findings(
                     "from_address": message.summary.from_address,
                 }),
             ));
-        } else if context.matched_names.is_empty() && context.all_names.contains(&claimed) {
+        } else if context.matched_names.is_empty()
+            && (context.all_names.contains(&claimed)
+                || context
+                    .all_name_skeletons
+                    .contains(&skeleton_string(claimed_name)))
+        {
             collector.push(message_finding(
                 "cold_contact_name_collision",
                 FindingPresentation::MessageAnnotation,
@@ -280,6 +430,35 @@ async fn identity_findings(
                 json!({"from": from, "reply_to": different_replies}),
             ));
         }
+        for reply in &message.reply_to_addresses {
+            if let Some(reply_domain) = address_domain(reply) {
+                if let Some(embedded) = embedded_popular_domain(&reply_domain) {
+                    collector.push(message_finding(
+                        "embedded_popular_reply_domain",
+                        FindingPresentation::OpenInterstitial,
+                        FindingSeverity::Danger,
+                        json!({
+                            "reply_to": reply,
+                            "reply_domain": reply_domain,
+                            "actual_registrable_domain": registrable(&reply_domain),
+                            "embedded_popular_domain": embedded,
+                        }),
+                    ));
+                }
+                if let Some(confusable) = confusable_popular_domain(&reply_domain) {
+                    collector.push(message_finding(
+                        "confusable_popular_reply_domain",
+                        FindingPresentation::OpenInterstitial,
+                        FindingSeverity::Danger,
+                        json!({
+                            "reply_to": reply,
+                            "reply_domain": reply_domain,
+                            "confusable_with": confusable,
+                        }),
+                    ));
+                }
+            }
+        }
     }
 
     if message.threading.sender_trust == ThreadSenderTrust::Unknown {
@@ -298,6 +477,30 @@ async fn identity_findings(
         }
     }
     Ok(())
+}
+
+fn openpgp_identity_findings(message: &Message, collector: &mut FindingCollector) {
+    if message.openpgp.protected_header_mismatch {
+        collector.push(message_finding(
+            "openpgp_protected_header_mismatch",
+            FindingPresentation::OpenInterstitial,
+            FindingSeverity::Danger,
+            json!({"protected_headers": message.openpgp.protected_headers}),
+        ));
+    }
+    if message
+        .openpgp
+        .signatures
+        .iter()
+        .any(|signature| signature.status == OpenPgpSignatureStatus::Invalid)
+    {
+        collector.push(message_finding(
+            "invalid_openpgp_signature",
+            FindingPresentation::OpenInterstitial,
+            FindingSeverity::Danger,
+            json!({}),
+        ));
+    }
 }
 
 async fn references_known_thread(backend: &Backend, identifiers: &[String]) -> Result<bool> {
@@ -367,6 +570,37 @@ fn navigation_findings(
         .and_then(address_domain);
     for link in &message.links {
         let target = Some(link.id.clone());
+        if let Some(host) = link.host.as_deref() {
+            if let Some(embedded) = embedded_popular_domain(host) {
+                collector.push(link_or_message_finding(
+                    "embedded_popular_link_domain",
+                    target.clone(),
+                    FindingSeverity::Danger,
+                    json!({
+                        "destination": link.destination,
+                        "destination_host": host,
+                        "actual_registrable_domain": link.registrable_domain,
+                        "embedded_popular_domain": embedded,
+                    }),
+                ));
+            }
+            // `url` canonicalizes host names. Use the spelling from the raw
+            // destination when possible so an ASCII lookalike such as the
+            // capital `I` in `paypaI.com` remains available to UTS #39.
+            let presented_host = raw_host(&link.destination).unwrap_or_else(|| host.to_owned());
+            if let Some(confusable) = confusable_popular_domain(&presented_host) {
+                collector.push(link_or_message_finding(
+                    "confusable_popular_link_domain",
+                    target.clone(),
+                    FindingSeverity::Danger,
+                    json!({
+                        "destination": link.destination,
+                        "destination_host": presented_host,
+                        "confusable_with": confusable,
+                    }),
+                ));
+            }
+        }
         let Ok(url) = Url::parse(&link.destination) else {
             continue;
         };
@@ -849,12 +1083,61 @@ fn normalize_address(value: &str) -> String {
 fn address_domain(value: &str) -> Option<String> {
     value
         .rsplit_once('@')
-        .map(|(_, domain)| domain.trim_end_matches('.').to_ascii_lowercase())
+        .map(|(_, domain)| domain.trim_end_matches('.').to_owned())
         .filter(|domain| !domain.is_empty())
 }
 
 fn registrable(value: &str) -> Option<String> {
     psl::domain_str(value.trim_end_matches('.')).map(str::to_owned)
+}
+
+fn popular_domains() -> &'static HashSet<&'static str> {
+    static DOMAINS: OnceLock<HashSet<&'static str>> = OnceLock::new();
+    DOMAINS.get_or_init(|| {
+        include_str!("popular_domains.txt")
+            .lines()
+            .filter_map(|domain| psl::domain_str(domain).or(Some(domain)))
+            .collect()
+    })
+}
+
+fn popular_domain_skeletons() -> &'static BTreeMap<String, &'static str> {
+    static SKELETONS: OnceLock<BTreeMap<String, &'static str>> = OnceLock::new();
+    SKELETONS.get_or_init(|| {
+        let mut values = BTreeMap::new();
+        for domain in include_str!("popular_domains.txt").lines() {
+            let domain = psl::domain_str(domain).unwrap_or(domain);
+            values.entry(skeleton_string(domain)).or_insert(domain);
+        }
+        values
+    })
+}
+
+fn confusable_popular_domain(domain: &str) -> Option<String> {
+    let domain = domain.trim_end_matches('.');
+    let actual = registrable(domain).unwrap_or_else(|| domain.to_owned());
+    popular_domain_skeletons()
+        .get(&skeleton_string(&actual))
+        .filter(|popular| !popular.eq_ignore_ascii_case(&actual))
+        .map(|popular| (*popular).to_owned())
+}
+
+fn embedded_popular_domain(sender_domain: &str) -> Option<String> {
+    let sender_domain = sender_domain.trim_end_matches('.').to_ascii_lowercase();
+    let actual = registrable(&sender_domain)?;
+    let labels = sender_domain.split('.').collect::<Vec<_>>();
+    for width in (2..=labels.len()).rev() {
+        for start in 0..=labels.len() - width {
+            let candidate = labels[start..start + width].join(".");
+            if candidate != actual
+                && registrable(&candidate).as_deref() == Some(candidate.as_str())
+                && popular_domains().contains(candidate.as_str())
+            {
+                return Some(candidate);
+            }
+        }
+    }
+    None
 }
 
 fn skeleton_string(value: &str) -> String {

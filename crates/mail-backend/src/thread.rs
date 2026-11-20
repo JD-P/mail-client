@@ -679,7 +679,7 @@ async fn load_summary_on(connection: &Connection, id: ThreadId) -> Result<Thread
 
     let mut rows = connection
         .query(
-            "SELECT id, received_at, preview FROM messages WHERE thread_id = ?1 ORDER BY received_at DESC, id DESC LIMIT 1",
+            "SELECT id, received_at, preview, from_address, from_name FROM messages WHERE thread_id = ?1 ORDER BY received_at DESC, id DESC LIMIT 1",
             (id.to_string(),),
         )
         .await?;
@@ -690,6 +690,8 @@ async fn load_summary_on(connection: &Connection, id: ThreadId) -> Result<Thread
     let latest_message_id = parse_message_id(latest.get(0)?)?;
     let latest_received_at = latest.get(1)?;
     let latest_preview = latest.get(2)?;
+    let latest_from_address = latest.get(3)?;
+    let latest_from_name = latest.get(4)?;
     drop(rows);
 
     let mut rows = connection
@@ -707,6 +709,8 @@ async fn load_summary_on(connection: &Connection, id: ThreadId) -> Result<Thread
         id,
         subject,
         normalized_subject,
+        latest_from_address,
+        latest_from_name,
         participants,
         message_count,
         unread_count,

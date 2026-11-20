@@ -8,7 +8,7 @@ use html5ever::tokenizer::{
     BufferQueue, StartTag, TagToken, Token, TokenSink, TokenSinkResult, Tokenizer, TokenizerOpts,
 };
 use linkify::{LinkFinder, LinkKind};
-use mail_parser::{AddressList, HeaderForm, MessageParser, PartFlags, PartKind, PartRole};
+use mail_parser::{Address, AddressList, HeaderForm, MessageParser, PartFlags, PartKind, PartRole};
 use std::{
     cell::{Cell, RefCell},
     collections::HashMap,
@@ -72,12 +72,10 @@ pub(crate) fn parse_thread_headers(raw: &[u8]) -> Result<ParsedThreadHeaders> {
     let message = MessageParser::new()
         .parse_headers(raw)
         .ok_or(BackendError::Parse)?;
-    let sender = message.from().and_then(|addresses| addresses.first());
+    let (from_address, _) = unambiguous_from(&message);
     Ok(ParsedThreadHeaders {
         subject: message.subject().map(str::to_owned),
-        from_address: sender
-            .and_then(|mailbox| mailbox.address())
-            .map(normalize_address),
+        from_address,
         to_addresses: addresses(message.to()),
         cc_addresses: addresses(message.cc()),
         bcc_addresses: addresses(message.bcc()),
@@ -159,11 +157,7 @@ pub(crate) fn parse(raw: &[u8], limits: &IngestLimits) -> Result<ParsedMessage> 
         });
     };
 
-    let sender = message.from().and_then(|addresses| addresses.first());
-    let from_address = sender
-        .and_then(|mailbox| mailbox.address())
-        .map(normalize_address);
-    let from_name = sender.and_then(|mailbox| mailbox.name()).map(str::to_owned);
+    let (from_address, from_name) = unambiguous_from(&message);
 
     let mut limited = message
         .parts()
@@ -517,8 +511,44 @@ fn push_link(
 fn addresses(list: Option<AddressList<'_>>) -> Vec<String> {
     list.into_iter()
         .flat_map(|items| items.mailboxes())
-        .filter_map(|mailbox| mailbox.address().map(normalize_address))
+        .filter_map(|mailbox| mailbox.address().map(display_address))
         .collect()
+}
+
+/// Return an author only when the RFC 5322 From field has one physical field,
+/// contains exactly one mailbox, and does not use group syntax. Selecting the
+/// first mailbox from an ambiguous field turns attacker-controlled syntax into
+/// an application-authored identity claim, so ambiguity deliberately becomes
+/// `None` and is explained by the security-evidence pass.
+fn unambiguous_from(message: &mail_parser::Message<'_>) -> (Option<String>, Option<String>) {
+    let mut fields = message.all_from();
+    let Some(addresses) = fields.next() else {
+        return (None, None);
+    };
+    if fields.next().is_some()
+        || addresses
+            .iter()
+            .any(|address| matches!(address, Address::Group(_)))
+        || addresses.mailboxes().count() != 1
+    {
+        return (None, None);
+    }
+    let Some(mailbox) = addresses.first() else {
+        return (None, None);
+    };
+    let Some(address) = mailbox.address().filter(|address| {
+        !address.is_empty()
+            && address.chars().count() <= 320
+            && !address
+                .chars()
+                .any(|character| character.is_control() || matches!(character, '\n' | '\r'))
+    }) else {
+        return (None, None);
+    };
+    (
+        Some(display_address(address)),
+        mailbox.name().map(str::to_owned),
+    )
 }
 
 fn delivered_to_addresses(message: &mail_parser::Message<'_>) -> Vec<String> {
@@ -534,8 +564,14 @@ fn delivered_to_addresses(message: &mail_parser::Message<'_>) -> Vec<String> {
     delivered
 }
 
-fn normalize_address(value: &str) -> String {
-    value.trim().to_lowercase()
+/// Preserve the exact visible mailbox spelling supplied by the message.
+///
+/// Comparison and routing layers canonicalize their own copies. Lowercasing
+/// here would destroy useful presentation evidence such as the capital `I` in
+/// `paypaI.com`, and would also incorrectly rewrite the case-sensitive local
+/// part of an address.
+fn display_address(value: &str) -> String {
+    value.trim().to_owned()
 }
 
 fn append_bounded(target: &mut String, source: &str, limit: usize, limited: &mut bool) {

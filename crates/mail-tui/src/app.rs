@@ -1,9 +1,9 @@
 use chrono::{Duration, Utc};
 use lizard_mail_backend::{
-    AccountId, Backend, Contact, ContactAddress, ContactSuggestion, FindingPresentation,
-    FindingSeverity, MessageId, NewContact, NewContactRelationship, RelationshipKind,
-    RemoteContentPolicy, Result, Thread, ThreadFilter, ThreadSummary, ThreadWorkStatus, WarmRoute,
-    WorkflowView,
+    AccountId, Backend, BackendError, Contact, ContactAddress, ContactSuggestion,
+    FindingPresentation, FindingSeverity, ImapAccountEngineConfig, MessageContentAvailability,
+    MessageId, NewContact, NewContactRelationship, RelationshipKind, RemoteContentPolicy, Result,
+    Thread, ThreadFilter, ThreadSummary, ThreadWorkStatus, WarmRoute, WorkflowView,
 };
 use std::{
     collections::HashMap,
@@ -324,6 +324,12 @@ impl MailApp {
         }
     }
 
+    pub fn contact_name(&self, address: &str) -> Option<&str> {
+        self.contact_names
+            .get(&address.to_lowercase())
+            .map(String::as_str)
+    }
+
     async fn switch_queue(&mut self, workflow: WorkflowView) -> Result<()> {
         self.screen = Screen::Queue(workflow);
         self.previous_screen = self.screen;
@@ -338,8 +344,32 @@ impl MailApp {
         match self.screen {
             Screen::Queue(_) => {
                 if let Some(id) = self.selected_thread().map(|summary| summary.id) {
+                    let mut thread = self.backend.threads().get(id).await?;
+                    let message_id = thread
+                        .messages
+                        .last()
+                        .ok_or_else(|| BackendError::InvalidInput("conversation is empty".into()))?
+                        .summary
+                        .id;
+                    if thread.messages.last().is_some_and(|message| {
+                        message.summary.content_availability != MessageContentAvailability::Complete
+                    }) {
+                        self.status = Some("Fetching and verifying message content…".into());
+                        self.backend
+                            .managed_imap_account_engine(ImapAccountEngineConfig::default())?
+                            .fetch_message_content(message_id)
+                            .await?;
+                        thread = self.backend.threads().get(id).await?;
+                    }
+                    if thread.messages.last().is_some_and(|message| {
+                        message.summary.content_availability != MessageContentAvailability::Complete
+                    }) {
+                        return Err(BackendError::InvalidInput(
+                            "message content and identity evidence are not complete".into(),
+                        ));
+                    }
                     self.previous_screen = self.screen;
-                    self.current_thread = Some(self.backend.threads().get(id).await?);
+                    self.current_thread = Some(thread);
                     self.screen = Screen::Reader;
                     self.security_override = false;
                     self.clear_reader_html();

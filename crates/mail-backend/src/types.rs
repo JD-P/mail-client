@@ -866,6 +866,15 @@ pub struct ThreadSummary {
     pub id: ThreadId,
     pub subject: Option<String>,
     pub normalized_subject: Option<String>,
+    /// The actual RFC 5322 From identity of the newest message. This is kept
+    /// separate from `participants`: To, Cc, Reply-To, and delivery addresses
+    /// must never be substituted for the author in a conversation list.
+    #[serde(default)]
+    pub latest_from_address: Option<String>,
+    /// Sender-supplied display name on the newest message. Frontends must
+    /// present this as a claim unless the address is an exact contact match.
+    #[serde(default)]
+    pub latest_from_name: Option<String>,
     pub participants: Vec<String>,
     pub message_count: u64,
     pub unread_count: u64,

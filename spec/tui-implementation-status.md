@@ -21,8 +21,16 @@ not implemented merely because it is described there.
 - Terminal queue navigation, conversation reader, Contacts list, contextual
   help, Done, Waiting, one-day Snooze, and Make Actionable Once.
 - Address-first unknown identity presentation using “claims to be”.
+- Complete, hard-wrapped Cold sender addresses with no identity truncation;
+  conversation rows use the newest actual From mailbox rather than an
+  arbitrary To/Cc/Reply-To participant.
+- Intrusive ambiguous-From, invisible-identity, confusable-domain, and embedded
+  popular-domain evidence backed by the offline Tranco Top 10K snapshot.
+- Passing, From-aligned DKIM selection; trusted delivery-time authentication
+  and OpenPGP identity evidence remain visibly distinct.
 - Intrusive security interruptions which replace the ordinary reader and allow
-  only an explicit restricted-view override where the finding permits it.
+  only an explicit restricted-view override where the finding permits it;
+  explanations remain visible after that override.
 - Warm red, Cold blue, and Spam amber workflow palettes.
 - Bounded terminal rendering of the supported HTML-mail subset. In the Linux
   x86-64 CLI this runs in a disposable Landlock/seccomp worker; worker or
@@ -45,7 +53,9 @@ not implemented merely because it is described there.
 
 - Sender grouping and priority variants of Warm — Action.
 - Spam rescue, delete-now, classification explanation, and retention display.
-- Authentication/evidence details, attachment inspector, and raw-message view.
+- Full attachment inspector and raw-message view. Core identity,
+  authentication, and warning evidence is present in the ordinary reader;
+  exhaustive diagnostic detail remains to be wired.
 - Composer, send review, Drafts, Outbox, and Sent screens.
 - Calendar proposal and CalDAV account screens.
 - Full relationship profile, address history, contact import/export, and merge.

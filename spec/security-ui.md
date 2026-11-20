@@ -65,12 +65,45 @@ frontend may organize the same messages differently.
 The mailbox and domain are primary. The sender-supplied display name is an
 explicit claim.
 
+The official frontend never truncates a Cold sender address. It gives the
+author field the available width and hard-wraps the complete parsed address.
+A message's stored display address preserves its original spelling and case;
+canonicalization is a separate comparison operation. Presentation therefore
+does not erase lookalike evidence such as the capital `I` in `paypaI.com`.
+A syntactically valid address is protocol-bounded, so even the pathological
+case remains a small, bounded identity card. Oversized, grouped, repeated or
+otherwise ambiguous From syntax is labeled invalid instead of being shortened
+or reduced to its first mailbox. This deliberately preserves attacker-created
+weirdness: padding consumes visible space rather than becoming hidden
+camouflage.
+
 ```text
 abigail@example.friend
 example.friend claims to be "Abigail Marie"
 
 First message from this address
 ```
+
+Using the Public Suffix List, determine the registrable domain that actually
+controls the address. Against the bundled, versioned popular-domain set and
+the user's saved domains, detect a protected domain appearing as complete DNS
+labels anywhere other than the controlling suffix:
+
+```text
+support@chase.com.evil.wtf
+
+This address is controlled by evil.wtf, not chase.com.
+It places the popular domain "chase.com" before its real domain.
+```
+
+`mail.chase.com` is an ordinary subdomain of `chase.com` and does not trigger.
+`chase.com.evil.wtf` and `zendesk.com.company` do. Detection runs against the
+complete normalized domain before layout, never against a truncated rendering.
+The list is an offline heuristic and not a claim that a popular domain is safe.
+
+Cold identity presentation follows the message into search results, custom
+folders and saved views. Moving a message never grants compact Warm identity
+presentation.
 
 If a cold sender uses the name of a local contact:
 

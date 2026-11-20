@@ -191,6 +191,118 @@ async fn native_identity_evidence_uses_contacts_and_separates_sender_fields() {
 }
 
 #[tokio::test]
+async fn sender_identity_rejects_ambiguous_from_and_embedded_popular_domains() {
+    let profile = tempfile::tempdir().unwrap();
+    let backend = Backend::open(BackendConfig::new(profile.path()))
+        .await
+        .unwrap();
+
+    let ambiguous_id = backend
+        .messages()
+        .ingest(IngestMessage::local(message(
+            "Friend <friend@example.test>, Attacker <attacker@evil.test>",
+            "Two authors",
+            "Reply-To: chase.com@evil.test\r\n",
+            "text/plain; charset=utf-8",
+            "A parser must not silently choose the first identity.",
+        )))
+        .await
+        .unwrap();
+    let ambiguous = backend.messages().get(ambiguous_id).await.unwrap();
+    assert_eq!(ambiguous.summary.from_address, None);
+    assert_eq!(ambiguous.summary.from_name, None);
+    assert_eq!(
+        ambiguous.summary.inbox_class,
+        lizard_mail_backend::InboxClass::Cold
+    );
+    assert_codes(&ambiguous, &["ambiguous_sender_header"]);
+
+    let embedded_id = backend
+        .messages()
+        .ingest(IngestMessage::local(message(
+            "Chase Support <support@chase.com.evil.wtf>",
+            "Security notice",
+            "Reply-To: billing@zendesk.com.company\r\n",
+            "text/html; charset=utf-8",
+            "The actual registrable domain is evil.wtf. <a href=\"https://chase.com.evil.wtf/login\">Review</a>",
+        )))
+        .await
+        .unwrap();
+    let embedded = backend.messages().get(embedded_id).await.unwrap();
+    assert_codes(
+        &embedded,
+        &[
+            "embedded_popular_sender_domain",
+            "embedded_popular_reply_domain",
+            "embedded_popular_link_domain",
+        ],
+    );
+    let finding = embedded
+        .findings
+        .iter()
+        .find(|finding| finding.code == "embedded_popular_sender_domain")
+        .unwrap();
+    assert_eq!(finding.evidence["embedded_popular_domain"], "chase.com");
+    assert_eq!(finding.evidence["actual_registrable_domain"], "evil.wtf");
+
+    let ordinary_subdomain_id = backend
+        .messages()
+        .ingest(IngestMessage::local(message(
+            "Zendesk <notices@company.zendesk.com>",
+            "Ordinary service subdomain",
+            "",
+            "text/plain; charset=utf-8",
+            "This hostname is controlled by zendesk.com.",
+        )))
+        .await
+        .unwrap();
+    let ordinary = backend.messages().get(ordinary_subdomain_id).await.unwrap();
+    assert!(!codes(&ordinary).contains("embedded_popular_sender_domain"));
+
+    let misleading_suffix_id = backend
+        .messages()
+        .ingest(IngestMessage::local(message(
+            "Zendesk <notices@zendesk.com.company>",
+            "Misleading DNS order",
+            "",
+            "text/plain; charset=utf-8",
+            "This hostname is not controlled by zendesk.com.",
+        )))
+        .await
+        .unwrap();
+    assert_codes(
+        &backend.messages().get(misleading_suffix_id).await.unwrap(),
+        &["embedded_popular_sender_domain"],
+    );
+
+    let confusable_id = backend
+        .messages()
+        .ingest(IngestMessage::local(message(
+            "PayPal <alerts@paypaI.com>",
+            "ASCII lookalike",
+            "Reply-To: help@paypaI.com\r\n",
+            "text/html; charset=utf-8",
+            "<a href=\"https://paypaI.com/login\">Review your account</a>",
+        )))
+        .await
+        .unwrap();
+    let confusable = backend.messages().get(confusable_id).await.unwrap();
+    assert_eq!(
+        confusable.summary.from_address.as_deref(),
+        Some("alerts@paypaI.com"),
+        "the stored display identity must retain attacker-controlled case"
+    );
+    assert_codes(
+        &confusable,
+        &[
+            "confusable_popular_sender_domain",
+            "confusable_popular_reply_domain",
+            "confusable_popular_link_domain",
+        ],
+    );
+}
+
+#[tokio::test]
 async fn native_navigation_evidence_parses_html_without_loading_or_executing_it() {
     let profile = tempfile::tempdir().unwrap();
     let backend = Backend::open(BackendConfig::new(profile.path()))

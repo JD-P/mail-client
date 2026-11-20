@@ -248,6 +248,51 @@ async fn threads_headers_subjects_and_composition_without_crossing_trust() {
 }
 
 #[tokio::test]
+async fn thread_summary_author_is_the_latest_from_not_an_arbitrary_participant() {
+    let profile = tempfile::tempdir().unwrap();
+    let backend = Backend::open(BackendConfig::new(profile.path()))
+        .await
+        .unwrap();
+    let id = backend
+        .ingest(IngestMessage::local(
+            concat!(
+                "From: Actual Author <z-author@example.test>\r\n",
+                "To: a-recipient@example.test\r\n",
+                "Cc: aa-copy@example.test\r\n",
+                "Reply-To: aaa-spoofed-contact@example.test\r\n",
+                "Delivered-To: reader@example.test\r\n",
+                "Message-ID: <author-projection@example.test>\r\n",
+                "Subject: Author projection\r\n\r\n",
+                "The queue must identify the From mailbox.\r\n"
+            )
+            .as_bytes(),
+        ))
+        .await
+        .unwrap();
+    let message = backend.messages().get(id).await.unwrap();
+    let summary = backend
+        .threads()
+        .get(message.summary.thread_id)
+        .await
+        .unwrap()
+        .summary;
+
+    assert_eq!(
+        summary.latest_from_address.as_deref(),
+        Some("z-author@example.test")
+    );
+    assert_eq!(summary.latest_from_name.as_deref(), Some("Actual Author"));
+    assert!(summary
+        .participants
+        .iter()
+        .any(|address| address == "aaa-spoofed-contact@example.test"));
+    assert_ne!(
+        summary.latest_from_address.as_deref(),
+        summary.participants.first().map(String::as_str)
+    );
+}
+
+#[tokio::test]
 async fn becoming_known_continues_but_does_not_upgrade_a_cold_thread() {
     let profile = tempfile::tempdir().unwrap();
     let backend = Backend::open(BackendConfig::new(profile.path()))

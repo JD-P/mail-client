@@ -36,6 +36,54 @@ async fn empty_profile_opens_to_warm_action_and_renders_inbox_zero() {
 }
 
 #[tokio::test]
+async fn cold_reader_keeps_identity_context_and_persistent_explanations() {
+    let profile = tempfile::tempdir().unwrap();
+    let backend = Backend::open(BackendConfig::new(profile.path()))
+        .await
+        .unwrap();
+    backend
+        .ingest(IngestMessage::local(
+            concat!(
+                "From: Chase Support <support@chase.com.evil.wtf>\r\n",
+                "Reply-To: payments@different.example\r\n",
+                "To: reader@example.test\r\n",
+                "Message-ID: <cold-identity@example.test>\r\n",
+                "Subject: Account notice\r\n\r\n",
+                "Do not trust this message.\r\n"
+            )
+            .as_bytes(),
+        ))
+        .await
+        .unwrap();
+
+    let mut app = MailApp::open(backend).await.unwrap();
+    app.dispatch(AppCommand::Cold).await.unwrap();
+    app.dispatch(AppCommand::Open).await.unwrap();
+    assert_eq!(app.screen, Screen::Reader);
+    assert!(app.reader_is_blocked());
+    app.dispatch(AppCommand::RestrictedOpen).await.unwrap();
+
+    let backend = TestBackend::new(120, 40);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| lizard_mail_tui::ui::draw(frame, &app))
+        .unwrap();
+    let text = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+
+    assert!(text.contains("COLD / CONVERSATION"));
+    assert!(text.contains("support@chase.com.evil.wtf"));
+    assert!(text.contains("controlled by evil.wtf, not chase.com"));
+    assert!(text.contains("reply would be sent somewhere other"));
+    assert!(text.contains("RESTRICTED VIEW"));
+}
+
+#[tokio::test]
 async fn first_account_opens_address_first_contact_onboarding() {
     let profile = tempfile::tempdir().unwrap();
     let backend = Backend::open(BackendConfig::new(profile.path()))

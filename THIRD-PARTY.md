@@ -16,3 +16,9 @@ pinned at commit `31fde98fceb5b9bde726807419992f8d84b1f193`. Upstream offered
 the work under `MIT OR Apache-2.0`; this vendored copy selects Apache-2.0 and
 includes the license text as `vendor/async-imap/LICENSE`. Local changes and
 provenance are recorded in `vendor/async-imap/UPSTREAM.md`.
+
+`crates/mail-backend/src/popular_domains.txt` contains the MISP Warning Lists
+`tranco10k` snapshot version `20261005` (10,000 domains), derived from the
+Tranco popularity ranking. MISP Warning Lists publishes the list under the
+CC0 1.0 Universal public-domain dedication. The snapshot is bundled so sender
+identity checks never disclose correspondence through a network lookup.

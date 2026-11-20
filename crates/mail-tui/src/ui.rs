@@ -1,10 +1,16 @@
 use crate::app::{MailApp, Screen};
-use lizard_mail_backend::{DkimAuthenticationStatus, ThreadWorkStatus, WorkflowView};
+use lizard_mail_backend::{
+    AuthenticationMethodKind, AuthenticationMethodResult, AuthenticationResultsTrust,
+    DkimAuthenticationStatus, DkimSignatureStatus, FindingSeverity, HeuristicFinding, InboxClass,
+    Message, OpenPgpBindingState, OpenPgpEncryptionStatus, OpenPgpSignatureStatus,
+    ThreadWorkStatus, WorkflowView,
+};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::Frame;
+use unicode_width::UnicodeWidthChar;
 
 const WARM: Color = Color::Rgb(198, 48, 67);
 const COLD: Color = Color::Rgb(57, 132, 219);
@@ -33,8 +39,8 @@ pub fn draw(frame: &mut Frame<'_>, app: &MailApp) {
 }
 
 fn draw_header(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
-    let accent = accent(app.screen);
-    let title = format!(" LIZARD MAIL · {} ", screen_title(app.screen));
+    let accent = accent(app);
+    let title = format!(" LIZARD MAIL · {} ", screen_title(app));
     let navigation = Line::from(vec![
         Span::styled("1", Style::default().fg(WARM).add_modifier(Modifier::BOLD)),
         Span::raw(" Warm  "),
@@ -84,13 +90,7 @@ fn draw_queue(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
         .iter()
         .map(|thread| {
             let unread = if thread.unread_count > 0 { "●" } else { " " };
-            let sender = thread
-                .participants
-                .first()
-                .map(String::as_str)
-                .unwrap_or("unknown sender");
             let subject = thread.subject.as_deref().unwrap_or("(no subject)");
-            let sender = safe_single_line_text(sender);
             let subject = safe_single_line_text(subject);
             let state = match thread.work_state.status {
                 ThreadWorkStatus::Active => "",
@@ -98,17 +98,54 @@ fn draw_queue(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
                 ThreadWorkStatus::Snoozed => " [snoozed]",
                 ThreadWorkStatus::Done => " [done]",
             };
-            ListItem::new(Line::from(vec![
-                Span::styled(
-                    format!("{unread} "),
-                    Style::default().fg(accent(app.screen)),
-                ),
-                Span::styled(
-                    format!("{sender:<28.28}"),
-                    Style::default().add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(format!("  {subject}{state}")),
-            ]))
+            let address = thread.latest_from_address.as_deref();
+            if let Some(contact) = address.and_then(|address| app.contact_name(address)) {
+                ListItem::new(Line::from(vec![
+                    Span::styled(format!("{unread} "), Style::default().fg(accent(app))),
+                    Span::styled(
+                        safe_single_line_text(contact),
+                        Style::default().add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw(format!("  {subject}{state}")),
+                ]))
+            } else {
+                // Unknown identities get the entire author field. The address
+                // is wrapped, never truncated, so padding and deceptive domain
+                // structure remain visible instead of becoming camouflage.
+                let width = usize::from(area.width.saturating_sub(6).max(1));
+                let address = address.unwrap_or("ambiguous or missing From address");
+                let mut lines = wrap_untrusted_identity(address, width)
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, segment)| {
+                        Line::from(vec![
+                            Span::styled(
+                                if index == 0 {
+                                    format!("{unread} ")
+                                } else {
+                                    "  ".to_owned()
+                                },
+                                Style::default().fg(accent(app)),
+                            ),
+                            Span::styled(segment, Style::default().add_modifier(Modifier::BOLD)),
+                        ])
+                    })
+                    .collect::<Vec<_>>();
+                if let Some(name) = thread
+                    .latest_from_name
+                    .as_deref()
+                    .filter(|name| !name.trim().is_empty())
+                {
+                    for claim in wrap_untrusted_identity(
+                        &format!("claims to be {}", safe_single_line_text(name)),
+                        width,
+                    ) {
+                        lines.push(Line::raw(format!("  {claim}")));
+                    }
+                }
+                lines.push(Line::raw(format!("  {subject}{state}")));
+                ListItem::new(Text::from(lines))
+            }
         })
         .collect::<Vec<_>>();
     let mut state = ListState::default().with_selected(Some(app.selected));
@@ -118,7 +155,7 @@ fn draw_queue(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
             .block(Block::default().title(title).borders(Borders::ALL))
             .highlight_style(
                 Style::default()
-                    .bg(accent(app.screen))
+                    .bg(accent(app))
                     .fg(Color::Black)
                     .add_modifier(Modifier::BOLD),
             )
@@ -138,7 +175,7 @@ fn draw_reader(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
         return;
     };
     if app.reader_is_blocked() {
-        let text = Text::from(vec![
+        let mut lines = vec![
             Line::styled(
                 "SECURITY WARNING — MESSAGE BODY BLOCKED",
                 Style::default().fg(DANGER).add_modifier(Modifier::BOLD),
@@ -147,8 +184,17 @@ fn draw_reader(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
             Line::raw(
                 "The client found security evidence that must not be hidden in a detail pane.",
             ),
-            Line::raw("Go back unless you have a specific reason to inspect this message."),
             Line::raw(""),
+        ];
+        append_finding_lines(
+            &mut lines,
+            message,
+            12,
+            usize::from(area.width.saturating_sub(4).max(1)),
+        );
+        lines.extend([
+            Line::raw(""),
+            Line::raw("Go back unless you have a specific reason to inspect this message."),
             Line::styled(
                 "If you continue, links and remote content remain disabled.",
                 Style::default().fg(DANGER),
@@ -160,7 +206,7 @@ fn draw_reader(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
             Line::raw("[Esc] Back   [O] Read restricted"),
         ]);
         frame.render_widget(
-            Paragraph::new(text)
+            Paragraph::new(Text::from(lines))
                 .block(
                     Block::default()
                         .title("Intrusive security interruption")
@@ -173,49 +219,51 @@ fn draw_reader(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
         return;
     }
 
-    let sender = app.display_sender(
-        message.summary.from_address.as_deref(),
-        message.summary.from_name.as_deref(),
+    let inner_width = usize::from(area.width.saturating_sub(4).max(1));
+    let mut header_lines = sender_identity_lines(app, message, inner_width);
+    header_lines.push(Line::from(vec![
+        Span::styled("Subject: ", Style::default().add_modifier(Modifier::BOLD)),
+        Span::raw(safe_single_line_text(
+            message.summary.subject.as_deref().unwrap_or("(no subject)"),
+        )),
+    ]));
+    append_labeled_lines(
+        &mut header_lines,
+        "Domain signature: ",
+        &dkim_summary(message),
+        inner_width,
     );
-    let dkim = match message.dkim.status {
-        DkimAuthenticationStatus::Pass => message
-            .dkim
-            .signatures
-            .iter()
-            .find_map(|signature| signature.signing_domain.as_deref())
-            .map(|domain| format!("Signed by {domain}"))
-            .unwrap_or_else(|| "Signed message".into()),
-        DkimAuthenticationStatus::Unsigned => "No DKIM signature".into(),
-        DkimAuthenticationStatus::Failed => "DKIM verification failed".into(),
-        DkimAuthenticationStatus::TemporaryFailure => "DKIM temporarily unavailable".into(),
-        DkimAuthenticationStatus::NotEvaluated => "DKIM not evaluated".into(),
-    };
+    if let Some(delivery) = trusted_delivery_summary(message) {
+        append_labeled_lines(
+            &mut header_lines,
+            "Delivery evidence: ",
+            &delivery,
+            inner_width,
+        );
+    }
+    if let Some(openpgp) = openpgp_summary(app, message) {
+        append_labeled_lines(&mut header_lines, "OpenPGP: ", &openpgp, inner_width);
+    }
+    header_lines.push(Line::from(vec![
+        Span::styled("Work: ", Style::default().add_modifier(Modifier::BOLD)),
+        Span::raw(format!("{:?}", thread.summary.work_state.status)),
+    ]));
+    append_finding_lines(&mut header_lines, message, 8, inner_width);
+
+    let header_height = u16::try_from(header_lines.len().saturating_add(2))
+        .unwrap_or(u16::MAX)
+        .min(area.height);
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(7), Constraint::Min(4)])
+        .constraints([Constraint::Length(header_height), Constraint::Min(0)])
         .split(area);
-    let header = Text::from(vec![
-        Line::from(vec![
-            Span::styled("From: ", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw(safe_text(&sender)),
-        ]),
-        Line::from(vec![
-            Span::styled("Subject: ", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw(safe_text(
-                message.summary.subject.as_deref().unwrap_or("(no subject)"),
-            )),
-        ]),
-        Line::from(vec![
-            Span::styled("Identity: ", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw(safe_single_line_text(&dkim)),
-        ]),
-        Line::from(vec![
-            Span::styled("Work: ", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw(format!("{:?}", thread.summary.work_state.status)),
-        ]),
-    ]);
     frame.render_widget(
-        Paragraph::new(header).block(Block::default().borders(Borders::ALL).title("Conversation")),
+        Paragraph::new(Text::from(header_lines)).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(identity_block_title(message.summary.inbox_class))
+                .border_style(Style::default().fg(accent(app))),
+        ),
         chunks[0],
     );
 
@@ -227,7 +275,11 @@ fn draw_reader(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
             chunks[1],
         );
     } else {
-        let title = if message.body_html.is_some() {
+        let title = if app.security_override && message.body_html.is_some() {
+            "Message · RESTRICTED VIEW · safe plain-text fallback"
+        } else if app.security_override {
+            "Message · RESTRICTED VIEW · warnings remain active"
+        } else if message.body_html.is_some() {
             "Message · safe plain-text fallback"
         } else {
             "Message"
@@ -239,6 +291,364 @@ fn draw_reader(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
             chunks[1],
         );
     }
+}
+
+fn sender_identity_lines(app: &MailApp, message: &Message, width: usize) -> Vec<Line<'static>> {
+    let address = message.summary.from_address.as_deref();
+    let contact = address.and_then(|address| app.contact_name(address));
+    let mut lines = Vec::new();
+    if let Some(contact) = contact {
+        for segment in
+            wrap_untrusted_identity(&format!("From: {}", safe_single_line_text(contact)), width)
+        {
+            lines.push(Line::styled(
+                segment,
+                Style::default().add_modifier(Modifier::BOLD),
+            ));
+        }
+        lines.push(Line::styled(
+            "Complete address:",
+            Style::default().add_modifier(Modifier::BOLD),
+        ));
+        for segment in wrap_untrusted_identity(address.unwrap_or_default(), width) {
+            lines.push(Line::raw(segment));
+        }
+    } else {
+        lines.push(Line::styled(
+            "Complete sender address — not in contacts:",
+            Style::default().add_modifier(Modifier::BOLD),
+        ));
+        for segment in wrap_untrusted_identity(
+            address.unwrap_or("ambiguous or missing From address"),
+            width,
+        ) {
+            lines.push(Line::styled(segment, Style::default().fg(COLD)));
+        }
+        if let Some(name) = message
+            .summary
+            .from_name
+            .as_deref()
+            .filter(|name| !name.trim().is_empty())
+        {
+            let domain = address.and_then(address_domain).unwrap_or("this address");
+            for segment in wrap_untrusted_identity(
+                &format!(
+                    "{} claims to be \"{}\"",
+                    safe_single_line_text(domain),
+                    safe_single_line_text(name)
+                ),
+                width,
+            ) {
+                lines.push(Line::raw(segment));
+            }
+        }
+    }
+    lines
+}
+
+fn append_labeled_lines(lines: &mut Vec<Line<'static>>, label: &str, value: &str, width: usize) {
+    for segment in
+        wrap_untrusted_identity(&format!("{label}{}", safe_single_line_text(value)), width)
+    {
+        lines.push(Line::raw(segment));
+    }
+}
+
+fn dkim_summary(message: &Message) -> String {
+    if let Some(domain) = aligned_dkim_domain(&message.dkim.signatures) {
+        return format!("This message was signed by {domain}");
+    }
+    let claimed = message
+        .summary
+        .from_address
+        .as_deref()
+        .and_then(address_domain);
+    match message.dkim.status {
+        DkimAuthenticationStatus::Pass => claimed.map_or_else(
+            || "A signature passed, but it does not establish the visible From domain".into(),
+            |domain| format!("No valid aligned signature from {domain}"),
+        ),
+        DkimAuthenticationStatus::Unsigned => claimed.map_or_else(
+            || "No DKIM signature".into(),
+            |domain| format!("No valid signature from {domain}"),
+        ),
+        DkimAuthenticationStatus::Failed => "DKIM verification failed".into(),
+        DkimAuthenticationStatus::TemporaryFailure => {
+            "DKIM verification is temporarily unavailable".into()
+        }
+        DkimAuthenticationStatus::NotEvaluated => "DKIM has not been evaluated".into(),
+    }
+}
+
+fn aligned_dkim_domain(signatures: &[lizard_mail_backend::DkimSignatureEvidence]) -> Option<&str> {
+    signatures.iter().find_map(|signature| {
+        (signature.status == DkimSignatureStatus::Pass
+            && signature.from_domain_aligned == Some(true))
+        .then_some(signature.signing_domain.as_deref())
+        .flatten()
+    })
+}
+
+fn trusted_delivery_summary(message: &Message) -> Option<String> {
+    for preferred in [
+        AuthenticationMethodKind::Dmarc,
+        AuthenticationMethodKind::Dkim,
+    ] {
+        for observation in &message.delivery_authentication.observations {
+            for header in &observation.headers {
+                if header.trust != AuthenticationResultsTrust::Trusted {
+                    continue;
+                }
+                if let Some(method) = header
+                    .methods
+                    .iter()
+                    .find(|method| method.kind == preferred)
+                {
+                    let result = match method.result {
+                        AuthenticationMethodResult::Pass => "pass",
+                        AuthenticationMethodResult::Fail => "fail",
+                        AuthenticationMethodResult::SoftFail => "soft fail",
+                        AuthenticationMethodResult::Neutral => "neutral",
+                        AuthenticationMethodResult::Policy => "policy result",
+                        AuthenticationMethodResult::TemporaryError => "temporary error",
+                        AuthenticationMethodResult::PermanentError => "permanent error",
+                        AuthenticationMethodResult::None => "none",
+                        AuthenticationMethodResult::Unknown => "unknown result",
+                    };
+                    return Some(format!(
+                        "{} recorded {} {result}",
+                        header
+                            .authserv_id
+                            .as_deref()
+                            .unwrap_or("the receiving server"),
+                        match preferred {
+                            AuthenticationMethodKind::Dmarc => "DMARC",
+                            AuthenticationMethodKind::Dkim => "DKIM",
+                            _ => unreachable!(),
+                        }
+                    ));
+                }
+            }
+        }
+    }
+    None
+}
+
+fn openpgp_summary(app: &MailApp, message: &Message) -> Option<String> {
+    if message.openpgp.encryption == OpenPgpEncryptionStatus::NotEncrypted
+        && message.openpgp.signatures.is_empty()
+    {
+        return None;
+    }
+    let encryption = match message.openpgp.encryption {
+        OpenPgpEncryptionStatus::NotEncrypted => None,
+        OpenPgpEncryptionStatus::Encrypted => Some("encrypted; decryption required"),
+        OpenPgpEncryptionStatus::Decrypted => Some("decrypted for one of your keys"),
+        OpenPgpEncryptionStatus::MissingSecretKey => Some("encrypted; private key unavailable"),
+        OpenPgpEncryptionStatus::ProviderUnavailable => Some("encrypted; key provider unavailable"),
+        OpenPgpEncryptionStatus::InteractionRequired => {
+            Some("encrypted; hardware or PIN interaction required")
+        }
+        OpenPgpEncryptionStatus::FailedIntegrity => {
+            Some("encrypted content failed integrity verification")
+        }
+        OpenPgpEncryptionStatus::Unsupported => Some("unsupported encrypted content"),
+        OpenPgpEncryptionStatus::Malformed => Some("malformed encrypted content"),
+    };
+    let signature = message
+        .openpgp
+        .signatures
+        .iter()
+        .find(|signature| signature.status != OpenPgpSignatureStatus::None);
+    let signature = signature.map(|signature| match signature.status {
+        OpenPgpSignatureStatus::Valid
+            if signature.binding_state == Some(OpenPgpBindingState::Accepted) =>
+        {
+            let owner = message
+                .summary
+                .from_address
+                .as_deref()
+                .and_then(|address| app.contact_name(address))
+                .unwrap_or("this contact");
+            format!("valid signature from a key you saved for {owner}")
+        }
+        OpenPgpSignatureStatus::Valid => format!(
+            "valid signature from unassociated key {}",
+            abbreviated_fingerprint(signature.certificate_fingerprint.as_deref())
+        ),
+        OpenPgpSignatureStatus::Invalid => "INVALID SIGNATURE".into(),
+        OpenPgpSignatureStatus::MissingCertificate => "signature key unavailable".into(),
+        OpenPgpSignatureStatus::Unsupported => "unsupported signature".into(),
+        OpenPgpSignatureStatus::Obsolete => "obsolete signature algorithm".into(),
+        OpenPgpSignatureStatus::None => "no signature".into(),
+    });
+    Some(
+        [encryption.map(str::to_owned), signature]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join("; "),
+    )
+}
+
+fn abbreviated_fingerprint(value: Option<&str>) -> String {
+    let Some(value) = value else {
+        return "unknown fingerprint".into();
+    };
+    if value.chars().count() <= 16 {
+        return value.to_owned();
+    }
+    let prefix = value.chars().take(8).collect::<String>();
+    let suffix = value
+        .chars()
+        .rev()
+        .take(8)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect::<String>();
+    format!("{prefix}…{suffix}")
+}
+
+fn append_finding_lines(
+    lines: &mut Vec<Line<'static>>,
+    message: &Message,
+    limit: usize,
+    width: usize,
+) {
+    let active = message
+        .findings
+        .iter()
+        .filter(|finding| {
+            finding.dismissed_at.is_none() && finding.severity >= FindingSeverity::Warning
+        })
+        .collect::<Vec<_>>();
+    for finding in active.iter().take(limit) {
+        for line in
+            wrap_untrusted_identity(&format!("SECURITY: {}", finding_summary(finding)), width)
+        {
+            lines.push(Line::styled(
+                line,
+                Style::default().fg(DANGER).add_modifier(Modifier::BOLD),
+            ));
+        }
+    }
+    if active.len() > limit {
+        lines.push(Line::styled(
+            format!("SECURITY: {} additional findings", active.len() - limit),
+            Style::default().fg(DANGER),
+        ));
+    }
+}
+
+fn finding_summary(finding: &HeuristicFinding) -> String {
+    let string = |key: &str| {
+        finding
+            .evidence
+            .get(key)
+            .and_then(|value| value.as_str())
+            .map(safe_single_line_text)
+    };
+    match finding.code.as_str() {
+        "ambiguous_sender_header" =>
+            "The message does not contain exactly one unambiguous From mailbox; no sender identity was accepted".into(),
+        "malformed_sender_header" =>
+            "The sender headers are malformed; no sender identity was accepted".into(),
+        "embedded_popular_sender_domain" => format!(
+            "This address is controlled by {}, not {}; it places the popular domain before its real domain",
+            string("actual_registrable_domain").unwrap_or_else(|| "another domain".into()),
+            string("embedded_popular_domain").unwrap_or_else(|| "the domain it resembles".into()),
+        ),
+        "embedded_popular_reply_domain" => format!(
+            "A reply would go to {}, not {}; its address places the popular domain before its real domain",
+            string("actual_registrable_domain").unwrap_or_else(|| "another domain".into()),
+            string("embedded_popular_domain").unwrap_or_else(|| "the domain it resembles".into()),
+        ),
+        "embedded_popular_link_domain" => format!(
+            "A link opens {}, not {}; its hostname places the popular domain before its real domain",
+            string("actual_registrable_domain").unwrap_or_else(|| "another domain".into()),
+            string("embedded_popular_domain").unwrap_or_else(|| "the domain it resembles".into()),
+        ),
+        "confusable_sender_domain" => format!(
+            "The sender domain resembles the saved domain {} but is not the same domain",
+            string("confusable_with").unwrap_or_else(|| "of a contact".into()),
+        ),
+        "confusable_popular_sender_domain" => format!(
+            "The sender domain resembles the popular domain {} but is not the same domain",
+            string("confusable_with").unwrap_or_else(|| "it appears to name".into()),
+        ),
+        "confusable_popular_reply_domain" => format!(
+            "The reply domain resembles the popular domain {} but is not the same domain",
+            string("confusable_with").unwrap_or_else(|| "it appears to name".into()),
+        ),
+        "confusable_popular_link_domain" => format!(
+            "A link domain resembles the popular domain {} but is not the same domain",
+            string("confusable_with").unwrap_or_else(|| "it appears to name".into()),
+        ),
+        "invisible_or_bidi_sender_identity" =>
+            "The sender identity contains invisible or bidirectional characters".into(),
+        "warm_sender_name_mismatch" => format!(
+            "This known address claims a different name: {}",
+            string("claimed_name").unwrap_or_else(|| "an untrusted name".into()),
+        ),
+        "cold_contact_name_collision" => format!(
+            "This unknown address claims the name of one of your contacts: {}",
+            string("claimed_name").unwrap_or_else(|| "contact name".into()),
+        ),
+        "sender_from_mismatch" =>
+            "The RFC Sender field disagrees with the visible From address".into(),
+        "reply_to_mismatch" =>
+            "A reply would be sent somewhere other than the visible From address".into(),
+        "conversation_injection" =>
+            "An unknown sender claims to belong to an established conversation".into(),
+        "unaligned_dkim" =>
+            "A DKIM signature passed, but it does not establish the visible From domain".into(),
+        "missing_aligned_dkim" => format!(
+            "There is no valid signature from {}",
+            string("from_domain").unwrap_or_else(|| "the visible From domain".into()),
+        ),
+        "openpgp_protected_header_mismatch" =>
+            "The outer headers disagree with the integrity-protected OpenPGP headers".into(),
+        "invalid_openpgp_signature" => "The OpenPGP signature is invalid".into(),
+        _ => finding
+            .text
+            .as_deref()
+            .map(safe_single_line_text)
+            .unwrap_or_else(|| finding.code.replace('_', " ")),
+    }
+}
+
+fn identity_block_title(class: InboxClass) -> &'static str {
+    match class {
+        InboxClass::Warm => "Warm identity · established address",
+        InboxClass::Cold => "Cold identity · evaluate the complete address",
+        InboxClass::Spam => "Spam identity · untrusted sender",
+    }
+}
+
+fn address_domain(address: &str) -> Option<&str> {
+    address.rsplit_once('@').map(|(_, domain)| domain)
+}
+
+fn wrap_untrusted_identity(value: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let value = safe_single_line_text(value);
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    let mut used = 0usize;
+    for character in value.chars() {
+        let character_width = UnicodeWidthChar::width(character).unwrap_or(1).max(1);
+        if used + character_width > width && !line.is_empty() {
+            lines.push(std::mem::take(&mut line));
+            used = 0;
+        }
+        line.push(character);
+        used += character_width;
+    }
+    if !line.is_empty() || lines.is_empty() {
+        lines.push(line);
+    }
+    lines
 }
 
 fn draw_onboarding(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
@@ -444,19 +854,29 @@ fn draw_footer(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
     );
 }
 
-fn accent(screen: Screen) -> Color {
-    match screen {
+fn accent(app: &MailApp) -> Color {
+    match app.screen {
         Screen::Queue(WorkflowView::WarmAction | WorkflowView::WarmFyi) => WARM,
         Screen::Queue(WorkflowView::ColdReview) | Screen::Onboarding | Screen::OnboardingEdit => {
             COLD
         }
         Screen::Queue(WorkflowView::SpamQuarantine) => SPAM,
+        Screen::Reader => app
+            .current_thread
+            .as_ref()
+            .and_then(|thread| thread.messages.last())
+            .map(|message| match message.summary.inbox_class {
+                InboxClass::Warm => WARM,
+                InboxClass::Cold => COLD,
+                InboxClass::Spam => SPAM,
+            })
+            .unwrap_or(Color::Gray),
         _ => Color::Gray,
     }
 }
 
-fn screen_title(screen: Screen) -> &'static str {
-    match screen {
+fn screen_title(app: &MailApp) -> &'static str {
+    match app.screen {
         Screen::Onboarding => "ONBOARDING / CONTACT SUGGESTIONS",
         Screen::OnboardingEdit => "ONBOARDING / EDIT RELATIONSHIP",
         Screen::Queue(WorkflowView::WarmAction) => "WARM / ACTION",
@@ -466,7 +886,16 @@ fn screen_title(screen: Screen) -> &'static str {
         Screen::Queue(WorkflowView::Waiting) => "LATER / WAITING",
         Screen::Queue(WorkflowView::Snoozed) => "LATER / SNOOZED",
         Screen::Queue(WorkflowView::Done) => "DONE / HISTORY",
-        Screen::Reader => "CONVERSATION",
+        Screen::Reader => app
+            .current_thread
+            .as_ref()
+            .and_then(|thread| thread.messages.last())
+            .map(|message| match message.summary.inbox_class {
+                InboxClass::Warm => "WARM / CONVERSATION",
+                InboxClass::Cold => "COLD / CONVERSATION",
+                InboxClass::Spam => "SPAM / CONVERSATION",
+            })
+            .unwrap_or("CONVERSATION"),
         Screen::Contacts => "CONTACTS",
         Screen::Help => "HELP",
     }
@@ -481,7 +910,12 @@ fn safe_text(value: &str) -> String {
             } else if character.is_control()
                 || matches!(
                     character,
-                    '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+                    '\u{061c}'
+                        | '\u{200b}'..='\u{200f}'
+                        | '\u{202a}'..='\u{202e}'
+                        | '\u{2060}'..='\u{2069}'
+                        | '\u{feff}'
+                        | '\u{2800}'
                 )
             {
                 '�'
@@ -511,9 +945,10 @@ mod tests {
 
     #[test]
     fn single_line_text_neutralizes_terminal_controls_and_bidi_overrides() {
-        let sanitized = safe_single_line_text("safe\u{1b}[31m\u{202e}txt\u{2066}\nnext\tfield");
+        let sanitized =
+            safe_single_line_text("safe\u{1b}[31m\u{202e}txt\u{2066}\u{200b}\u{2800}\nnext\tfield");
 
-        assert_eq!(sanitized, "safe�[31m�txt� next field");
+        assert_eq!(sanitized, "safe�[31m�txt��� next field");
         assert!(!sanitized.chars().any(|character| {
             character.is_control()
                 || matches!(
@@ -521,5 +956,49 @@ mod tests {
                     '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
                 )
         }));
+    }
+
+    #[test]
+    fn unknown_identity_wrapping_never_discards_address_characters() {
+        let address = concat!(
+            "sender@my.preceding.subdomain.crap.",
+            "myreallylongdomainchase.com"
+        );
+        let wrapped = wrap_untrusted_identity(address, 24);
+
+        assert!(wrapped.len() > 1);
+        assert_eq!(wrapped.concat(), address);
+        assert!(wrapped.iter().all(|line| line
+            .chars()
+            .map(|ch| ch.width().unwrap_or(1))
+            .sum::<usize>()
+            <= 24));
+    }
+
+    #[test]
+    fn domain_signature_selects_only_a_passing_aligned_signature() {
+        let signature =
+            |status, aligned, domain: &str| lizard_mail_backend::DkimSignatureEvidence {
+                header_index: None,
+                status,
+                reason_code: None,
+                reason: None,
+                signing_domain: Some(domain.into()),
+                selector: None,
+                identity: None,
+                algorithm: None,
+                signed_headers: Vec::new(),
+                from_domain_aligned: aligned,
+                key_bits: None,
+                key_testing: false,
+                raw_header_value: None,
+            };
+        let signatures = vec![
+            signature(DkimSignatureStatus::Fail, Some(true), "failed.example"),
+            signature(DkimSignatureStatus::Pass, Some(false), "relay.example"),
+            signature(DkimSignatureStatus::Pass, Some(true), "author.example"),
+        ];
+
+        assert_eq!(aligned_dkim_domain(&signatures), Some("author.example"));
     }
 }
