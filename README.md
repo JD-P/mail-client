@@ -189,6 +189,17 @@ Third-party rendering sources retain their Mozilla Public License notices;
 Lizard's own code is MIT licensed. To create a source/results archive, run
 `python3 tools/package.py /path/to/lizard-source.zip`.
 
+## Mail-client releases
+
+The terminal mail client is released separately from this graphical renderer.
+Tagged builds publish a portable Linux x86-64 musl tarball, a Debian package,
+an RPM package and `SHA256SUMS`. Each payload contains one matched set of the
+interactive client and its HTML-render, IMAP-sync and ZIP-inspection workers;
+the workers are never offered as independently versioned downloads. The build
+is performed twice at different paths in a network-isolated, digest-pinned
+container and every output byte must match before publication. See
+[`packaging/README.md`](packaging/README.md) for layouts and verification.
+
 For fresh-worker timing on one allowed CPU, run
 `python3 tools/benchmark.py --one-cpu --binary target/release/lizard`.
 The included `results/benchmark.json` distinguishes maximum-process RSS from

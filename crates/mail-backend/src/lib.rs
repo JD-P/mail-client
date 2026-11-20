@@ -40,6 +40,7 @@ mod spam;
 mod storage;
 mod thread;
 mod types;
+mod worker_path;
 
 pub use archive_worker::ArchiveIsolationConfig;
 pub use automation::{FilterRules, Heuristics};

@@ -1,0 +1,218 @@
+name: linux-artifacts
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing v* tag to build and publish
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-artifacts-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  TARGET: x86_64-unknown-linux-musl
+
+jobs:
+  portable-linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      attestations: write
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
+
+      - name: Install artifact inspection tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y binutils file rpm
+
+      - name: Build and reproduce the complete release
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tests/release_version.py
+          version=$(python3 tests/release_version.py --print-version)
+          SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) \
+            packaging/run-reproducible-build.sh \
+              --target "$TARGET" --output release
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+
+      - name: Inspect artifact payloads
+        shell: bash
+        env:
+          VERSION: ${{ steps.package.outputs.version }}
+        run: |
+          set -euo pipefail
+          (cd release && sha256sum --check SHA256SUMS)
+          tar -tvzf "release/lizard-mail-${VERSION}-linux-x86_64-musl.tar.gz"
+          dpkg-deb --info release/lizard-mail_*.deb
+          deb_files=$(dpkg-deb --contents release/lizard-mail_*.deb)
+          printf '%s\n' "$deb_files"
+          rpm -qip release/lizard-mail-*.x86_64.rpm
+          rpm_files=$(rpm -qlp release/lizard-mail-*.x86_64.rpm)
+          printf '%s\n' "$rpm_files"
+          printf '%s\n%s\n' "$deb_files" "$rpm_files" \
+            | grep -q '/usr/bin/lizard-mail-tui$'
+          if printf '%s\n%s\n' "$deb_files" "$rpm_files" \
+              | grep -Eq '/usr/bin/lizard-mail-(sync|archive|tui-render)-worker$'; then
+            echo "internal worker unexpectedly installed in PATH" >&2
+            exit 1
+          fi
+          for worker in \
+              lizard-mail-tui-render-worker \
+              lizard-mail-sync-worker \
+              lizard-mail-archive-worker; do
+            printf '%s\n%s\n' "$deb_files" "$rpm_files" \
+              | grep -q "/usr/libexec/lizard-mail/$worker$"
+          done
+
+      - name: Smoke-test the portable archive
+        shell: bash
+        env:
+          VERSION: ${{ steps.package.outputs.version }}
+        run: |
+          set -euo pipefail
+          scratch=$(mktemp -d)
+          trap 'rm -rf -- "$scratch"' EXIT
+          tar -xzf "release/lizard-mail-${VERSION}-linux-x86_64-musl.tar.gz" \
+            -C "$scratch"
+          root="$scratch/lizard-mail-${VERSION}-linux-x86_64-musl"
+          for binary in \
+              lizard-mail-tui \
+              lizard-mail-tui-render-worker \
+              lizard-mail-sync-worker \
+              lizard-mail-archive-worker; do
+            test "$("$root/$binary" --version)" = "$binary $VERSION"
+          done
+          "$root/lizard-mail-tui-render-worker" --seccomp-self-test
+          "$root/lizard-mail-archive-worker" --seccomp-self-test
+
+      - name: Install and inspect the Debian package
+        shell: bash
+        env:
+          VERSION: ${{ steps.package.outputs.version }}
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --volume "$PWD/release:/release:ro" \
+            --env VERSION="$VERSION" \
+            debian:13-slim@sha256:f6b08b09a05725f9431502d3b5714f5c4576e82c1a84fa1debe0c24a7e0c3ec4 \
+            bash -c '
+              set -euo pipefail
+              dpkg -i /release/lizard-mail_*.deb
+              test "$(lizard-mail-tui --version)" = "lizard-mail-tui $VERSION"
+              for worker in \
+                  lizard-mail-tui-render-worker \
+                  lizard-mail-sync-worker \
+                  lizard-mail-archive-worker; do
+                path="/usr/libexec/lizard-mail/$worker"
+                test -x "$path"
+                test "$("$path" --version)" = "$worker $VERSION"
+              done
+              test ! -e /usr/bin/lizard-mail-sync-worker
+              test ! -e /usr/bin/lizard-mail-archive-worker
+              test ! -e /usr/bin/lizard-mail-tui-render-worker
+              /usr/libexec/lizard-mail/lizard-mail-tui-render-worker --seccomp-self-test
+              /usr/libexec/lizard-mail/lizard-mail-archive-worker --seccomp-self-test
+            '
+
+      - name: Install and inspect the RPM package
+        shell: bash
+        env:
+          VERSION: ${{ steps.package.outputs.version }}
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --volume "$PWD/release:/release:ro" \
+            --env VERSION="$VERSION" \
+            rockylinux:9@sha256:d7be1c094cc5845ee815d4632fe377514ee6ebcf8efaed6892889657e5ddaaa6 \
+            bash -c '
+              set -euo pipefail
+              rpm -i /release/lizard-mail-*.x86_64.rpm
+              test "$(lizard-mail-tui --version)" = "lizard-mail-tui $VERSION"
+              for worker in \
+                  lizard-mail-tui-render-worker \
+                  lizard-mail-sync-worker \
+                  lizard-mail-archive-worker; do
+                path="/usr/libexec/lizard-mail/$worker"
+                test -x "$path"
+                test "$("$path" --version)" = "$worker $VERSION"
+              done
+              test ! -e /usr/bin/lizard-mail-sync-worker
+              test ! -e /usr/bin/lizard-mail-archive-worker
+              test ! -e /usr/bin/lizard-mail-tui-render-worker
+              /usr/libexec/lizard-mail/lizard-mail-tui-render-worker --seccomp-self-test
+              /usr/libexec/lizard-mail/lizard-mail-archive-worker --seccomp-self-test
+            '
+
+      - name: Attest release provenance
+        uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
+        with:
+          subject-path: release/*
+
+      - name: Upload Linux release artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: lizard-mail-${{ steps.package.outputs.version }}-linux-x86_64-${{ github.sha }}
+          path: |
+            release/lizard-mail-*-linux-x86_64-musl.tar.gz
+            release/lizard-mail_*.deb
+            release/lizard-mail-*.rpm
+            release/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+      - name: Publish permanent release assets
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.release_tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          PACKAGE_VERSION: ${{ steps.package.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag=${RELEASE_TAG:-$GITHUB_REF_NAME}
+          if [[ ! "$tag" =~ ^v[0-9][0-9A-Za-z.+-]*$ ]]; then
+            echo "invalid release tag: $tag" >&2
+            exit 1
+          fi
+          if [[ "$tag" != "v$PACKAGE_VERSION" ]]; then
+            echo "release tag $tag does not match package version $PACKAGE_VERSION" >&2
+            exit 1
+          fi
+          if [[ "$(git rev-list -n 1 "$tag")" != "$(git rev-parse HEAD)" ]]; then
+            echo "checked-out commit does not match $tag" >&2
+            exit 1
+          fi
+          assets=(
+            release/lizard-mail-*-linux-x86_64-musl.tar.gz
+            release/lizard-mail_*.deb
+            release/lizard-mail-*.rpm
+            release/SHA256SUMS
+          )
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" "${assets[@]}" --clobber
+          else
+            gh release create "$tag" \
+              --verify-tag \
+              --title "Lizard Mail ${tag#v}" \
+              --generate-notes \
+              "${assets[@]}"
+          fi

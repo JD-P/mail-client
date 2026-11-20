@@ -1,0 +1,7 @@
+.git
+.tools
+release
+target
+**/target
+__pycache__
+*.pyc

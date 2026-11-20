@@ -13,10 +13,24 @@ use std::path::PathBuf;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let profile = std::env::args_os()
-        .nth(1)
-        .map(PathBuf::from)
+    let mut arguments = std::env::args_os();
+    let _program = arguments.next();
+    let first = arguments
+        .next()
         .ok_or("usage: lizard-mail-tui <profile-directory>")?;
+    let extra = arguments.next();
+    if first == "--version" && extra.is_none() {
+        println!("lizard-mail-tui {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+    if first == "--help" && extra.is_none() {
+        println!("usage: lizard-mail-tui <profile-directory>");
+        return Ok(());
+    }
+    if extra.is_some() {
+        return Err("usage: lizard-mail-tui <profile-directory>".into());
+    }
+    let profile = PathBuf::from(first);
     let backend = Backend::open(BackendConfig::new(profile)).await?;
     let mut app = MailApp::open(backend).await?;
 

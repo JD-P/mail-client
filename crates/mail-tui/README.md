@@ -8,13 +8,21 @@ The exact implementation boundary is tracked in
 The Linux worker threat model and failure policy are documented in
 [`../../spec/tui-render-isolation.md`](../../spec/tui-render-isolation.md).
 
-Build both the client and its isolated renderer worker, then run the client
-against a Lizard backend profile:
+Build the client and all three isolated workers, then run the client against a
+Lizard backend profile:
 
 ```sh
-cargo build -p lizard-mail-tui --bins
+cargo build --locked \
+  -p lizard-mail-tui --bins \
+  -p lizard-mail-backend --bins
 cargo run -p lizard-mail-tui -- /path/to/profile
 ```
+
+Cargo places the four executables together, which is also the portable release
+layout. Native packages install only `lizard-mail-tui` in `PATH` and place the
+workers under `/usr/libexec/lizard-mail`. See
+[`../../packaging/README.md`](../../packaging/README.md) for the reproducible
+tarball, Debian and RPM artifacts.
 
 The implemented client opens directly into Warm — Action, or into bounded
 contact onboarding when the first configured account has mail but no contacts.

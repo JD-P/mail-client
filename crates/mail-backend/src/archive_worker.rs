@@ -58,27 +58,7 @@ fn default_worker_path() -> PathBuf {
     } else {
         "lizard-mail-archive-worker"
     };
-    let Some(executable) = std::env::current_exe().ok() else {
-        return PathBuf::from(name);
-    };
-    let Some(directory) = executable.parent() else {
-        return PathBuf::from(name);
-    };
-    let beside = directory.join(name);
-    if beside.exists() {
-        return beside;
-    }
-    // Cargo integration tests run from target/{profile}/deps while package
-    // binaries are emitted one directory above it.
-    if directory.file_name().is_some_and(|value| value == "deps") {
-        if let Some(parent) = directory.parent() {
-            let package_binary = parent.join(name);
-            if package_binary.exists() {
-                return package_binary;
-            }
-        }
-    }
-    beside
+    crate::worker_path::discover(name)
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -687,33 +667,32 @@ fn install_worker_sandbox() -> std::result::Result<(), String> {
 
 #[cfg(target_os = "linux")]
 fn set_worker_limits() -> std::result::Result<(), String> {
-    fn set(
-        resource: libc::__rlimit_resource_t,
-        current: u64,
-        maximum: u64,
-    ) -> std::result::Result<(), String> {
-        let value = libc::rlimit {
-            rlim_cur: current,
-            rlim_max: maximum,
-        };
-        // SAFETY: setrlimit only reads the initialized rlimit structure.
-        if unsafe { libc::setrlimit(resource, &value) } != 0 {
-            return Err(format!(
-                "could not set archive worker resource limit: {}",
-                std::io::Error::last_os_error()
-            ));
-        }
-        Ok(())
+    // libc uses c_uint here on glibc and c_int on musl. Keeping the resource
+    // expression in this macro lets Rust infer the correct target type.
+    macro_rules! set {
+        ($resource:expr, $current:expr, $maximum:expr) => {{
+            let value = libc::rlimit {
+                rlim_cur: $current,
+                rlim_max: $maximum,
+            };
+            // SAFETY: setrlimit only reads the initialized rlimit structure.
+            if unsafe { libc::setrlimit($resource, &value) } != 0 {
+                return Err(format!(
+                    "could not set archive worker resource limit: {}",
+                    std::io::Error::last_os_error()
+                ));
+            }
+        }};
     }
-    set(libc::RLIMIT_AS, WORKER_MEMORY_BYTES, WORKER_MEMORY_BYTES)?;
-    set(
+    set!(libc::RLIMIT_AS, WORKER_MEMORY_BYTES, WORKER_MEMORY_BYTES);
+    set!(
         libc::RLIMIT_CPU,
         WORKER_CPU_SECONDS,
-        WORKER_CPU_SECONDS.saturating_add(1),
-    )?;
-    set(libc::RLIMIT_FSIZE, 0, 0)?;
-    set(libc::RLIMIT_CORE, 0, 0)?;
-    set(libc::RLIMIT_NOFILE, 16, 16)?;
+        WORKER_CPU_SECONDS.saturating_add(1)
+    );
+    set!(libc::RLIMIT_FSIZE, 0, 0);
+    set!(libc::RLIMIT_CORE, 0, 0);
+    set!(libc::RLIMIT_NOFILE, 16, 16);
     // SAFETY: PR_SET_DUMPABLE takes a scalar integer flag.
     if unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) } != 0 {
         return Err(format!(

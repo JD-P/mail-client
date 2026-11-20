@@ -66,11 +66,7 @@ fn default_worker_path() -> PathBuf {
     } else {
         "lizard-mail-sync-worker"
     };
-    std::env::current_exe()
-        .ok()
-        .and_then(|path| path.parent().map(Path::to_owned))
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(name)
+    crate::worker_path::discover(name)
 }
 
 #[derive(Clone)]
@@ -847,37 +843,36 @@ fn install_worker_sandbox(_request: &WorkerRequest) -> std::result::Result<(), S
 
 #[cfg(target_os = "linux")]
 fn set_worker_limits(limits: &WorkerLimits) -> std::result::Result<(), String> {
-    fn set(
-        resource: libc::__rlimit_resource_t,
-        current: u64,
-        maximum: u64,
-    ) -> std::result::Result<(), String> {
-        let value = libc::rlimit {
-            rlim_cur: current,
-            rlim_max: maximum,
-        };
-        // SAFETY: setrlimit only reads the initialized rlimit structure.
-        if unsafe { libc::setrlimit(resource, &value) } != 0 {
-            return Err(format!(
-                "could not set worker resource limit: {}",
-                std::io::Error::last_os_error()
-            ));
-        }
-        Ok(())
+    // libc uses c_uint here on glibc and c_int on musl. Keeping the resource
+    // expression in this macro lets Rust infer the correct target type.
+    macro_rules! set {
+        ($resource:expr, $current:expr, $maximum:expr) => {{
+            let value = libc::rlimit {
+                rlim_cur: $current,
+                rlim_max: $maximum,
+            };
+            // SAFETY: setrlimit only reads the initialized rlimit structure.
+            if unsafe { libc::setrlimit($resource, &value) } != 0 {
+                return Err(format!(
+                    "could not set worker resource limit: {}",
+                    std::io::Error::last_os_error()
+                ));
+            }
+        }};
     }
-    set(libc::RLIMIT_AS, limits.memory_bytes, limits.memory_bytes)?;
-    set(
+    set!(libc::RLIMIT_AS, limits.memory_bytes, limits.memory_bytes);
+    set!(
         libc::RLIMIT_CPU,
         limits.cpu_seconds,
-        limits.cpu_seconds.saturating_add(1),
-    )?;
-    set(
+        limits.cpu_seconds.saturating_add(1)
+    );
+    set!(
         libc::RLIMIT_FSIZE,
         limits.file_size_bytes,
-        limits.file_size_bytes,
-    )?;
-    set(libc::RLIMIT_CORE, 0, 0)?;
-    set(libc::RLIMIT_NOFILE, 128, 128)?;
+        limits.file_size_bytes
+    );
+    set!(libc::RLIMIT_CORE, 0, 0);
+    set!(libc::RLIMIT_NOFILE, 128, 128);
     // SAFETY: PR_SET_DUMPABLE takes an integer flag and does not dereference pointers.
     if unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) } != 0 {
         return Err(format!(

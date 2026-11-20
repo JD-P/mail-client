@@ -40,6 +40,7 @@ const MAX_OUTPUT_SPANS: usize = 250_000;
 const MAX_OUTPUT_TEXT_BYTES: usize = 20 * 1024 * 1024;
 const MAX_REFERENCE_BYTES: usize = 16 * 1024;
 const MAX_WARNINGS: usize = 1_024;
+const DEFAULT_LIBEXEC_DIR: &str = "/usr/libexec/lizard-mail";
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 const X32_SYSCALL_BIT: u32 = 0x4000_0000;
 
@@ -64,11 +65,37 @@ fn default_worker_path() -> PathBuf {
     } else {
         "lizard-mail-tui-render-worker"
     };
-    std::env::current_exe()
-        .ok()
-        .and_then(|path| path.parent().map(Path::to_owned))
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(name)
+    let executable = std::env::current_exe().ok();
+    discover_worker_path(
+        executable.as_deref(),
+        name,
+        Path::new(option_env!("LIZARD_MAIL_LIBEXEC_DIR").unwrap_or(DEFAULT_LIBEXEC_DIR)),
+    )
+}
+
+fn discover_worker_path(executable: Option<&Path>, name: &str, libexec: &Path) -> PathBuf {
+    let Some(directory) = executable.and_then(Path::parent) else {
+        return PathBuf::from(name);
+    };
+    let beside = directory.join(name);
+    if beside.is_file() {
+        return beside;
+    }
+    if directory.file_name().is_some_and(|value| value == "deps") {
+        if let Some(parent) = directory.parent() {
+            let cargo_binary = parent.join(name);
+            if cargo_binary.is_file() {
+                return cargo_binary;
+            }
+        }
+    }
+    if libexec.is_absolute() {
+        let installed = libexec.join(name);
+        if installed.is_file() {
+            return installed;
+        }
+    }
+    beside
 }
 
 #[derive(Clone, Debug)]
@@ -815,25 +842,28 @@ fn install_worker_sandbox() -> Result<(), String> {
 
 #[cfg(target_os = "linux")]
 fn set_worker_limits() -> Result<(), String> {
-    fn set(resource: libc::__rlimit_resource_t, current: u64, maximum: u64) -> Result<(), String> {
-        let value = libc::rlimit {
-            rlim_cur: current,
-            rlim_max: maximum,
-        };
-        // SAFETY: setrlimit only reads the initialized rlimit structure.
-        if unsafe { libc::setrlimit(resource, &value) } != 0 {
-            return Err(format!(
-                "could not set renderer resource limit: {}",
-                std::io::Error::last_os_error()
-            ));
-        }
-        Ok(())
+    // libc uses c_uint here on glibc and c_int on musl. Keeping the resource
+    // expression in this macro lets Rust infer the correct target type.
+    macro_rules! set {
+        ($resource:expr, $current:expr, $maximum:expr) => {{
+            let value = libc::rlimit {
+                rlim_cur: $current,
+                rlim_max: $maximum,
+            };
+            // SAFETY: setrlimit only reads the initialized rlimit structure.
+            if unsafe { libc::setrlimit($resource, &value) } != 0 {
+                return Err(format!(
+                    "could not set renderer resource limit: {}",
+                    std::io::Error::last_os_error()
+                ));
+            }
+        }};
     }
-    set(libc::RLIMIT_AS, 512 * 1024 * 1024, 512 * 1024 * 1024)?;
-    set(libc::RLIMIT_CPU, 2, 3)?;
-    set(libc::RLIMIT_FSIZE, 0, 0)?;
-    set(libc::RLIMIT_CORE, 0, 0)?;
-    set(libc::RLIMIT_NOFILE, 16, 16)?;
+    set!(libc::RLIMIT_AS, 512 * 1024 * 1024, 512 * 1024 * 1024);
+    set!(libc::RLIMIT_CPU, 2, 3);
+    set!(libc::RLIMIT_FSIZE, 0, 0);
+    set!(libc::RLIMIT_CORE, 0, 0);
+    set!(libc::RLIMIT_NOFILE, 16, 16);
     // SAFETY: PR_SET_DUMPABLE takes an integer flag and no pointer.
     if unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) } != 0 {
         return Err(format!(
@@ -1118,6 +1148,34 @@ fn report_sandbox_evidence() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn worker_discovery_supports_portable_cargo_and_native_package_layouts() {
+        let root = tempfile::tempdir().unwrap();
+        let debug = root.path().join("target/debug");
+        let deps = debug.join("deps");
+        let libexec = root.path().join("usr/libexec/lizard-mail");
+        std::fs::create_dir_all(&deps).unwrap();
+        std::fs::create_dir_all(&libexec).unwrap();
+        let executable = deps.join("integration-test");
+        let name = "lizard-mail-tui-render-worker";
+
+        std::fs::write(libexec.join(name), b"worker").unwrap();
+        assert_eq!(
+            discover_worker_path(Some(&executable), name, &libexec),
+            libexec.join(name)
+        );
+        std::fs::write(debug.join(name), b"worker").unwrap();
+        assert_eq!(
+            discover_worker_path(Some(&executable), name, &libexec),
+            debug.join(name)
+        );
+        std::fs::write(deps.join(name), b"worker").unwrap();
+        assert_eq!(
+            discover_worker_path(Some(&executable), name, &libexec),
+            deps.join(name)
+        );
+    }
 
     #[test]
     fn semantic_page_round_trip_rejects_terminal_controls() {

@@ -1,4 +1,5 @@
 /target/
+/release/
 /results/*
 !/results/mail-backend-turso-benchmark.json
 !/results/mail-backend-turso-scaling-128-512.json
