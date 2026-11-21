@@ -1,0 +1,26 @@
+uname: 6.12.117+deb13-amd64
+python: 3.13.5
+workspace: /home/user/p3-build/repo
+CARGO_TARGET_DIR: /home/user/p3-build/repo/target
+cargo build --bins exit: 0
+worker --sandbox-self-test exit: 1
+isolated IMAP worker failed: Landlock sandbox was not fully enforced: RestrictionStatus { ruleset: PartiallyEnforced, no_new_privs: true, landlock: Available { effective_abi: V6, kernel_abi: None }, log_same_exec: true, log_new_exec: false, log_subdomains: true, all_threads: false }
+guard test exit: 101
+thread 'worker_sandbox_is_fail_closed' (37909) panicked at crates/mail-backend/tests/imap_worker.rs:83:9:
+sandbox failed for an unexpected reason: isolated IMAP worker failed: Landlock sandbox was not fully enforced: RestrictionStatus { ruleset: PartiallyEnforced, no_new_privs: true, landlock: Available { effective_abi: V6, kernel_abi: None }, log_same_exec: true, log_new_exec: false, log_subdomains: true, all_threads: false }
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    worker_sandbox_is_fail_closed
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.01s
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.23s
+     Running tests/imap_worker.rs (target/debug/build/lizard-mail-backend/d363d18ec6eb092e/out/imap_worker-d363d18ec6eb092e)
+error: test failed, to rerun pass `-p lizard-mail-backend --test imap_worker`
+bisection[current] exit: 0
+mode=current ruleset=PartiallyEnforced no_new_privs=true all_threads=false outside_read_denied=true hosts_read_allowed=true
+bisection[corrected] exit: 0
+mode=corrected ruleset=FullyEnforced no_new_privs=true all_threads=false outside_read_denied=true hosts_read_allowed=true

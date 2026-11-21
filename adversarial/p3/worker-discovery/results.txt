@@ -1,0 +1,14 @@
+=== security_evidence guard test at reviewed HEAD (fails) ===
+---- archive_security_reads_directory_metadata_but_never_inflates_entries stdout ----
+
+thread 'archive_security_reads_directory_metadata_but_never_inflates_entries' (31439) panicked at crates/mail-backend/tests/security_evidence.rs:68:9:
+missing "executable_in_archive"; actual findings were {"attachment_type_mismatch", "executable_attachment", "missing_aligned_dkim", "uninspectable_archive"}
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+
+=== explicit-vs-default archive worker inspection probe ===
+current_exe: "/home/user/p3-build/repo/target/debug/build/lizard-mail-backend/5c687e5a87d2ce98/out/p3_archive_discovery_probe-5c687e5a87d2ce98"
+libexec worker exists: false
+finding uninspectable_archive: {"entries_decompressed":0,"error":"invalid input: archive worker is unavailable: No such file or directory (os error 2)","inspection":"zip_directory_metadata_only","reason":"archive directory metadata could not be inspected"}
+explicit-worker inspection: Ok(ArchiveInspection { state: Complete, entries: [ArchiveEntry { index: 0, path: "documents/invoice.pdf.exe", directory: false, encrypted: false, compressed_size: 8, uncompressed_size: 6 }], total_uncompressed_bytes: 6, detail: None })

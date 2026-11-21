@@ -7,20 +7,23 @@ mail-client-only. They must never be combined with the httpd-rs yield index.
 
 ## Current snapshot
 
-The index currently covers **two passes**. Pass 1 reviewed commit
+The index currently covers **three passes**. Pass 1 reviewed commit
 `4d04393b2fcd9f8cee25029279cc2fe3bd4a3b5c`; Pass 2's malicious-mail-server
-review covered commit `47eb6b29fde5807dd9204aee2c4049eb7dd0ddb2`.
-Together they contain two high denial-of-service findings and one low
-integrity finding, contributing **201 adjusted points**. The Pass-1 findings
-were remediated by
+review covered commit `47eb6b29fde5807dd9204aee2c4049eb7dd0ddb2`; Pass 3
+reviewed commit `7c1a6683fbb7cd24e8779fc9b2c9c9b711e1e525`. Together they
+contain two high denial-of-service findings, one low integrity finding and one
+medium availability defect in a fail-closed security control, contributing
+**211 adjusted points**. The Pass-1 findings were remediated by
 `562aea7d3b29ec64c6e65851137caf557b01750b`; P2-A was remediated by
-`4d1ab6614bfcb103edb2d8cd721f63fdef0e96a4`. Confirmed historical findings
+`4d1ab6614bfcb103edb2d8cd721f63fdef0e96a4`. P3-A was confirmed at its
+reviewed commit and was not remediated there. Confirmed historical findings
 remain in the yield total.
 
 | Primary family | Confirmed findings | Adjusted points |
 |---|---:|---:|
 | `denial_of_service` | 2 | 200.0 |
 | `integrity_violation` | 1 | 1.0 |
+| `unclassified` | 1 | 10.0 |
 | all other fixed families | 0 | 0.0 |
 
 The scoring model is impact weight low `1`, medium `10`, high `100`, critical
@@ -35,6 +38,7 @@ zero-finding search, contributes its active duration.
 |---|---|
 | `findings_p1.md` | Pass-1 analysis, impact, reproduction, remediation and negative observations |
 | `findings_p2.md` | Pass-2 malicious-server/RCE analysis and confirmed IMAP resource finding |
+| `findings_p3.md` | Pass-3 isolated-worker Landlock misclassification, default worker-discovery observation and negative evidence |
 | `p1/openpgp-compression-bomb/` | End-to-end received-message OpenPGP expansion harness |
 | `p1/tui-bidi-queue/` | Real Ratatui/Crossterm queue-output harness |
 | `p1/results_openpgp.txt`, `p1/results_tui_bidi.txt` | Retained measurements from the reviewed commit |
@@ -43,6 +47,8 @@ zero-finding search, contributes its active duration.
 | `p2/imap-response-flood/` | Real async-imap LIST flood plus IMAP/MIME mutation harness |
 | `p2/results_imap_flood.txt`, `p2/negative-results.txt` | Pass-2 measurements and scoped negative RCE evidence |
 | `p2/results_remediation.txt` | Post-fix command-budget, resource and compatibility results |
+| `p3/imap-worker-landlock/` | Isolated IMAP worker Landlock reproduction, bisection and corrected-policy verification |
+| `p3/worker-discovery/` | Retained cargo-layout worker-discovery failure and explicit-path contrast |
 | `vulnerability-families.md` | Fixed classification/scoring contract and mail-client yield table |
 | `yield-index/searches.jsonl` | Mail-client logical searches and active segments |
 | `yield-index/findings.jsonl` | Mail-client claims, evidence, severity and composition |

@@ -1,0 +1,4 @@
+=== archive worker --sandbox-self-test (control: no path rules => FullyEnforced) ===
+=== archive worker --sandbox-self-test (control; stdout captured through a pipe) ===
+{"filesystem_denied":true,"network_denied":true,"execution_denied":true,"pipe_creation_denied":true}
+exit=0

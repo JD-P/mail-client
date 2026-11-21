@@ -1,0 +1,10 @@
+=== disposable-copy corrected policy: worker self-test ===
+{"profile_write_allowed":true,"credential_read_denied":true,"unrelated_profile_write_denied":true,"outside_read_denied":true,"outside_write_denied":true,"execute_denied":true,"udp_socket_denied":true,"unlisted_tcp_port_denied":true}
+
+=== disposable-copy corrected policy: guard test ===
+
+running 1 test
+test worker_sandbox_is_fail_closed ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.02s
+
