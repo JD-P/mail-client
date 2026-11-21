@@ -1,5 +1,5 @@
 use crate::app::{AccountAuthentication, AccountField, MailApp, Screen};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Datelike, Local, Utc};
 use lizard_mail_backend::{
     AuthenticationMethodKind, AuthenticationMethodResult, AuthenticationResultsTrust,
     DkimAuthenticationStatus, DkimSignatureStatus, FindingSeverity, HeuristicFinding, ImapSecurity,
@@ -325,10 +325,15 @@ fn draw_queue(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
                 ThreadWorkStatus::Snoozed => " [snoozed]",
                 ThreadWorkStatus::Done => " [done]",
             };
+            let received = format_queue_timestamp(thread.latest_received_at);
             let address = thread.latest_from_address.as_deref();
             if let Some(contact) = address.and_then(|address| app.contact_name(address)) {
                 ListItem::new(Line::from(vec![
                     Span::styled(format!("{unread} "), Style::default().fg(accent(app))),
+                    Span::styled(
+                        format!("{received}  "),
+                        Style::default().fg(Color::DarkGray),
+                    ),
                     Span::styled(
                         safe_single_line_text(contact),
                         Style::default().add_modifier(Modifier::BOLD),
@@ -370,7 +375,13 @@ fn draw_queue(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
                         lines.push(Line::raw(format!("  {claim}")));
                     }
                 }
-                lines.push(Line::raw(format!("  {subject}{state}")));
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("  {received}  "),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                    Span::raw(format!("{subject}{state}")),
+                ]));
                 ListItem::new(Text::from(lines))
             }
         })
@@ -416,11 +427,24 @@ fn draw_reader(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
                 Style::default().fg(DANGER).add_modifier(Modifier::BOLD),
             ),
             Line::raw(""),
+            Line::raw(format!(
+                "Received: {}",
+                format_full_timestamp(message.summary.received_at)
+            )),
+        ];
+        if let Some(sent_at) = message.summary.sent_at {
+            lines.push(Line::raw(format!(
+                "Message claims sent: {}",
+                format_full_timestamp(sent_at)
+            )));
+        }
+        lines.extend([
+            Line::raw(""),
             Line::raw(
                 "The client found security evidence that must not be hidden in a detail pane.",
             ),
             Line::raw(""),
-        ];
+        ]);
         append_finding_lines(
             &mut lines,
             message,
@@ -462,6 +486,20 @@ fn draw_reader(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
             message.summary.subject.as_deref().unwrap_or("(no subject)"),
         )),
     ]));
+    append_labeled_lines(
+        &mut header_lines,
+        "Received: ",
+        &format_full_timestamp(message.summary.received_at),
+        inner_width,
+    );
+    if let Some(sent_at) = message.summary.sent_at {
+        append_labeled_lines(
+            &mut header_lines,
+            "Message claims sent: ",
+            &format_full_timestamp(sent_at),
+            inner_width,
+        );
+    }
     append_labeled_lines(
         &mut header_lines,
         "Domain signature: ",
@@ -1221,15 +1259,49 @@ fn draw_footer(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
         Screen::Contacts => "j/k move · Esc back",
         Screen::Help => "Esc back",
     };
-    let line = if let Some(status) = &app.status {
-        format!("{commands}  │  {}", safe_single_line_text(status))
-    } else {
-        commands.to_owned()
-    };
+    let mut statuses = Vec::new();
+    if let Some(status) = app.reader_load_status() {
+        statuses.push(format!("Reader: {}", safe_single_line_text(status)));
+    }
+    if let Some(status) = app.status.as_deref() {
+        statuses.push(safe_single_line_text(status));
+    }
+    if let Some(status) = app.background_status.as_deref() {
+        statuses.push(format!("Sync: {}", safe_single_line_text(status)));
+    }
+    let mut lines = vec![Line::raw(commands)];
+    if !statuses.is_empty() {
+        lines.push(Line::raw(statuses.join("  │  ")));
+    }
     frame.render_widget(
-        Paragraph::new(line).style(Style::default().fg(Color::DarkGray)),
+        Paragraph::new(Text::from(lines)).style(Style::default().fg(Color::DarkGray)),
         area,
     );
+}
+
+fn format_queue_timestamp(timestamp: i64) -> String {
+    let Some(value) =
+        DateTime::<Utc>::from_timestamp(timestamp, 0).map(|value| value.with_timezone(&Local))
+    else {
+        return "invalid date".into();
+    };
+    let now = Local::now();
+    if value.year() == now.year() {
+        value.format("%b %d %H:%M").to_string()
+    } else {
+        value.format("%Y-%m-%d %H:%M").to_string()
+    }
+}
+
+fn format_full_timestamp(timestamp: i64) -> String {
+    DateTime::<Utc>::from_timestamp(timestamp, 0)
+        .map(|value| {
+            value
+                .with_timezone(&Local)
+                .format("%Y-%m-%d %H:%M:%S %:z")
+                .to_string()
+        })
+        .unwrap_or_else(|| "invalid date".into())
 }
 
 fn accent(app: &MailApp) -> Color {
@@ -1413,5 +1485,17 @@ mod tests {
         ];
 
         assert_eq!(aligned_dkim_domain(&signatures), Some("author.example"));
+    }
+
+    #[test]
+    fn timestamps_include_clock_time_and_full_reader_date() {
+        let queue = format_queue_timestamp(1_700_000_000);
+        let reader = format_full_timestamp(1_700_000_000);
+
+        assert!(queue.contains(':'), "queue timestamp must include a time");
+        assert!(reader.starts_with("2023-"));
+        assert!(reader.matches('-').count() >= 2);
+        assert!(reader.contains(':'));
+        assert_ne!(queue, "invalid date");
     }
 }

@@ -101,6 +101,30 @@ impl Threads {
         Ok(Thread { summary, messages })
     }
 
+    /// Load the conversation summary and its newest message only.
+    ///
+    /// Frontends use this latency-sensitive snapshot for the first reader
+    /// frame. It has a dedicated WAL read connection so background database
+    /// work cannot monopolize the in-process connection mutex. Call
+    /// [`Self::get`]
+    /// when the complete conversation history is actually needed.
+    pub async fn get_latest(&self, id: ThreadId) -> Result<Thread> {
+        let mut connection = self.0.inner.interactive_connection.lock().await;
+        let transaction = connection.transaction().await?;
+        let summary = load_summary_on(&transaction, id).await?;
+        let latest_message_id = summary.latest_message_id;
+        let mut messages =
+            crate::backend::load_messages_on(&transaction, &[latest_message_id]).await?;
+        let message = messages.pop().ok_or_else(|| {
+            BackendError::InvalidInput("conversation has no newest message".into())
+        })?;
+        transaction.commit().await?;
+        Ok(Thread {
+            summary,
+            messages: vec![message],
+        })
+    }
+
     pub async fn list(&self, filter: ThreadFilter) -> Result<Page<ThreadSummary>> {
         let page_size = filter.page_size.clamp(1, 200);
         let cursor = filter.cursor.as_deref().map(decode_cursor).transpose()?;
@@ -1157,6 +1181,49 @@ fn decode_cursor(value: &str) -> Result<ThreadCursor> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn latest_snapshot_reads_while_general_connection_is_writing() {
+        let profile = tempfile::tempdir().unwrap();
+        let backend = Backend::open(crate::BackendConfig::new(profile.path()))
+            .await
+            .unwrap();
+        let message_id = backend
+            .ingest(crate::IngestMessage::local(
+                b"From: sender@example.test\r\nTo: reader@example.test\r\nMessage-ID: <interactive-read@example.test>\r\nSubject: Interactive read\r\n\r\nBody\r\n"
+                    .to_vec(),
+            ))
+            .await
+            .unwrap();
+        let thread_id = backend
+            .messages()
+            .get(message_id)
+            .await
+            .unwrap()
+            .summary
+            .thread_id;
+
+        let mut general = backend.inner.connection.lock().await;
+        let transaction = general.transaction().await.unwrap();
+        transaction
+            .execute(
+                "UPDATE messages SET preview = preview WHERE id = ?1",
+                (message_id.to_string(),),
+            )
+            .await
+            .unwrap();
+
+        let snapshot = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            backend.threads().get_latest(thread_id),
+        )
+        .await
+        .expect("interactive WAL reader must not wait for the general connection mutex")
+        .unwrap();
+        assert_eq!(snapshot.messages.len(), 1);
+        assert_eq!(snapshot.messages[0].summary.id, message_id);
+        transaction.commit().await.unwrap();
+    }
 
     #[test]
     fn canonicalizes_subjects_and_bounded_reference_chains() {

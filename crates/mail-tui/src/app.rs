@@ -253,6 +253,7 @@ pub struct MailApp {
     pub contacts: Vec<Contact>,
     pub contact_names: HashMap<String, String>,
     pub status: Option<String>,
+    pub background_status: Option<String>,
     pub security_override: bool,
     reader_html: Option<RenderedPage>,
     reader_html_error: Option<String>,
@@ -318,6 +319,7 @@ impl MailApp {
             contacts,
             contact_names: HashMap::new(),
             status: None,
+            background_status: None,
             security_override: false,
             reader_html: None,
             reader_html_error: None,
@@ -543,7 +545,7 @@ impl MailApp {
         self.reader_thread_id = Some(thread_id);
         self.reader_load_task = Some(ReaderLoadTask {
             thread_id,
-            handle: tokio::spawn(async move { backend.threads().get(thread_id).await }),
+            handle: tokio::spawn(async move { backend.threads().get_latest(thread_id).await }),
         });
     }
 
@@ -552,7 +554,6 @@ impl MailApp {
             task.handle.abort();
         }
         let backend = self.backend.clone();
-        self.status = Some("Downloading and verifying message content…".into());
         self.reader_content_task = Some(ReaderContentTask {
             thread_id,
             handle: tokio::spawn(async move {
@@ -560,7 +561,7 @@ impl MailApp {
                     .managed_imap_account_engine(ImapAccountEngineConfig::default())?
                     .fetch_message_content(message_id)
                     .await?;
-                backend.threads().get(thread_id).await
+                backend.threads().get_latest(thread_id).await
             }),
         });
     }
@@ -585,12 +586,14 @@ impl MailApp {
                     .map(|folder| folder.fetched_messages)
                     .sum::<usize>();
                 if fetched > 0 {
-                    self.status = Some(format!(
+                    self.background_status = Some(format!(
                         "Synchronization complete: {fetched} new message headers across {} folders",
                         report.folders.len()
                     ));
                 } else if task.announce {
-                    self.status = Some("Mailboxes are up to date".into());
+                    self.background_status = Some("Mailboxes are up to date".into());
+                } else {
+                    self.background_status = None;
                 }
                 if task.begin_contact_onboarding {
                     self.begin_contact_onboarding(task.account_id).await?;
@@ -599,7 +602,7 @@ impl MailApp {
                 }
             }
             Err(error) => {
-                self.status = Some(format!("Synchronization failed: {error}"));
+                self.background_status = Some(format!("Synchronization failed: {error}"));
             }
         }
         Ok(())
@@ -664,7 +667,7 @@ impl MailApp {
         let engine = self
             .backend
             .managed_imap_account_engine(ImapAccountEngineConfig::default())?;
-        self.status = Some("Synchronizing in an isolated worker…".into());
+        self.background_status = Some("Synchronizing in an isolated worker…".into());
         self.account_sync_task = Some(AccountSyncTask {
             account_id: request.account_id,
             announce: request.announce,
@@ -1267,7 +1270,6 @@ impl MailApp {
                     self.current_thread = None;
                     self.security_override = false;
                     self.clear_reader_html();
-                    self.status = Some("Opening conversation…".into());
                     self.start_reader_load(id);
                 }
             }
@@ -1414,7 +1416,13 @@ impl MailApp {
             return Ok(());
         }
         let thread = match self.screen {
-            Screen::Reader => self.current_thread.clone(),
+            Screen::Reader => {
+                if let Some(id) = self.current_thread.as_ref().map(|thread| thread.summary.id) {
+                    Some(self.backend.threads().get(id).await?)
+                } else {
+                    None
+                }
+            }
             Screen::Queue(_) => {
                 if let Some(id) = self.selected_thread().map(|thread| thread.id) {
                     Some(self.backend.threads().get(id).await?)

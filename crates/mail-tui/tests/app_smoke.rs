@@ -144,6 +144,7 @@ async fn cold_reader_keeps_identity_context_and_persistent_explanations() {
                 "Reply-To: payments@different.example\r\n",
                 "To: reader@example.test\r\n",
                 "Message-ID: <cold-identity@example.test>\r\n",
+                "Date: Tue, 14 Nov 2023 22:13:20 +0000\r\n",
                 "Subject: Account notice\r\n\r\n",
                 "Do not trust this message.\r\n"
             )
@@ -179,6 +180,8 @@ async fn cold_reader_keeps_identity_context_and_persistent_explanations() {
     assert!(text.contains("support@chase.com.evil.wtf"));
     assert!(text.contains("controlled by evil.wtf, not chase.com"));
     assert!(text.contains("reply would be sent somewhere other"));
+    assert!(text.contains("Received:"));
+    assert!(text.contains("Message claims sent:"));
     assert!(text.contains("RESTRICTED VIEW"));
 }
 

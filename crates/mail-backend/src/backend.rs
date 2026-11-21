@@ -189,7 +189,12 @@ pub struct Backend {
 pub(crate) struct Inner {
     pub(crate) config: BackendConfig,
     _database: turso::Database,
+    /// General-purpose connection used by mutations and background work.
     pub(crate) connection: Mutex<Connection>,
+    /// A separate WAL reader for latency-sensitive frontend snapshots. Keeping
+    /// this out of the general connection mutex prevents spam, heuristic and
+    /// synchronization bookkeeping from queueing ahead of opening a message.
+    pub(crate) interactive_connection: Mutex<Connection>,
     pub(crate) search_index: Arc<SearchIndex>,
     /// Sandboxed synchronization workers enqueue search changes but never
     /// contend for the profile's exclusive Tantivy writer.
@@ -276,6 +281,13 @@ impl Backend {
             connection.execute("PRAGMA temp_store = MEMORY", ()).await?;
             schema::prepare_connection(&connection).await?;
         }
+        let interactive_connection = database.connect()?;
+        // Sorting a large conversation must remain possible inside an
+        // isolated worker, where Landlock intentionally provides no writable
+        // temporary directory.
+        interactive_connection
+            .execute("PRAGMA temp_store = MEMORY", ())
+            .await?;
         let search_index = if sync_worker {
             Arc::new(SearchIndex::create_deferred(&config.profile_dir)?)
         } else {
@@ -309,6 +321,7 @@ impl Backend {
                 config,
                 _database: database,
                 connection: Mutex::new(connection),
+                interactive_connection: Mutex::new(interactive_connection),
                 search_index,
                 search_deferred: sync_worker,
                 search_sync: RwLock::new(()),
@@ -5409,7 +5422,10 @@ async fn lookup_remote_on(
         .transpose()
 }
 
-async fn load_messages_on(connection: &Connection, ids: &[MessageId]) -> Result<Vec<Message>> {
+pub(crate) async fn load_messages_on(
+    connection: &Connection,
+    ids: &[MessageId],
+) -> Result<Vec<Message>> {
     if ids.is_empty() {
         return Ok(Vec::new());
     }
