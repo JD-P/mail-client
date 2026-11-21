@@ -17,8 +17,12 @@ The portable archive keeps all four executables beside one another. Run it as:
 ```sh
 tar -xzf lizard-mail-*-linux-x86_64-musl.tar.gz
 cd lizard-mail-*-linux-x86_64-musl
-./lizard-mail-tui /path/to/profile
+./lizard-mail-tui
 ```
+
+The client uses `$XDG_DATA_HOME/lizard-mail` or
+`~/.local/share/lizard-mail` by default. Pass `--profile /path/to/profile` for
+a portable, test, or recovery profile.
 
 The Debian and RPM packages install `/usr/bin/lizard-mail-tui` and keep the
 internal workers outside `PATH` under `/usr/libexec/lizard-mail/`. Worker

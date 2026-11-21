@@ -16,6 +16,14 @@ not implemented merely because it is described there.
 - First-account contact suggestions, limited to twenty candidates from the
   previous six months of inbound and outbound correspondence, with durable
   accept/dismiss decisions.
+- First-run IMAP account connection with TLS/STARTTLS, password/app-password or
+  access-token credentials, masked and zeroized secret entry, secure credential
+  storage, and asynchronous isolated header-first synchronization.
+- Account management for adding, editing, manually synchronizing, diagnosing,
+  and removing IMAP accounts. Removal has an intrusive confirmation and uses
+  the backend's durable credential-cleanup path.
+- A default platform profile directory, with explicit `--profile` and legacy
+  positional overrides for portable and recovery profiles.
 - Suggested-contact editing for contact-owned name, relationship kind, and
   Action/FYI placement.
 - Terminal queue navigation, conversation reader, Contacts list, contextual
@@ -62,4 +70,4 @@ not implemented merely because it is described there.
 - Similar-mail rule creation and preview, filter/heuristic editors, and rules
   overview.
 - Search, search results, saved views, folders, and mailbox management.
-- Account, encryption/key, storage/offline, appearance, and keybinding screens.
+- Encryption/key, storage/offline, appearance, and keybinding screens.

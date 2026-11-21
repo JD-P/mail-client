@@ -1,8 +1,9 @@
-use crate::app::{MailApp, Screen};
+use crate::app::{AccountAuthentication, AccountField, MailApp, Screen};
+use chrono::{DateTime, Utc};
 use lizard_mail_backend::{
     AuthenticationMethodKind, AuthenticationMethodResult, AuthenticationResultsTrust,
-    DkimAuthenticationStatus, DkimSignatureStatus, FindingSeverity, HeuristicFinding, InboxClass,
-    Message, OpenPgpBindingState, OpenPgpEncryptionStatus, OpenPgpSignatureStatus,
+    DkimAuthenticationStatus, DkimSignatureStatus, FindingSeverity, HeuristicFinding, ImapSecurity,
+    InboxClass, Message, OpenPgpBindingState, OpenPgpEncryptionStatus, OpenPgpSignatureStatus,
     ThreadWorkStatus, WorkflowView,
 };
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -28,6 +29,9 @@ pub fn draw(frame: &mut Frame<'_>, app: &MailApp) {
         .split(frame.area());
     draw_header(frame, app, areas[0]);
     match app.screen {
+        Screen::Accounts => draw_accounts(frame, app, areas[1]),
+        Screen::AccountEdit => draw_account_editor(frame, app, areas[1]),
+        Screen::AccountDeleteConfirm => draw_account_delete_confirm(frame, app, areas[1]),
         Screen::Onboarding => draw_onboarding(frame, app, areas[1]),
         Screen::OnboardingEdit => draw_onboarding_edit(frame, app, areas[1]),
         Screen::Queue(_) => draw_queue(frame, app, areas[1]),
@@ -47,7 +51,7 @@ fn draw_header(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
         Span::styled("2", Style::default().fg(COLD).add_modifier(Modifier::BOLD)),
         Span::raw(" Cold  "),
         Span::styled("3", Style::default().fg(SPAM).add_modifier(Modifier::BOLD)),
-        Span::raw(" Spam  F FYI  L Later  C Contacts  ? Help"),
+        Span::raw(" Spam  F FYI  L Later  C Contacts  A Accounts  ? Help"),
     ]);
     frame.render_widget(
         Paragraph::new(navigation).block(
@@ -56,6 +60,218 @@ fn draw_header(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(accent)),
         ),
+        area,
+    );
+}
+
+fn draw_accounts(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
+    if app.accounts.is_empty() {
+        frame.render_widget(
+            Paragraph::new(
+                "No mail account is configured. Press N to connect an IMAP account. Credentials are stored in the operating-system credential store when available and otherwise in Lizard's encrypted profile store.",
+            )
+            .block(Block::default().title("Accounts").borders(Borders::ALL))
+            .wrap(Wrap { trim: false }),
+            area,
+        );
+        return;
+    }
+    let items = app
+        .accounts
+        .iter()
+        .map(|account| {
+            let settings = account.imap.as_ref();
+            let endpoint = settings.map_or_else(
+                || "not configured".to_owned(),
+                |settings| {
+                    format!(
+                        "{} · {}:{} · {}",
+                        safe_single_line_text(&settings.username),
+                        safe_single_line_text(&settings.host),
+                        settings.port,
+                        match settings.security {
+                            ImapSecurity::ImplicitTls => "TLS",
+                            ImapSecurity::StartTls => "STARTTLS",
+                        }
+                    )
+                },
+            );
+            let mut lines = vec![Line::from(vec![
+                Span::styled(
+                    safe_single_line_text(&account.name),
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(format!("  {endpoint}")),
+            ])];
+            if app.account_syncing(account.id) {
+                lines.push(Line::styled(
+                    "  Synchronizing in isolated worker…",
+                    Style::default().fg(COLD),
+                ));
+            } else if let Some(state) = app.account_states.get(&account.id) {
+                let mut detail = format!("  Sync: {:?}", state.status);
+                if let Some(success) = state.last_success_at {
+                    detail.push_str(&format!(" · last success {}", display_timestamp(success)));
+                } else if state.last_attempt_at.is_none() {
+                    detail.push_str(" · never synchronized");
+                }
+                if let Some(error) = &state.last_error {
+                    detail.push_str(&format!(" · {}", safe_single_line_text(error)));
+                }
+                lines.push(Line::raw(detail));
+            }
+            ListItem::new(Text::from(lines))
+        })
+        .collect::<Vec<_>>();
+    let mut state = ListState::default().with_selected(Some(app.selected));
+    frame.render_stateful_widget(
+        List::new(items)
+            .block(Block::default().title("Accounts").borders(Borders::ALL))
+            .highlight_style(
+                Style::default()
+                    .bg(Color::Gray)
+                    .fg(Color::Black)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .highlight_symbol("› "),
+        area,
+        &mut state,
+    );
+}
+
+fn display_timestamp(value: i64) -> String {
+    DateTime::<Utc>::from_timestamp(value, 0)
+        .map(|value| value.format("%Y-%m-%d %H:%M UTC").to_string())
+        .unwrap_or_else(|| "invalid time".into())
+}
+
+fn draw_account_editor(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
+    let Some(editor) = &app.account_editor else {
+        frame.render_widget(Paragraph::new("No account is being edited"), area);
+        return;
+    };
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(7), Constraint::Min(7)])
+        .split(area);
+    let introduction = if editor.account_id.is_none() {
+        "Connect an existing mailbox. Lizard performs a header-first synchronization in an isolated process, so the first screen becomes useful without downloading every body. Ordinary plaintext IMAP is not supported."
+    } else {
+        "Update this account's IMAP connection. Leave the secret unchanged to retain the stored credential. Saving tests the new settings with an isolated synchronization."
+    };
+    frame.render_widget(
+        Paragraph::new(introduction)
+            .block(
+                Block::default()
+                    .title(if editor.account_id.is_none() {
+                        "Connect an IMAP account"
+                    } else {
+                        "Edit IMAP account"
+                    })
+                    .borders(Borders::ALL),
+            )
+            .wrap(Wrap { trim: false }),
+        chunks[0],
+    );
+    let fields = vec![
+        ("Account name", safe_single_line_text(&editor.name)),
+        ("Email / username", safe_single_line_text(&editor.username)),
+        ("IMAP server", safe_single_line_text(&editor.host)),
+        ("IMAP port", safe_single_line_text(&editor.port)),
+        (
+            "Transport security",
+            match editor.security {
+                ImapSecurity::ImplicitTls => "TLS from connection start (recommended)",
+                ImapSecurity::StartTls => "STARTTLS upgrade",
+            }
+            .into(),
+        ),
+        (
+            "Authentication",
+            match editor.authentication {
+                AccountAuthentication::Password => "Password or app password",
+                AccountAuthentication::OAuthAccessToken => {
+                    "OAuth access token (advanced; automatic refresh is not wired yet)"
+                }
+            }
+            .into(),
+        ),
+        (
+            match editor.authentication {
+                AccountAuthentication::Password => "Password",
+                AccountAuthentication::OAuthAccessToken => "OAuth access token",
+            },
+            editor.secret_label().into(),
+        ),
+    ];
+    let items = fields
+        .into_iter()
+        .map(|(label, value)| {
+            ListItem::new(Line::from(vec![
+                Span::styled(
+                    format!("{label}: "),
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(value),
+            ]))
+        })
+        .collect::<Vec<_>>();
+    let selected = match editor.selected_field {
+        AccountField::Name => 0,
+        AccountField::Username => 1,
+        AccountField::Host => 2,
+        AccountField::Port => 3,
+        AccountField::Security => 4,
+        AccountField::Authentication => 5,
+        AccountField::Secret => 6,
+    };
+    let mut state = ListState::default().with_selected(Some(selected));
+    frame.render_stateful_widget(
+        List::new(items)
+            .block(
+                Block::default()
+                    .title("Connection settings")
+                    .borders(Borders::ALL),
+            )
+            .highlight_style(Style::default().bg(COLD).fg(Color::Black))
+            .highlight_symbol("› "),
+        chunks[1],
+        &mut state,
+    );
+}
+
+fn draw_account_delete_confirm(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
+    let account = app
+        .pending_account_delete
+        .and_then(|id| app.accounts.iter().find(|account| account.id == id));
+    let Some(account) = account else {
+        frame.render_widget(Paragraph::new("No account selected for removal"), area);
+        return;
+    };
+    let text = Text::from(vec![
+        Line::styled(
+            "REMOVE THIS ACCOUNT FROM LIZARD?",
+            Style::default().fg(DANGER).add_modifier(Modifier::BOLD),
+        ),
+        Line::raw(""),
+        Line::raw(format!("Account: {}", safe_single_line_text(&account.name))),
+        Line::raw(""),
+        Line::raw(
+            "This removes the account, its local messages and folders, cached bodies, sync state, and Lizard-managed credentials from this profile.",
+        ),
+        Line::raw("Mail stored on the remote server is not deleted."),
+        Line::raw(""),
+        Line::styled("Press Y to remove, or N/Esc to cancel.", Style::default().fg(DANGER)),
+    ]);
+    frame.render_widget(
+        Paragraph::new(text)
+            .block(
+                Block::default()
+                    .title("Confirm account removal")
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(DANGER)),
+            )
+            .wrap(Wrap { trim: false }),
         area,
     );
 }
@@ -794,7 +1010,7 @@ fn draw_help(frame: &mut Frame<'_>, area: Rect) {
         Line::raw(
             "1 Warm Action · F Warm FYI · 2 Cold · 3 Spam · L Waiting · Z Snoozed · D Done",
         ),
-        Line::raw("C Contacts · ? Help · q Quit · Esc Back"),
+        Line::raw("C Contacts · A Accounts · ? Help · q Quit · Esc Back"),
         Line::raw(""),
         Line::styled(
             "Queues and reader",
@@ -813,6 +1029,15 @@ fn draw_help(frame: &mut Frame<'_>, area: Rect) {
         Line::raw(
             "Edit: type name · Ctrl-R Action/FYI · Ctrl-K relationship kind · Enter Save",
         ),
+        Line::raw(""),
+        Line::styled(
+            "Accounts",
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
+        Line::raw("N New · Enter/E Edit · S Synchronize · d Remove"),
+        Line::raw(
+            "Editor: ↑/↓ or Tab fields · Space toggle choices · Ctrl-S save · Esc cancel",
+        ),
     ]);
     frame.render_widget(
         Paragraph::new(text)
@@ -828,6 +1053,11 @@ fn draw_help(frame: &mut Frame<'_>, area: Rect) {
 
 fn draw_footer(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
     let commands = match app.screen {
+        Screen::Accounts => "j/k move · n new · Enter/e edit · S sync · d remove · Esc back",
+        Screen::AccountEdit => {
+            "↑/↓ or Tab fields · type value · Space toggle · Ctrl-S save · Esc cancel"
+        }
+        Screen::AccountDeleteConfirm => "y remove account · n/Esc cancel",
         Screen::Queue(WorkflowView::ColdReview) => {
             "j/k move · Enter inspect · a actionable once · d done · s snooze · ? help"
         }
@@ -871,12 +1101,17 @@ fn accent(app: &MailApp) -> Color {
                 InboxClass::Spam => SPAM,
             })
             .unwrap_or(Color::Gray),
+        Screen::AccountEdit => COLD,
+        Screen::AccountDeleteConfirm => DANGER,
         _ => Color::Gray,
     }
 }
 
 fn screen_title(app: &MailApp) -> &'static str {
     match app.screen {
+        Screen::Accounts => "ACCOUNTS",
+        Screen::AccountEdit => "ACCOUNT / IMAP CONNECTION",
+        Screen::AccountDeleteConfirm => "ACCOUNT / CONFIRM REMOVAL",
         Screen::Onboarding => "ONBOARDING / CONTACT SUGGESTIONS",
         Screen::OnboardingEdit => "ONBOARDING / EDIT RELATIONSHIP",
         Screen::Queue(WorkflowView::WarmAction) => "WARM / ACTION",

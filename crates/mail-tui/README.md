@@ -8,15 +8,24 @@ The exact implementation boundary is tracked in
 The Linux worker threat model and failure policy are documented in
 [`../../spec/tui-render-isolation.md`](../../spec/tui-render-isolation.md).
 
-Build the client and all three isolated workers, then run the client against a
-Lizard backend profile:
+Build the client and all three isolated workers, then run the client. By
+default it opens the platform's per-user Lizard profile (`$XDG_DATA_HOME/lizard-mail`
+or `~/.local/share/lizard-mail` on Linux):
 
 ```sh
 cargo build --locked \
   -p lizard-mail-tui --bins \
   -p lizard-mail-backend --bins
-cargo run -p lizard-mail-tui -- /path/to/profile
+cargo run -p lizard-mail-tui
 ```
+
+Use `--profile /path/to/profile` for a portable, test, or recovery profile.
+The first run opens an account-connection form. It stores passwords or access
+tokens through the backend credential manager, starts header-first IMAP
+synchronization in the isolated worker, and then offers contact suggestions.
+Press `A` from the ordinary client to add, edit, synchronize, diagnose, or
+remove accounts. Account removal requires confirmation and does not delete mail
+from the remote server.
 
 Cargo places the four executables together, which is also the portable release
 layout. Native packages install only `lizard-mail-tui` in `PATH` and place the

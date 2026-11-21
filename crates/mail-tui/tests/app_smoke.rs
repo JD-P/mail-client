@@ -8,15 +8,17 @@ use lizard_mail_tui::{HtmlRenderIsolationConfig, IsolatedHtmlRenderer, Limits};
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
 use std::{path::PathBuf, time::Duration};
+use zeroize::Zeroizing;
 
 #[tokio::test]
-async fn empty_profile_opens_to_warm_action_and_renders_inbox_zero() {
+async fn empty_profile_opens_account_connection_onboarding() {
     let profile = tempfile::tempdir().unwrap();
     let backend = Backend::open(BackendConfig::new(profile.path()))
         .await
         .unwrap();
     let mut app = MailApp::open(backend).await.unwrap();
-    assert_eq!(app.screen, Screen::Queue(WorkflowView::WarmAction));
+    assert_eq!(app.screen, Screen::AccountEdit);
+    assert!(app.account_editor.as_ref().unwrap().account_id.is_none());
 
     let backend = TestBackend::new(100, 28);
     let mut terminal = Terminal::new(backend).unwrap();
@@ -28,11 +30,93 @@ async fn empty_profile_opens_to_warm_action_and_renders_inbox_zero() {
         .iter()
         .map(|cell| cell.symbol())
         .collect::<String>();
-    assert!(text.contains("WARM / ACTION"));
-    assert!(text.contains("Warm inbox zero"));
+    assert!(text.contains("ACCOUNT / IMAP CONNECTION"));
+    assert!(text.contains("Connect an IMAP account"));
+    assert!(text.contains("Email / username"));
+    assert!(text.contains("TLS from connection start"));
 
-    app.dispatch(AppCommand::Cold).await.unwrap();
-    assert_eq!(app.screen, Screen::Queue(WorkflowView::ColdReview));
+    app.dispatch(AppCommand::EditPaste(Zeroizing::new(
+        "reader@example.test".into(),
+    )))
+    .await
+    .unwrap();
+    app.dispatch(AppCommand::EditNextField).await.unwrap();
+    app.dispatch(AppCommand::EditPaste(Zeroizing::new("127.0.0.1".into())))
+        .await
+        .unwrap();
+    for _ in 0..4 {
+        app.dispatch(AppCommand::EditNextField).await.unwrap();
+    }
+    app.dispatch(AppCommand::EditPaste(Zeroizing::new(
+        "test-app-password".into(),
+    )))
+    .await
+    .unwrap();
+    app.dispatch(AppCommand::AccountSave).await.unwrap();
+
+    assert_eq!(app.screen, Screen::Accounts);
+    assert_eq!(app.accounts.len(), 1);
+    assert_eq!(app.accounts[0].name, "Personal");
+    assert_eq!(app.accounts[0].imap.as_ref().unwrap().host, "127.0.0.1");
+    assert!(app.accounts[0]
+        .credential_ref
+        .as_deref()
+        .unwrap()
+        .starts_with("lizard-credential:v1:"));
+}
+
+#[tokio::test]
+async fn accounts_menu_edits_syncs_and_confirms_destructive_removal() {
+    let profile = tempfile::tempdir().unwrap();
+    let backend = Backend::open(BackendConfig::new(profile.path()))
+        .await
+        .unwrap();
+    backend
+        .accounts()
+        .add_with_credential(
+            NewAccount {
+                name: "Personal".into(),
+                kind: AccountKind::Imap,
+                credential_ref: None,
+                imap: Some(ImapSettings {
+                    host: "127.0.0.1".into(),
+                    port: 993,
+                    username: "reader@example.test".into(),
+                    security: ImapSecurity::ImplicitTls,
+                }),
+            },
+            lizard_mail_backend::ImapCredential::Password(lizard_mail_backend::SecretValue::new(
+                "password",
+            )),
+        )
+        .await
+        .unwrap();
+
+    let mut app = MailApp::open(backend.clone()).await.unwrap();
+    app.dispatch(AppCommand::Accounts).await.unwrap();
+    assert_eq!(app.screen, Screen::Accounts);
+    assert_eq!(app.accounts.len(), 1);
+
+    app.dispatch(AppCommand::AccountEdit).await.unwrap();
+    assert_eq!(app.screen, Screen::AccountEdit);
+    assert_eq!(
+        app.account_editor.as_ref().unwrap().secret_label(),
+        "unchanged"
+    );
+    app.dispatch(AppCommand::Back).await.unwrap();
+
+    app.dispatch(AppCommand::AccountDelete).await.unwrap();
+    assert_eq!(app.screen, Screen::AccountDeleteConfirm);
+    app.dispatch(AppCommand::AccountCancelDelete).await.unwrap();
+    assert_eq!(app.screen, Screen::Accounts);
+    assert_eq!(backend.accounts().list().await.unwrap().len(), 1);
+
+    app.dispatch(AppCommand::AccountDelete).await.unwrap();
+    app.dispatch(AppCommand::AccountConfirmDelete)
+        .await
+        .unwrap();
+    assert_eq!(app.screen, Screen::AccountEdit);
+    assert!(backend.accounts().list().await.unwrap().is_empty());
 }
 
 #[tokio::test]
