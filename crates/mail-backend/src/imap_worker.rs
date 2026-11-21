@@ -951,15 +951,15 @@ fn enter_landlock(profile: &Path, tcp_ports: &[u16]) -> std::result::Result<(), 
                 )
             })?;
     }
+    // Landlock treats granting directory-only rights to a file as a partial
+    // compatibility result.  Keep file rules to ReadFile so a fully capable
+    // host is not mistaken for one that only partially enforced the policy.
     for path in [
         "/etc/hosts",
         "/etc/nsswitch.conf",
         "/etc/resolv.conf",
-        "/usr/share/zoneinfo",
-        "/proc/self",
         "/proc/meminfo",
         "/proc/cpuinfo",
-        "/sys/devices/system/cpu",
         "/dev/urandom",
     ] {
         if Path::new(path).exists() {
@@ -968,9 +968,25 @@ fn enter_landlock(profile: &Path, tcp_ports: &[u16]) -> std::result::Result<(), 
                     PathFd::new(path).map_err(|error| {
                         format!("could not open Landlock read path {path}: {error}")
                     })?,
-                    read_access,
+                    AccessFs::ReadFile,
                 ))
                 .map_err(|error| format!("could not allow Landlock read path {path}: {error}"))?;
+        }
+    }
+    for path in [
+        "/usr/share/zoneinfo",
+        "/proc/self",
+        "/sys/devices/system/cpu",
+    ] {
+        if Path::new(path).exists() {
+            created = created
+                .add_rule(PathBeneath::new(
+                    PathFd::new(path).map_err(|error| {
+                        format!("could not open Landlock read tree {path}: {error}")
+                    })?,
+                    read_access,
+                ))
+                .map_err(|error| format!("could not allow Landlock read tree {path}: {error}"))?;
         }
     }
     let mut ports = tcp_ports.to_vec();
