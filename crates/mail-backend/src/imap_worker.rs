@@ -321,12 +321,29 @@ impl IsolatedImapAccountEngine {
                     "could not resolve the mail profile directory: {error}"
                 ))
             })?;
-        let observed_storage = self
+        let observed_storage = if self
             .backend
-            .storage()
-            .usage()
-            .await
-            .map_err(WorkerFailure::operation)?;
+            .inner
+            .config
+            .storage_limits
+            .max_profile_bytes
+            .is_some()
+        {
+            // An explicit profile quota requires an exact baseline, but this
+            // runs in the already-background synchronization task rather than
+            // delaying application startup.
+            self.backend
+                .storage()
+                .usage()
+                .await
+                .map_err(WorkerFailure::operation)?
+        } else {
+            self.backend
+                .inner
+                .storage
+                .cached_usage()
+                .map_err(WorkerFailure::operation)?
+        };
         let request = WorkerRequest {
             protocol: WORKER_PROTOCOL_VERSION,
             backend: backend_config,

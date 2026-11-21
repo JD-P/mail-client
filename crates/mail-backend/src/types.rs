@@ -1779,6 +1779,11 @@ pub struct SearchRequest {
 pub struct SearchPage {
     pub items: Vec<MessageSummary>,
     pub next_cursor: Option<String>,
+    /// False while durable Tantivy updates are still being replayed. Results
+    /// are usable but may omit newly ingested messages or include an entry
+    /// whose database row was concurrently removed.
+    #[serde(default = "default_true")]
+    pub index_results_complete: bool,
     /// False when the query uses body/attachment-name fields and at least one
     /// message is not fully downloaded, so additional matches may exist.
     pub content_results_complete: bool,

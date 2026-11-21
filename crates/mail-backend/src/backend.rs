@@ -26,7 +26,7 @@ use std::{
     mem,
     str::FromStr,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc, Weak,
     },
 };
@@ -200,6 +200,11 @@ pub(crate) struct Inner {
     /// contend for the profile's exclusive Tantivy writer.
     pub(crate) search_deferred: bool,
     pub(crate) search_sync: RwLock<()>,
+    /// Coalesces crash-replayable Tantivy publication without putting a large
+    /// durable queue on the profile-open critical path.
+    search_publication: Mutex<()>,
+    search_publication_requested: AtomicBool,
+    search_publications_active: AtomicUsize,
     /// Serializes physical blob collection against the interval between
     /// publishing a content-addressed file and committing its database
     /// reference. Readers are blob publishers; writers may delete or take a
@@ -213,6 +218,21 @@ pub(crate) struct Inner {
     download_locks: Mutex<HashMap<MessageId, Weak<Mutex<()>>>>,
     automation_reevaluation: Mutex<()>,
     automation_reevaluation_requested: AtomicBool,
+}
+
+struct SearchPublicationGuard<'a>(&'a AtomicUsize);
+
+impl<'a> SearchPublicationGuard<'a> {
+    fn new(active: &'a AtomicUsize) -> Self {
+        active.fetch_add(1, Ordering::AcqRel);
+        Self(active)
+    }
+}
+
+impl Drop for SearchPublicationGuard<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 impl Backend {
@@ -325,6 +345,9 @@ impl Backend {
                 search_index,
                 search_deferred: sync_worker,
                 search_sync: RwLock::new(()),
+                search_publication: Mutex::new(()),
+                search_publication_requested: AtomicBool::new(false),
+                search_publications_active: AtomicUsize::new(0),
                 blob_references: RwLock::new(()),
                 blobs,
                 storage,
@@ -353,14 +376,69 @@ impl Backend {
         if security_remaining {
             backend.schedule_security_backfill();
         }
-        let initial_spam = backend.spam_classifier().reclassify_pending(256).await?;
-        if initial_spam.remaining > 0 {
-            backend.schedule_spam_reclassification();
+        if backend.spam_classifier().status().await?.pending_messages > 0 {
+            backend.schedule_startup_spam_reclassification();
         }
         if backend.automation_backfill_required().await? {
             backend.schedule_automation_reevaluation();
         }
+        backend.schedule_startup_search_projection();
+        if backend
+            .inner
+            .config
+            .storage_limits
+            .max_profile_bytes
+            .is_some()
+        {
+            backend.schedule_startup_storage_measurement();
+        }
         Ok(backend)
+    }
+
+    fn schedule_startup_storage_measurement(&self) {
+        let storage = Arc::clone(&self.inner.storage);
+        tokio::spawn(async move {
+            // Let the frontend render before an explicitly configured profile
+            // quota triggers the one expensive filesystem census.
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            let _ = storage.measure().await;
+        });
+    }
+
+    fn schedule_startup_search_projection(&self) {
+        self.inner
+            .search_publication_requested
+            .store(true, Ordering::Release);
+        let backend = Arc::downgrade(&self.inner);
+        tokio::spawn(async move {
+            // Search recovery is durable and may cover an entire mailbox. It
+            // must not delay construction of the first frontend frame.
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            let Some(inner) = backend.upgrade() else {
+                return;
+            };
+            let backend = Backend { inner };
+            backend.run_scheduled_search_projection().await;
+        });
+    }
+
+    async fn run_scheduled_search_projection(&self) {
+        let Ok(_guard) = self.inner.search_publication.try_lock() else {
+            return;
+        };
+        loop {
+            if !self
+                .inner
+                .search_publication_requested
+                .swap(false, Ordering::AcqRel)
+            {
+                break;
+            }
+            if self.flush_search_projection().await.is_err() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
     }
 
     fn schedule_security_backfill(&self) {
@@ -535,6 +613,28 @@ impl Backend {
     fn schedule_spam_reclassification(&self) {
         let backend = self.clone();
         tokio::spawn(async move {
+            loop {
+                let Ok(batch) = backend.spam_classifier().reclassify_pending(128).await else {
+                    break;
+                };
+                if batch.processed == 0 || batch.remaining == 0 {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        });
+    }
+
+    fn schedule_startup_spam_reclassification(&self) {
+        let backend = Arc::downgrade(&self.inner);
+        tokio::spawn(async move {
+            // Reclassification publishes search changes, so keep it behind
+            // the same first-frame boundary as search recovery.
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            let Some(inner) = backend.upgrade() else {
+                return;
+            };
+            let backend = Backend { inner };
             loop {
                 let Ok(batch) = backend.spam_classifier().reclassify_pending(128).await else {
                     break;
@@ -2429,6 +2529,7 @@ impl Backend {
     }
 
     pub(crate) async fn flush_search_projection(&self) -> Result<()> {
+        let _publication = SearchPublicationGuard::new(&self.inner.search_publications_active);
         if self.inner.search_deferred {
             return Ok(());
         }
@@ -3612,6 +3713,7 @@ impl Messages {
                 summaries_by_ids_on(
                     &connection,
                     &chunk.iter().map(ToString::to_string).collect::<Vec<_>>(),
+                    false,
                 )
                 .await?,
             );
@@ -3908,6 +4010,27 @@ impl Search {
         let expression = parse_query(&request.query)?;
         let requires_complete_content = query_requires_complete_content(&expression);
         let _search_guard = self.0.inner.search_sync.read().await;
+        let publication_was_active = self
+            .0
+            .inner
+            .search_publications_active
+            .load(Ordering::Acquire)
+            > 0;
+        let projection_is_queued = {
+            let connection = self.0.inner.connection.lock().await;
+            search_projection_pending_on(&connection).await?
+        };
+        let publication_is_active = self
+            .0
+            .inner
+            .search_publications_active
+            .load(Ordering::Acquire)
+            > 0;
+        // The durable queue is deleted only after Tantivy has committed a
+        // batch. Checking the in-flight counter on both sides of the queue
+        // read closes the remaining race with concurrent crash recovery.
+        let index_results_complete =
+            !publication_was_active && !projection_is_queued && !publication_is_active;
         let page_size = bounded_page_size(request.page_size);
         let cursor = request.cursor.as_deref().map(decode_cursor).transpose()?;
         if let Some(cursor) = &cursor {
@@ -3936,7 +4059,7 @@ impl Search {
             BackendError::SearchIndex(format!("search query task failed: {error}"))
         })??;
         let connection = self.0.inner.connection.lock().await;
-        let mut items = summaries_by_ids_on(&connection, &ids).await?;
+        let mut items = summaries_by_ids_on(&connection, &ids, !index_results_complete).await?;
         let next_cursor = if items.len() > page_size {
             items.truncate(page_size);
             items
@@ -3970,6 +4093,7 @@ impl Search {
         Ok(SearchPage {
             items,
             next_cursor,
+            index_results_complete,
             content_results_complete,
         })
     }
@@ -5073,6 +5197,7 @@ async fn query_summaries_on(
 async fn summaries_by_ids_on(
     connection: &Connection,
     ids: &[String],
+    allow_missing: bool,
 ) -> Result<Vec<MessageSummary>> {
     if ids.is_empty() {
         return Ok(Vec::new());
@@ -5090,9 +5215,15 @@ async fn summaries_by_ids_on(
     }
     let mut summaries = Vec::with_capacity(ids.len());
     for id in ids {
-        summaries.push(by_id.remove(id).ok_or_else(|| {
-            BackendError::SearchIndex(format!("search index references missing message {id}"))
-        })?);
+        match by_id.remove(id) {
+            Some(summary) => summaries.push(summary),
+            None if allow_missing => {}
+            None => {
+                return Err(BackendError::SearchIndex(format!(
+                    "search index references missing message {id}"
+                )))
+            }
+        }
     }
     Ok(summaries)
 }
@@ -5104,8 +5235,9 @@ async fn prepare_search_index(
     let generation = search_generation_on(connection).await?;
     if let Ok(index) = SearchIndex::open(profile_dir, &generation) {
         let index = Arc::new(index);
-        flush_search_projection_on(connection, Arc::clone(&index)).await?;
-        if index.num_docs() == message_count_on(connection).await? {
+        if search_projection_pending_on(connection).await?
+            || index.num_docs() == message_count_on(connection).await?
+        {
             return Ok(index);
         }
         drop(index);
@@ -5124,52 +5256,25 @@ async fn prepare_search_index(
     transaction.commit().await?;
 
     let index = Arc::new(SearchIndex::create(profile_dir)?);
-    flush_search_projection_on(connection, Arc::clone(&index)).await?;
-    let expected = message_count_on(connection).await?;
-    if index.num_docs() != expected {
-        return Err(BackendError::SearchIndex(format!(
-            "rebuilt search index contains {} documents but database contains {expected}",
-            index.num_docs()
-        )));
-    }
+    // Publishing may cover the complete mailbox, so make the empty index
+    // reopenable immediately and let the durable queue fill it in background.
     index.write_manifest(&generation)?;
     Ok(index)
 }
 
-async fn flush_search_projection_on(
-    connection: &mut Connection,
-    search_index: Arc<SearchIndex>,
-) -> Result<()> {
-    loop {
-        let queued = load_queued_search_documents(connection, MAX_INGEST_BATCH_MESSAGES).await?;
-        if queued.is_empty() {
-            return Ok(());
-        }
-        let revisions = queued
-            .iter()
-            .map(|queued| (queued.document.id.clone(), queued.revision))
-            .collect::<Vec<_>>();
-        let documents = queued
-            .into_iter()
-            .map(|queued| queued.document)
-            .collect::<Vec<_>>();
-        let index = Arc::clone(&search_index);
-        tokio::task::spawn_blocking(move || index.replace_documents(documents))
-            .await
-            .map_err(|error| {
-                BackendError::SearchIndex(format!("search indexing task failed: {error}"))
-            })??;
-        let transaction = connection.transaction().await?;
-        for (id, revision) in revisions {
-            transaction
-                .execute(
-                    "DELETE FROM search_index_queue WHERE message_id = ?1 AND revision = ?2",
-                    (id, revision),
-                )
-                .await?;
-        }
-        transaction.commit().await?;
-    }
+async fn search_projection_pending_on(connection: &Connection) -> Result<bool> {
+    let mut rows = connection
+        .query(
+            "SELECT EXISTS(SELECT 1 FROM search_index_queue) OR EXISTS(SELECT 1 FROM search_index_delete_queue)",
+            (),
+        )
+        .await?;
+    Ok(rows
+        .next()
+        .await?
+        .map(|row| row.get::<bool>(0))
+        .transpose()?
+        .unwrap_or(false))
 }
 
 async fn load_queued_search_documents(

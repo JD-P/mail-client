@@ -3,8 +3,30 @@ use lizard_mail_backend::{
     DkimAuthenticationStatus, DkimSignatureStatus, FolderId, FolderKind, ImapFetchedMessage,
     ImapSecurity, ImapSettings, InboxClass, IngestMessage, MessageFilter, MessageSort, NewAccount,
     NewContact, NewFolder, ProviderSpamEvidenceSource, ProviderSpamVerdict, RemoteMessageIdentity,
-    SearchRequest, SpamEvidenceVerdict, UserClassification,
+    SearchPage, SearchRequest, SpamEvidenceVerdict, UserClassification,
 };
+
+async fn search_after_projection(backend: &Backend, query: &str) -> SearchPage {
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let page = backend
+                .search()
+                .search(SearchRequest {
+                    query: query.into(),
+                    page_size: 20,
+                    cursor: None,
+                })
+                .await
+                .unwrap();
+            if page.index_results_complete {
+                break page;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("background search projection should finish")
+}
 
 fn message(subject: &str, body: &str) -> Vec<u8> {
     format!(
@@ -663,7 +685,7 @@ async fn rebuilds_a_missing_native_search_index_from_turso() {
     let reopened = Backend::open(BackendConfig::new(profile.path()))
         .await
         .unwrap();
-    let results = reopened
+    let initial = reopened
         .search()
         .search(SearchRequest {
             query: "rebuildable".into(),
@@ -672,6 +694,8 @@ async fn rebuilds_a_missing_native_search_index_from_turso() {
         })
         .await
         .unwrap();
+    assert!(!initial.index_results_complete);
+    let results = search_after_projection(&reopened, "rebuildable").await;
     assert_eq!(results.items.len(), 1);
     assert_eq!(results.items[0].id, id);
 }
@@ -718,15 +742,7 @@ async fn replays_the_search_outbox_idempotently_after_restart() {
     let reopened = Backend::open(BackendConfig::new(profile.path()))
         .await
         .unwrap();
-    let results = reopened
-        .search()
-        .search(SearchRequest {
-            query: "is:spam AND outbox".into(),
-            page_size: 20,
-            cursor: None,
-        })
-        .await
-        .unwrap();
+    let results = search_after_projection(&reopened, "is:spam AND outbox").await;
     assert_eq!(results.items.len(), 1);
     assert_eq!(results.items[0].id, id);
 }

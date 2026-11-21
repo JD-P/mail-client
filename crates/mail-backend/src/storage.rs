@@ -869,20 +869,47 @@ struct ReservationState {
 
 impl StorageBudget {
     pub(crate) async fn open(profile_dir: PathBuf, limits: StorageLimits) -> Result<Arc<Self>> {
-        let measured = measure_profile(profile_dir.clone(), limits).await?;
+        // A recursive profile census is proportional to the complete local
+        // mail mirror and therefore cannot be part of application startup.
+        // When a profile quota exists, begin conservatively at the limit so
+        // writes fail closed until the delayed exact measurement completes.
+        let conservative_total = limits.max_profile_bytes.unwrap_or(0);
         Ok(Arc::new(Self {
             profile_dir,
             limits,
             refresh_profile: true,
             gate: Arc::new(RwLock::new(())),
             state: StdMutex::new(BudgetState {
-                observed_blob_bytes: measured.blob_bytes,
-                observed_non_blob_bytes: measured.total_bytes.saturating_sub(measured.blob_bytes),
+                observed_blob_bytes: 0,
+                observed_non_blob_bytes: conservative_total,
                 reservations: HashMap::new(),
                 next_reservation: 1,
                 last_refresh: Instant::now(),
             }),
         }))
+    }
+
+    /// O(1) supervisor snapshot for disposable workers. Exact categorized
+    /// usage remains available through the explicit `Storage::usage` census.
+    pub(crate) fn cached_usage(&self) -> Result<StorageUsage> {
+        let state = lock_state(&self.state);
+        let total_bytes = state
+            .observed_blob_bytes
+            .saturating_add(state.observed_non_blob_bytes);
+        Ok(StorageUsage {
+            total_bytes,
+            blob_bytes: state.observed_blob_bytes,
+            other_bytes: state.observed_non_blob_bytes,
+            available_filesystem_bytes: fs2::available_space(&self.profile_dir).map_err(
+                |source| BackendError::Io {
+                    path: self.profile_dir.clone(),
+                    source,
+                },
+            )?,
+            profile_quota_bytes: self.limits.max_profile_bytes,
+            minimum_free_bytes: self.limits.minimum_free_bytes,
+            ..StorageUsage::default()
+        })
     }
 
     /// Construct a worker-side budget from a supervisor measurement.  The
@@ -1205,4 +1232,26 @@ fn tree_size(path: &Path) -> Result<u64> {
         total = total.saturating_add(tree_size(&entry.path())?);
     }
     Ok(total)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn opening_a_budget_does_not_walk_the_existing_blob_tree() {
+        let profile = tempfile::tempdir().unwrap();
+        let blob_dir = profile.path().join("blobs/aa");
+        std::fs::create_dir_all(&blob_dir).unwrap();
+        std::fs::write(blob_dir.join("payload"), vec![7_u8; 16 * 1024]).unwrap();
+
+        let budget = StorageBudget::open(profile.path().to_owned(), StorageLimits::default())
+            .await
+            .unwrap();
+        assert_eq!(budget.cached_usage().unwrap().total_bytes, 0);
+
+        let measured = budget.measure().await.unwrap();
+        assert!(measured.blob_bytes >= 16 * 1024);
+        assert!(budget.cached_usage().unwrap().blob_bytes >= 16 * 1024);
+    }
 }

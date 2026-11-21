@@ -595,6 +595,10 @@ disconnect retains the partial prefix and a subsequent request resumes it;
 the UIDVALIDITY epoch and RFC822.SIZE must still match before publication.
 Search responses explicitly mark content-dependent results incomplete while
 any message still lacks full content; header-only operators remain exhaustive.
+They separately mark the index projection incomplete while durable Tantivy
+updates replay. Profile opening never drains that queue synchronously: the
+existing or newly created index opens immediately and crash recovery continues
+in a coalesced background publisher.
 Dropping a download future records a resumable failure rather than leaving a
 permanent in-progress state; startup recovery does the same after a crash and
 truncates any uncommitted tail to the last synchronized byte count.
@@ -1069,6 +1073,10 @@ API treats missing, size-mismatched or hash-invalid referenced blobs and Turso
 integrity/foreign-key failures as errors. Orphaned blobs, abandoned temporary
 files, partial-download mismatches and rebuildable search drift are separately
 typed repairable warnings. Report memory is bounded even when damage is broad.
+The ordinary no-profile-quota startup path does not recursively walk the local
+mirror. It initializes from the filesystem's O(1) available-space result;
+explicit usage audits remain exact. A configured whole-profile quota begins at
+a fail-closed conservative bound until a delayed exact census completes.
 
 ### Security and resource control
 

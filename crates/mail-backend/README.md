@@ -208,6 +208,15 @@ Search returns a `SearchPage`. For body terms and `filename:`, its
 `content_results_complete` flag is false whenever any message still lacks
 complete content, so an empty or partial result is never presented as an
 exhaustive answer. Header-only operators remain complete immediately.
+`index_results_complete` is independently false while durable Tantivy updates
+are replaying after synchronization or restart. Search-index recovery runs in
+the background and never delays profile opening.
+
+Opening a profile also avoids recursively measuring the local mirror. Default
+free-space enforcement uses an O(1) filesystem query; an explicitly configured
+profile quota starts conservatively and performs its exact census after the
+frontend can render. The explicit storage-usage API still performs a complete
+categorized measurement.
 
 `ingest_imap_batch` routes complete fetch batches through the same bounded
 set-based path exposed as `Backend::ingest_batch` and
