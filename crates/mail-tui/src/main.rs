@@ -66,7 +66,10 @@ async fn run(
         let command = match event::read()? {
             Event::Key(key) if key.kind == KeyEventKind::Press => command_for(app.screen, key),
             Event::Paste(value)
-                if matches!(app.screen, Screen::AccountEdit | Screen::OnboardingEdit) =>
+                if matches!(
+                    app.screen,
+                    Screen::AccountEdit | Screen::OnboardingEdit | Screen::ContactEdit
+                ) =>
             {
                 Some(AppCommand::EditPaste(Zeroizing::new(value)))
             }
@@ -123,6 +126,26 @@ fn command_for(screen: Screen, key: KeyEvent) -> Option<AppCommand> {
             _ => None,
         };
     }
+    if screen == Screen::ContactEdit {
+        return match (key.code, key.modifiers) {
+            (KeyCode::Esc, _) => Some(AppCommand::Back),
+            (KeyCode::Tab | KeyCode::Down, _) => Some(AppCommand::EditNextField),
+            (KeyCode::BackTab | KeyCode::Up, _) => Some(AppCommand::EditPreviousField),
+            (KeyCode::Left | KeyCode::Right, _) => Some(AppCommand::EditToggleChoice),
+            (KeyCode::Char(' '), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+                Some(AppCommand::EditSpace)
+            }
+            (KeyCode::Enter, _) => Some(AppCommand::EditNextField),
+            (KeyCode::Char('s' | 'S'), modifiers) if modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(AppCommand::ContactSave)
+            }
+            (KeyCode::Backspace, _) => Some(AppCommand::EditBackspace),
+            (KeyCode::Char(character), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+                Some(AppCommand::EditCharacter(character))
+            }
+            _ => None,
+        };
+    }
     if screen == Screen::SimilarityPreview {
         return match key.code {
             KeyCode::Esc | KeyCode::Char('n' | 'N') => Some(AppCommand::SimilarityCancel),
@@ -151,6 +174,17 @@ fn command_for(screen: Screen, key: KeyEvent) -> Option<AppCommand> {
             KeyCode::Enter | KeyCode::Char('e' | 'E') => Some(AppCommand::AccountEdit),
             KeyCode::Char('s' | 'S') => Some(AppCommand::AccountSync),
             KeyCode::Char('d') => Some(AppCommand::AccountDelete),
+            KeyCode::Char('?') => Some(AppCommand::Help),
+            _ => None,
+        };
+    }
+    if screen == Screen::Contacts {
+        return match key.code {
+            KeyCode::Char('q') => Some(AppCommand::Quit),
+            KeyCode::Esc => Some(AppCommand::Back),
+            KeyCode::Down | KeyCode::Char('j') => Some(AppCommand::Next),
+            KeyCode::Up | KeyCode::Char('k') => Some(AppCommand::Previous),
+            KeyCode::Enter | KeyCode::Char('e' | 'E') => Some(AppCommand::ContactEdit),
             KeyCode::Char('?') => Some(AppCommand::Help),
             _ => None,
         };

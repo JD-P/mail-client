@@ -7,7 +7,8 @@ use crate::imap_mutation::normalize_mutable_flags;
 use crate::{
     Account, AccountId, AccountKind, Backend, BackendError, FolderId, ImapMutation,
     ImapMutationConflictKind, ImapMutationOperation, ImapMutationStatus, ImapSecurity,
-    MessageContentAvailability, MessageContentStatus, MessageId, RemoteMessageIdentity, Result,
+    MessageContentAvailability, MessageContentStatus, MessageId, OfflineDownloadProgress,
+    RemoteMessageIdentity, Result,
 };
 use async_imap::extensions::idle::IdleResponse;
 use async_imap::types::{Capabilities, Capability, CopyUid, NameAttribute};
@@ -175,6 +176,11 @@ pub struct ImapAccountSyncState {
     pub next_retry_at: Option<i64>,
     pub failure_count: u32,
     pub last_error: Option<String>,
+    /// Durable progress for the current or most recent full-copy hydration.
+    #[serde(default)]
+    pub hydration_completed_messages: u64,
+    #[serde(default)]
+    pub hydration_total_messages: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -302,7 +308,7 @@ impl ImapAccountEngine {
         let connection = self.backend.inner.connection.lock().await;
         let mut rows = connection
             .query(
-                "SELECT capabilities_json, status, last_attempt_at, last_success_at, next_retry_at, failure_count, last_error FROM imap_account_state WHERE account_id = ?1",
+                "SELECT capabilities_json, status, last_attempt_at, last_success_at, next_retry_at, failure_count, last_error, hydration_completed_messages, hydration_total_messages FROM imap_account_state WHERE account_id = ?1",
                 (account_id.to_string(),),
             )
             .await?;
@@ -316,6 +322,8 @@ impl ImapAccountEngine {
                 next_retry_at: None,
                 failure_count: 0,
                 last_error: None,
+                hydration_completed_messages: 0,
+                hydration_total_messages: 0,
             });
         };
         Ok(ImapAccountSyncState {
@@ -329,6 +337,12 @@ impl ImapAccountEngine {
                 BackendError::InvalidInput("database contains invalid IMAP failure count".into())
             })?,
             last_error: row.get(6)?,
+            hydration_completed_messages: u64::try_from(row.get::<i64>(7)?).map_err(|_| {
+                BackendError::InvalidInput("database contains invalid hydration progress".into())
+            })?,
+            hydration_total_messages: u64::try_from(row.get::<i64>(8)?).map_err(|_| {
+                BackendError::InvalidInput("database contains invalid hydration total".into())
+            })?,
         })
     }
 
@@ -608,15 +622,13 @@ impl ImapAccountEngine {
         let mut offline_downloaded_messages = 0usize;
         let mut offline_download_failures = 0usize;
         if self.config.offline_download_batch_size > 0 {
-            self.store_account_state(
-                account_id,
-                ImapAccountSyncStatus::Hydrating,
-                Some(&capability_names),
-                None,
-                None,
-                false,
-            )
-            .await?;
+            let mut hydration_progress = self
+                .backend
+                .data_lifecycle()
+                .offline_download_progress(account_id)
+                .await?;
+            self.store_hydration_progress(account_id, hydration_progress)
+                .await?;
             let batch_size = self
                 .config
                 .offline_download_batch_size
@@ -649,6 +661,12 @@ impl ImapAccountEngine {
                         Ok(Ok(_)) => {
                             offline_downloaded_messages += 1;
                             completed_in_batch += 1;
+                            hydration_progress.completed_messages = hydration_progress
+                                .completed_messages
+                                .saturating_add(1)
+                                .min(hydration_progress.total_messages);
+                            self.store_hydration_progress(account_id, hydration_progress)
+                                .await?;
                         }
                         Ok(Err(_)) | Err(_) => {
                             offline_download_failures += 1;
@@ -2163,6 +2181,27 @@ impl ImapAccountEngine {
         Ok(())
     }
 
+    async fn store_hydration_progress(
+        &self,
+        account_id: AccountId,
+        progress: OfflineDownloadProgress,
+    ) -> Result<()> {
+        let completed = i64::try_from(progress.completed_messages).map_err(|_| {
+            BackendError::InvalidInput("hydration progress exceeds the database range".into())
+        })?;
+        let total = i64::try_from(progress.total_messages).map_err(|_| {
+            BackendError::InvalidInput("hydration total exceeds the database range".into())
+        })?;
+        let connection = self.backend.inner.connection.lock().await;
+        connection
+            .execute(
+                "UPDATE imap_account_state SET status = 'hydrating', hydration_completed_messages = ?1, hydration_total_messages = ?2 WHERE account_id = ?3",
+                (completed, total, account_id.to_string()),
+            )
+            .await?;
+        Ok(())
+    }
+
     async fn state_without_lock(
         &self,
         connection: &turso::Connection,
@@ -2170,7 +2209,7 @@ impl ImapAccountEngine {
     ) -> Result<ImapAccountSyncState> {
         let mut rows = connection
             .query(
-                "SELECT capabilities_json, status, last_attempt_at, last_success_at, next_retry_at, failure_count, last_error FROM imap_account_state WHERE account_id = ?1",
+                "SELECT capabilities_json, status, last_attempt_at, last_success_at, next_retry_at, failure_count, last_error, hydration_completed_messages, hydration_total_messages FROM imap_account_state WHERE account_id = ?1",
                 (account_id.to_string(),),
             )
             .await?;
@@ -2184,6 +2223,8 @@ impl ImapAccountEngine {
                 next_retry_at: None,
                 failure_count: 0,
                 last_error: None,
+                hydration_completed_messages: 0,
+                hydration_total_messages: 0,
             });
         };
         Ok(ImapAccountSyncState {
@@ -2197,6 +2238,12 @@ impl ImapAccountEngine {
                 BackendError::InvalidInput("database contains invalid IMAP failure count".into())
             })?,
             last_error: row.get(6)?,
+            hydration_completed_messages: u64::try_from(row.get::<i64>(7)?).map_err(|_| {
+                BackendError::InvalidInput("database contains invalid hydration progress".into())
+            })?,
+            hydration_total_messages: u64::try_from(row.get::<i64>(8)?).map_err(|_| {
+                BackendError::InvalidInput("database contains invalid hydration total".into())
+            })?,
         })
     }
 

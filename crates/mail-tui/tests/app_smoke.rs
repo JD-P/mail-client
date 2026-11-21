@@ -132,6 +132,70 @@ async fn accounts_menu_edits_syncs_and_confirms_destructive_removal() {
 }
 
 #[tokio::test]
+async fn contacts_list_edits_identity_addresses_and_obligation_policy() {
+    let profile = tempfile::tempdir().unwrap();
+    let backend = Backend::open(BackendConfig::new(profile.path()))
+        .await
+        .unwrap();
+    backend
+        .accounts()
+        .add(NewAccount {
+            name: "Local".into(),
+            kind: AccountKind::Local,
+            credential_ref: None,
+            imap: None,
+        })
+        .await
+        .unwrap();
+    let contact = backend
+        .contacts()
+        .add(NewContact {
+            display_name: "Northwind".into(),
+            addresses: vec![ContactAddress {
+                address: "hello@northwind.example".into(),
+                accepted_name: Some("Northwind".into()),
+            }],
+        })
+        .await
+        .unwrap();
+    let mut app = MailApp::open(backend.clone()).await.unwrap();
+    app.dispatch(AppCommand::Contacts).await.unwrap();
+    app.dispatch(AppCommand::ContactEdit).await.unwrap();
+    assert_eq!(app.screen, Screen::ContactEdit);
+    let editor = app.contact_editor.as_mut().unwrap();
+    editor.display_name = "Northwind Studio".into();
+    editor.addresses = "hello@northwind.example, billing@northwind.example".into();
+    app.dispatch(AppCommand::EditNextField).await.unwrap();
+    app.dispatch(AppCommand::EditNextField).await.unwrap();
+    app.dispatch(AppCommand::EditNextField).await.unwrap();
+    app.dispatch(AppCommand::EditToggleChoice).await.unwrap();
+    app.dispatch(AppCommand::ContactSave).await.unwrap();
+
+    let saved = backend.contacts().get(contact.id).await.unwrap();
+    assert_eq!(saved.display_name, "Northwind Studio");
+    assert_eq!(saved.addresses.len(), 2);
+    let relationship = backend.contacts().relationship(contact.id).await.unwrap();
+    assert_eq!(relationship.warm_route, WarmRoute::Fyi);
+    assert!(!relationship.may_create_obligations);
+    assert_eq!(app.screen, Screen::Contacts);
+
+    let terminal_backend = TestBackend::new(120, 28);
+    let mut terminal = Terminal::new(terminal_backend).unwrap();
+    terminal
+        .draw(|frame| lizard_mail_tui::ui::draw(frame, &app))
+        .unwrap();
+    let text = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(text.contains("Northwind Studio"));
+    assert!(text.contains("FYI · does not create obligations"));
+}
+
+#[tokio::test]
 async fn cold_reader_keeps_identity_context_and_persistent_explanations() {
     let profile = tempfile::tempdir().unwrap();
     let backend = Backend::open(BackendConfig::new(profile.path()))

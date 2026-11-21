@@ -11,7 +11,7 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 version INTEGER NOT NULL
             );
             INSERT INTO schema_meta(version)
-                SELECT 23 WHERE NOT EXISTS (SELECT 1 FROM schema_meta);
+                SELECT 24 WHERE NOT EXISTS (SELECT 1 FROM schema_meta);
 
             CREATE TABLE IF NOT EXISTS accounts (
                 id TEXT PRIMARY KEY,
@@ -500,7 +500,9 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 last_success_at INTEGER,
                 next_retry_at INTEGER,
                 failure_count INTEGER NOT NULL DEFAULT 0,
-                last_error TEXT
+                last_error TEXT,
+                hydration_completed_messages INTEGER NOT NULL DEFAULT 0,
+                hydration_total_messages INTEGER NOT NULL DEFAULT 0
             );
 
             CREATE TABLE IF NOT EXISTS imap_mailbox_state (
@@ -1472,7 +1474,37 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
             .await?;
         version = 23;
     }
-    if version != 23 {
+    if version == 23 {
+        let mut rows = connection
+            .query("PRAGMA table_info(imap_account_state)", ())
+            .await?;
+        let mut columns = HashSet::new();
+        while let Some(row) = rows.next().await? {
+            columns.insert(row.get::<String>(1)?);
+        }
+        drop(rows);
+        if !columns.contains("hydration_completed_messages") {
+            connection
+                .execute(
+                    "ALTER TABLE imap_account_state ADD COLUMN hydration_completed_messages INTEGER NOT NULL DEFAULT 0",
+                    (),
+                )
+                .await?;
+        }
+        if !columns.contains("hydration_total_messages") {
+            connection
+                .execute(
+                    "ALTER TABLE imap_account_state ADD COLUMN hydration_total_messages INTEGER NOT NULL DEFAULT 0",
+                    (),
+                )
+                .await?;
+        }
+        connection
+            .execute("UPDATE schema_meta SET version = 24", ())
+            .await?;
+        version = 24;
+    }
+    if version != 24 {
         return Err(crate::BackendError::InvalidInput(format!(
             "unsupported database schema version {version}"
         )));
@@ -1735,7 +1767,7 @@ mod tests {
             .await
             .unwrap();
         let row = rows.next().await.unwrap().unwrap();
-        assert_eq!(row.get::<i64>(0).unwrap(), 23);
+        assert_eq!(row.get::<i64>(0).unwrap(), 24);
         assert_eq!(row.get::<String>(1).unwrap(), r#"{"received_at":123}"#);
         drop(rows);
 
@@ -1778,7 +1810,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap(),
-            23
+            24
         );
         drop(rows);
 
@@ -1915,7 +1947,7 @@ mod tests {
             .await
             .unwrap();
         let row = rows.next().await.unwrap().unwrap();
-        assert_eq!(row.get::<i64>(0).unwrap(), 23);
+        assert_eq!(row.get::<i64>(0).unwrap(), 24);
         assert_eq!(row.get::<String>(1).unwrap(), "CaseSensitive@example.test");
         assert!(row.get::<bool>(2).unwrap());
         assert!(row.get::<bool>(3).unwrap());
@@ -1964,7 +1996,7 @@ mod tests {
             .await
             .unwrap();
         let row = rows.next().await.unwrap().unwrap();
-        assert_eq!(row.get::<i64>(0).unwrap(), 23);
+        assert_eq!(row.get::<i64>(0).unwrap(), 24);
         assert_eq!(row.get::<String>(1).unwrap(), "action");
         assert_eq!(row.get::<String>(2).unwrap(), "manual");
         assert_eq!(row.get::<Option<String>>(3).unwrap(), None);
@@ -1981,5 +2013,57 @@ mod tests {
             rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap(),
             1
         );
+    }
+
+    #[tokio::test]
+    async fn version_twenty_three_adds_durable_hydration_progress() {
+        let profile = tempfile::tempdir().unwrap();
+        let path = profile.path().join("mail.db");
+        let database = turso::Builder::new_local(path.to_str().unwrap())
+            .experimental_index_method(true)
+            .build()
+            .await
+            .unwrap();
+        let connection = database.connect().unwrap();
+        connection
+            .execute_batch(
+                r#"
+                CREATE TABLE schema_meta (version INTEGER NOT NULL);
+                INSERT INTO schema_meta VALUES (23);
+                CREATE TABLE imap_account_state (
+                    account_id TEXT PRIMARY KEY,
+                    capabilities_json TEXT NOT NULL DEFAULT '[]',
+                    status TEXT NOT NULL DEFAULT 'idle',
+                    last_attempt_at INTEGER,
+                    last_success_at INTEGER,
+                    next_retry_at INTEGER,
+                    failure_count INTEGER NOT NULL DEFAULT 0,
+                    last_error TEXT
+                );
+                "#,
+            )
+            .await
+            .unwrap();
+
+        migrate(&connection).await.unwrap();
+        let mut rows = connection
+            .query("SELECT version FROM schema_meta", ())
+            .await
+            .unwrap();
+        assert_eq!(
+            rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap(),
+            24
+        );
+        drop(rows);
+        let mut rows = connection
+            .query("PRAGMA table_info(imap_account_state)", ())
+            .await
+            .unwrap();
+        let mut columns = HashSet::new();
+        while let Some(row) = rows.next().await.unwrap() {
+            columns.insert(row.get::<String>(1).unwrap());
+        }
+        assert!(columns.contains("hydration_completed_messages"));
+        assert!(columns.contains("hydration_total_messages"));
     }
 }

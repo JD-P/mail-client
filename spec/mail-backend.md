@@ -576,8 +576,9 @@ The implemented account engine supports:
 - CONDSTORE/QRESYNC/MODSEQ when available;
 - IDLE with reconnect, polling fallback and cancellation;
 - header-first synchronization using selected header fields and BODYSTRUCTURE;
-- a default full local mirror, hydrated after the header pass in bounded
-  batches over the existing authenticated session;
+- a default full local mirror, hydrated newest-first after the header pass in
+  bounded batches over the existing authenticated session, with durable
+  completed/total progress for frontends;
 - priority/on-demand full-body fetches that resume a durable partial file at
   its exact byte offset when a message is opened before hydration reaches it;
 - remote flag and deletion reconciliation;

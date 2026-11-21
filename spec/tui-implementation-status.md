@@ -23,6 +23,9 @@ not implemented merely because it is described there.
 - Automatic header synchronization for configured IMAP accounts at startup and
   every five minutes, serialized through a bounded queue of disposable isolated
   workers, with manual synchronization available from the Accounts screen.
+- Full-copy hydration selects the newest eligible message first and exposes a
+  durable completed/total counter in the footer while download, verification,
+  parsing, and publication continue in the background.
 - Account management for adding, editing, synchronizing on demand, diagnosing,
   and removing IMAP accounts. Removal has an intrusive confirmation and uses
   the backend's durable credential-cleanup path.
@@ -30,6 +33,10 @@ not implemented merely because it is described there.
   positional overrides for portable and recovery profiles.
 - Suggested-contact editing for contact-owned name, relationship kind, and
   Action/FYI placement.
+- Existing contacts can be edited from the Contacts list: contact-owned name,
+  multiple addresses, relationship kind, Action/FYI obligation permission,
+  notifications, and remote-content policy are all persisted through the
+  backend relationship model.
 - Terminal queue navigation, conversation reader, Contacts list, contextual
   help, Done, Waiting, one-day Snooze, and Make Actionable Once.
 - Symmetric one-conversation Action/FYI correction, with manual choices taking
@@ -61,7 +68,8 @@ not implemented merely because it is described there.
   when the profile has no contacts. Per-new-account launch, Skip, rerun, and a
   final onboarding review remain to be wired into the terminal client.
 - Suggested-contact editing exposes the highest-value relationship controls;
-  notification and remote-content policy editing still uses backend defaults.
+  notification and remote-content policy remain at defaults during onboarding
+  but can be changed immediately from the ordinary Contacts editor.
 - Snooze currently offers a one-day shortcut; a date/time picker is pending.
 - The reader exposes the core work-state actions. Reply, delete, move,
   attachments, calendar creation, and profile navigation are backed elsewhere
@@ -76,7 +84,7 @@ not implemented merely because it is described there.
   exhaustive diagnostic detail remains to be wired.
 - Composer, send review, Drafts, Outbox, and Sent screens.
 - Calendar proposal and CalDAV account screens.
-- Full relationship profile, address history, contact import/export, and merge.
+- Contact address history, OpenPGP key binding, contact import/export, and merge.
 - Filter/heuristic editors and rules overview. Similar-mail rule creation and
   preview are wired; listing, disabling, and deleting those rules still need a
   management screen.

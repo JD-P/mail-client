@@ -4310,6 +4310,29 @@ impl Contacts {
         })
     }
 
+    pub async fn relationships(&self) -> Result<Vec<crate::ContactRelationship>> {
+        let connection = self.0.inner.connection.lock().await;
+        let mut rows = connection
+            .query(
+                "SELECT contact_id, kind, warm_route, may_create_obligations, notify, remote_content, updated_at FROM contact_relationships ORDER BY contact_id",
+                (),
+            )
+            .await?;
+        let mut relationships = Vec::new();
+        while let Some(row) = rows.next().await? {
+            relationships.push(crate::ContactRelationship {
+                contact_id: parse_id(row.get::<String>(0)?, "contact")?,
+                kind: parse_relationship_kind(&row.get::<String>(1)?)?,
+                warm_route: parse_warm_route(&row.get::<String>(2)?)?,
+                may_create_obligations: row.get(3)?,
+                notify: row.get(4)?,
+                remote_content: parse_remote_content_policy(&row.get::<String>(5)?)?,
+                updated_at: row.get(6)?,
+            });
+        }
+        Ok(relationships)
+    }
+
     pub async fn set_relationship(
         &self,
         id: ContactId,

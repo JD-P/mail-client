@@ -166,20 +166,26 @@ async fn backup_restores_authoritative_state_without_tantivy() {
     assert_eq!(restored.files, backup.files);
     let reopened = Backend::open(config(&restored_profile)).await.unwrap();
     assert_eq!(reopened.messages().raw(id).await.unwrap(), raw);
-    assert_eq!(
-        reopened
-            .search()
-            .search(lizard_mail_backend::SearchRequest {
-                query: "subject:backup".into(),
-                page_size: 10,
-                cursor: None,
-            })
-            .await
-            .unwrap()
-            .items
-            .len(),
-        1
-    );
+    let search = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let page = reopened
+                .search()
+                .search(lizard_mail_backend::SearchRequest {
+                    query: "subject:backup".into(),
+                    page_size: 10,
+                    cursor: None,
+                })
+                .await
+                .unwrap();
+            if page.index_results_complete {
+                break page;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("restored search projection should finish");
+    assert_eq!(search.items.len(), 1);
 }
 
 #[tokio::test]
@@ -359,4 +365,94 @@ async fn remote_accounts_default_to_a_full_local_mirror_but_preserve_opt_out() {
         .await
         .unwrap();
     assert_eq!(explicit_policy.offline, OfflineDownloadPolicy::OnDemand);
+}
+
+#[tokio::test]
+async fn offline_hydration_reports_progress_and_selects_newest_messages_first() {
+    let profile = tempfile::tempdir().unwrap();
+    let backend = Backend::open(config(profile.path())).await.unwrap();
+    let account = backend
+        .accounts()
+        .add(NewAccount {
+            name: "Ordered mirror".into(),
+            kind: AccountKind::Imap,
+            credential_ref: Some("external:test".into()),
+            imap: Some(ImapSettings {
+                host: "imap.example.test".into(),
+                port: 993,
+                username: "owner@example.test".into(),
+                security: ImapSecurity::ImplicitTls,
+            }),
+        })
+        .await
+        .unwrap();
+    let folder = backend
+        .folders()
+        .add(NewFolder {
+            account_id: Some(account.id),
+            name: "Inbox".into(),
+            kind: FolderKind::Remote,
+            remote_name: Some("INBOX".into()),
+        })
+        .await
+        .unwrap();
+    let mut messages = Vec::new();
+    for (uid, received_at) in [(1, 100), (2, 300), (3, 200)] {
+        let id = backend
+            .messages()
+            .ingest(IngestMessage {
+                raw: format!(
+                    "From: remote@example.test\r\nMessage-ID: <ordered-{uid}@example.test>\r\nSubject: ordered {uid}\r\n\r\nbody\r\n"
+                )
+                .into_bytes(),
+                remote: Some(RemoteMessageIdentity {
+                    account_id: account.id,
+                    folder_id: folder.id,
+                    uid_validity: 9,
+                    uid,
+                    mod_sequence: None,
+                    flags: Vec::new(),
+                }),
+                received_at: Some(received_at),
+                user_classification: None,
+            })
+            .await
+            .unwrap();
+        messages.push((received_at, id));
+    }
+    backend
+        .data_lifecycle()
+        .set_body_policy(AccountBodyPolicy::on_demand(account.id))
+        .await
+        .unwrap();
+    for (_, id) in &messages {
+        backend
+            .data_lifecycle()
+            .evict_message_body(*id)
+            .await
+            .unwrap();
+    }
+    backend
+        .data_lifecycle()
+        .set_body_policy(AccountBodyPolicy::local_mirror(account.id))
+        .await
+        .unwrap();
+
+    let progress = backend
+        .data_lifecycle()
+        .offline_download_progress(account.id)
+        .await
+        .unwrap();
+    assert_eq!(progress.completed_messages, 0);
+    assert_eq!(progress.total_messages, 3);
+    let candidates = backend
+        .data_lifecycle()
+        .offline_download_candidates(account.id, 10)
+        .await
+        .unwrap();
+    messages.sort_by_key(|(received_at, _)| std::cmp::Reverse(*received_at));
+    assert_eq!(
+        candidates,
+        messages.into_iter().map(|(_, id)| id).collect::<Vec<_>>()
+    );
 }

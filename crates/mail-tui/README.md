@@ -23,8 +23,9 @@ Use `--profile /path/to/profile` for a portable, test, or recovery profile.
 The first run opens an account-connection form. It stores passwords or access
 tokens through the backend credential manager, starts header-first IMAP
 synchronization in the isolated worker, then builds a verified full local copy
-in bounded batches while the header projections are already usable, and then
-offers contact suggestions.
+in newest-first bounded batches while the header projections are already
+usable. The footer reports exact completed/total validation progress, and then
+the client offers contact suggestions.
 Configured IMAP accounts synchronize automatically at startup and every five
 minutes in disposable workers; press `A` from the ordinary client to add, edit,
 synchronize on demand with `s`, diagnose, or remove accounts. Account removal
@@ -43,6 +44,9 @@ Snoozed, Done, Contacts, and contextual Help. Done/Waiting/Snooze and Make
 Actionable Once are durable backend operations. Serious open-interstitial
 findings block the ordinary reader until the user explicitly chooses restricted
 viewing.
+The Contacts screen opens an editor for contact-owned names and addresses,
+relationship kind, future Action/FYI placement and obligation permission,
+notifications, and remote-content policy.
 
 ## HTML renderer
 

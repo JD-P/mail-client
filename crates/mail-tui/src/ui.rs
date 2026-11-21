@@ -1,10 +1,11 @@
-use crate::app::{AccountAuthentication, AccountField, MailApp, Screen};
+use crate::app::{AccountAuthentication, AccountField, ContactField, MailApp, Screen};
 use chrono::{DateTime, Datelike, Local, Utc};
 use lizard_mail_backend::{
     AuthenticationMethodKind, AuthenticationMethodResult, AuthenticationResultsTrust,
     DkimAuthenticationStatus, DkimSignatureStatus, FindingSeverity, HeuristicFinding, ImapSecurity,
     InboxClass, Message, MessageContentAvailability, OpenPgpBindingState, OpenPgpEncryptionStatus,
-    OpenPgpSignatureStatus, ThreadWorkStatus, WorkflowView,
+    OpenPgpSignatureStatus, RelationshipKind, RemoteContentPolicy, ThreadWorkStatus, WarmRoute,
+    WorkflowView,
 };
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -39,6 +40,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &MailApp) {
         Screen::Queue(_) => draw_queue(frame, app, areas[1]),
         Screen::Reader => draw_reader(frame, app, areas[1]),
         Screen::Contacts => draw_contacts(frame, app, areas[1]),
+        Screen::ContactEdit => draw_contact_editor(frame, app, areas[1]),
         Screen::Help => draw_help(frame, areas[1]),
     }
     draw_footer(frame, app, areas[2]);
@@ -1159,11 +1161,26 @@ fn draw_contacts(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
                 .map(|address| address.address.as_str())
                 .collect::<Vec<_>>()
                 .join(", ");
-            ListItem::new(format!(
-                "{}  <{}>",
-                safe_single_line_text(&contact.display_name),
-                safe_single_line_text(&addresses)
-            ))
+            let policy = app
+                .contact_relationships
+                .get(&contact.id)
+                .map(|relationship| match relationship.warm_route {
+                    WarmRoute::Action => "Action · may create obligations",
+                    WarmRoute::Fyi => "FYI · does not create obligations",
+                });
+            ListItem::new(Text::from(vec![
+                Line::from(vec![
+                    Span::styled(
+                        safe_single_line_text(&contact.display_name),
+                        Style::default().add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw(format!("  <{}>", safe_single_line_text(&addresses))),
+                ]),
+                Line::styled(
+                    format!("  {}", policy.unwrap_or("relationship policy unavailable")),
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ]))
         })
         .collect::<Vec<_>>();
     let mut state = ListState::default().with_selected(Some(app.selected));
@@ -1175,6 +1192,108 @@ fn draw_contacts(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
         area,
         &mut state,
     );
+}
+
+fn draw_contact_editor(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
+    let Some(editor) = &app.contact_editor else {
+        frame.render_widget(Paragraph::new("No contact is being edited"), area);
+        return;
+    };
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(5), Constraint::Min(8)])
+        .split(area);
+    frame.render_widget(
+        Paragraph::new(
+            "This is contact-owned identity and future-mail policy. Action mail may enter your obligation queue; FYI mail remains known but does not create work by default. Addresses are comma-separated.",
+        )
+        .block(
+            Block::default()
+                .title("Edit relationship")
+                .borders(Borders::ALL),
+        )
+        .wrap(Wrap { trim: false }),
+        chunks[0],
+    );
+    let kind = match editor.relationship.kind {
+        RelationshipKind::Person => "Person",
+        RelationshipKind::Organization => "Organization",
+        RelationshipKind::Merchant => "Merchant",
+        RelationshipKind::Newsletter => "Newsletter",
+        RelationshipKind::AutomatedService => "Automated service",
+        RelationshipKind::Other => "Other",
+    };
+    let route = match editor.relationship.warm_route {
+        WarmRoute::Action => "Action — may create obligations",
+        WarmRoute::Fyi => "FYI — does not create obligations",
+    };
+    let remote_content = match editor.relationship.remote_content {
+        RemoteContentPolicy::Ask => "Ask before telling the sender this mail was opened",
+        RemoteContentPolicy::Allow => "Allow remote content for this contact",
+        RemoteContentPolicy::Block => "Always block remote content for this contact",
+    };
+    let mut address_lines = vec![Line::styled(
+        "Email addresses:",
+        Style::default().add_modifier(Modifier::BOLD),
+    )];
+    for line in wrap_untrusted_identity(
+        &editor.addresses,
+        usize::from(chunks[1].width.saturating_sub(6)).max(1),
+    ) {
+        address_lines.push(Line::raw(format!("  {line}")));
+    }
+    let items = vec![
+        ListItem::new(Line::from(vec![
+            Span::styled(
+                "Display name: ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(safe_single_line_text(&editor.display_name)),
+        ])),
+        ListItem::new(Text::from(address_lines)),
+        contact_choice_item("Relationship kind", kind),
+        contact_choice_item("Default inbox", route),
+        contact_choice_item(
+            "Notifications",
+            if editor.relationship.notify {
+                "On"
+            } else {
+                "Off"
+            },
+        ),
+        contact_choice_item("Remote content", remote_content),
+    ];
+    let selected = match editor.selected_field {
+        ContactField::Name => 0,
+        ContactField::Addresses => 1,
+        ContactField::Kind => 2,
+        ContactField::Route => 3,
+        ContactField::Notifications => 4,
+        ContactField::RemoteContent => 5,
+    };
+    let mut state = ListState::default().with_selected(Some(selected));
+    frame.render_stateful_widget(
+        List::new(items)
+            .block(
+                Block::default()
+                    .title("Contact identity and policy")
+                    .borders(Borders::ALL),
+            )
+            .highlight_style(Style::default().bg(WARM).fg(Color::Black))
+            .highlight_symbol("› "),
+        chunks[1],
+        &mut state,
+    );
+}
+
+fn contact_choice_item(label: &str, value: &str) -> ListItem<'static> {
+    ListItem::new(Line::from(vec![
+        Span::styled(
+            format!("{label}: "),
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(value.to_owned()),
+    ]))
 }
 
 fn draw_help(frame: &mut Frame<'_>, area: Rect) {
@@ -1213,6 +1332,12 @@ fn draw_help(frame: &mut Frame<'_>, area: Rect) {
         Line::raw("N New · Enter/E Edit · S Synchronize · d Remove"),
         Line::raw(
             "Editor: ↑/↓ or Tab fields · Space toggle choices · Ctrl-S save · Esc cancel",
+        ),
+        Line::raw(""),
+        Line::styled("Contacts", Style::default().add_modifier(Modifier::BOLD)),
+        Line::raw("Enter/E Edit selected contact"),
+        Line::raw(
+            "Editor: change name/addresses · Space cycles policy choices · Ctrl-S save",
         ),
     ]);
     frame.render_widget(
@@ -1256,18 +1381,21 @@ fn draw_footer(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
         Screen::OnboardingEdit => {
             "type name · Ctrl-R route · Ctrl-K kind · Enter save · Esc cancel"
         }
-        Screen::Contacts => "j/k move · Esc back",
+        Screen::Contacts => "j/k move · Enter/e edit contact · Esc back",
+        Screen::ContactEdit => {
+            "↑/↓ or Tab fields · type value · Space toggle · Ctrl-S save · Esc cancel"
+        }
         Screen::Help => "Esc back",
     };
     let mut statuses = Vec::new();
+    if let Some(status) = app.background_status.as_deref() {
+        statuses.push(format!("Sync: {}", safe_single_line_text(status)));
+    }
     if let Some(status) = app.reader_load_status() {
         statuses.push(format!("Reader: {}", safe_single_line_text(status)));
     }
     if let Some(status) = app.status.as_deref() {
         statuses.push(safe_single_line_text(status));
-    }
-    if let Some(status) = app.background_status.as_deref() {
-        statuses.push(format!("Sync: {}", safe_single_line_text(status)));
     }
     let mut lines = vec![Line::raw(commands)];
     if !statuses.is_empty() {
@@ -1319,6 +1447,7 @@ fn accent(app: &MailApp) -> Color {
             })
             .unwrap_or(Color::Gray),
         Screen::AccountEdit => COLD,
+        Screen::ContactEdit => WARM,
         Screen::AccountDeleteConfirm => DANGER,
         Screen::SimilarityPreview => WARM,
         _ => Color::Gray,
@@ -1360,6 +1489,7 @@ fn screen_title(app: &MailApp) -> &'static str {
             })
             .unwrap_or("CONVERSATION"),
         Screen::Contacts => "CONTACTS",
+        Screen::ContactEdit => "CONTACTS / EDIT RELATIONSHIP",
         Screen::Help => "HELP",
     }
 }

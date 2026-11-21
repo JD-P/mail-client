@@ -1318,6 +1318,15 @@ pub enum OfflineDownloadPolicy {
     SelectedFolders { folder_ids: Vec<FolderId> },
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct OfflineDownloadProgress {
+    /// Policy-selected messages whose complete RFC 5322 bytes have been
+    /// downloaded, verified, parsed, and published into the local mirror.
+    pub completed_messages: u64,
+    /// All messages selected by the account's current offline-copy policy.
+    pub total_messages: u64,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BodyRetentionPolicy {

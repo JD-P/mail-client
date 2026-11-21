@@ -2,8 +2,8 @@ use crate::backend::{enqueue_search_on, insert_event};
 use crate::{
     AccountBodyPolicy, AccountId, Backend, BackendError, BodyRetentionPolicy, BodyRetentionReport,
     FolderId, IngestMessage, MailExportFormat, MailExportReport, MailImportReport, MailSelection,
-    MailTransferLimits, MessageId, OfflineDownloadPolicy, ProfileBackupReport,
-    ProfileRestoreReport, Result,
+    MailTransferLimits, MessageId, OfflineDownloadPolicy, OfflineDownloadProgress,
+    ProfileBackupReport, ProfileRestoreReport, Result,
 };
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -180,41 +180,10 @@ impl DataLifecycle {
         if policy.offline == OfflineDownloadPolicy::OnDemand {
             return Ok(Vec::new());
         }
-        let connection = self.0.inner.connection.lock().await;
-        let mut clauses = vec![
-            "mi.account_id = ?".to_owned(),
-            "m.content_availability != 'complete'".to_owned(),
-            "f.kind = 'remote'".to_owned(),
-            "COALESCE(ims.remote_present, 1) = 1".to_owned(),
-            "COALESCE(ims.selectable, 1) = 1".to_owned(),
-        ];
-        let mut parameters = vec![Value::Text(account_id.to_string())];
-        match &policy.offline {
-            OfflineDownloadPolicy::OnDemand => unreachable!(),
-            OfflineDownloadPolicy::All => {}
-            OfflineDownloadPolicy::RecentDays { days } => {
-                clauses.push("m.received_at >= ?".into());
-                parameters.push(Value::Integer(
-                    Utc::now()
-                        .timestamp()
-                        .saturating_sub(i64::from(*days) * 86_400),
-                ));
-            }
-            OfflineDownloadPolicy::SelectedFolders { folder_ids } => {
-                let values = folder_ids
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>();
-                clauses.push(format!(
-                    "mi.folder_id IN ({})",
-                    std::iter::repeat_n("?", values.len())
-                        .collect::<Vec<_>>()
-                        .join(",")
-                ));
-                parameters.extend(values.into_iter().map(Value::Text));
-            }
-        }
+        let (mut clauses, mut parameters) = offline_policy_scope(account_id, &policy);
+        clauses.push("m.content_availability != 'complete'".to_owned());
         parameters.push(Value::Integer(limit as i64));
+        let connection = self.0.inner.connection.lock().await;
         let sql = format!(
             "SELECT DISTINCT m.id, m.received_at, m.content_availability FROM messages m JOIN message_instances mi ON mi.message_id = m.id JOIN folders f ON f.id = mi.folder_id LEFT JOIN imap_mailbox_state ims ON ims.folder_id = f.id WHERE {} ORDER BY CASE WHEN m.content_availability = 'failed' THEN 1 ELSE 0 END, m.received_at DESC, m.id DESC LIMIT ?",
             clauses.join(" AND ")
@@ -225,6 +194,37 @@ impl DataLifecycle {
             output.push(parse_message_id(row.get(0)?)?);
         }
         Ok(output)
+    }
+
+    /// Snapshot the account's verified local-mirror progress. The sync engine
+    /// takes this SQL snapshot once when hydration begins and then advances
+    /// its durable counter after each published message.
+    pub async fn offline_download_progress(
+        &self,
+        account_id: AccountId,
+    ) -> Result<OfflineDownloadProgress> {
+        let policy = self.body_policy(account_id).await?;
+        if policy.offline == OfflineDownloadPolicy::OnDemand {
+            return Ok(OfflineDownloadProgress::default());
+        }
+        let (clauses, parameters) = offline_policy_scope(account_id, &policy);
+        let connection = self.0.inner.connection.lock().await;
+        let sql = format!(
+            "SELECT COUNT(DISTINCT m.id), COUNT(DISTINCT CASE WHEN m.content_availability = 'complete' THEN m.id END) FROM messages m JOIN message_instances mi ON mi.message_id = m.id JOIN folders f ON f.id = mi.folder_id LEFT JOIN imap_mailbox_state ims ON ims.folder_id = f.id WHERE {}",
+            clauses.join(" AND ")
+        );
+        let mut rows = connection.query(&sql, params_from_iter(parameters)).await?;
+        let row = rows.next().await?.ok_or_else(|| {
+            BackendError::InvalidInput("offline progress query returned no row".into())
+        })?;
+        Ok(OfflineDownloadProgress {
+            total_messages: u64::try_from(row.get::<i64>(0)?).map_err(|_| {
+                BackendError::InvalidInput("database contains an invalid offline total".into())
+            })?,
+            completed_messages: u64::try_from(row.get::<i64>(1)?).map_err(|_| {
+                BackendError::InvalidInput("database contains an invalid offline count".into())
+            })?,
+        })
     }
 
     pub async fn apply_retention(
@@ -1083,6 +1083,44 @@ pub async fn restore_profile_backup(
         bytes: total,
         native_credential_references: manifest.native_credential_references,
     })
+}
+
+fn offline_policy_scope(
+    account_id: AccountId,
+    policy: &AccountBodyPolicy,
+) -> (Vec<String>, Vec<Value>) {
+    let mut clauses = vec![
+        "mi.account_id = ?".to_owned(),
+        "f.kind = 'remote'".to_owned(),
+        "COALESCE(ims.remote_present, 1) = 1".to_owned(),
+        "COALESCE(ims.selectable, 1) = 1".to_owned(),
+    ];
+    let mut parameters = vec![Value::Text(account_id.to_string())];
+    match &policy.offline {
+        OfflineDownloadPolicy::OnDemand | OfflineDownloadPolicy::All => {}
+        OfflineDownloadPolicy::RecentDays { days } => {
+            clauses.push("m.received_at >= ?".into());
+            parameters.push(Value::Integer(
+                Utc::now()
+                    .timestamp()
+                    .saturating_sub(i64::from(*days) * 86_400),
+            ));
+        }
+        OfflineDownloadPolicy::SelectedFolders { folder_ids } => {
+            let values = folder_ids
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>();
+            clauses.push(format!(
+                "mi.folder_id IN ({})",
+                std::iter::repeat_n("?", values.len())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ));
+            parameters.extend(values.into_iter().map(Value::Text));
+        }
+    }
+    (clauses, parameters)
 }
 
 async fn validate_body_policy(backend: &Backend, policy: &AccountBodyPolicy) -> Result<()> {

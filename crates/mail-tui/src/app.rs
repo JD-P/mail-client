@@ -1,12 +1,12 @@
 use chrono::{Duration, Utc};
 use lizard_mail_backend::{
-    Account, AccountId, AccountKind, Backend, BackendError, Contact, ContactAddress,
-    ContactSuggestion, FindingPresentation, FindingSeverity, ImapAccountEngineConfig,
-    ImapAccountSyncReport, ImapAccountSyncState, ImapCredential, ImapSecurity,
-    MessageContentAvailability, MessageId, NewAccount, NewContact, NewContactRelationship,
-    RelationshipKind, RemoteContentPolicy, Result, SecretValue, SimilarityPreview, Thread,
-    ThreadFilter, ThreadId, ThreadSummary, ThreadWorkStatus, WarmRoute, WorkflowView,
-    DEFAULT_SIMILARITY_CUTOFF_MILLIS,
+    Account, AccountId, AccountKind, Backend, BackendError, Contact, ContactAddress, ContactId,
+    ContactRelationship, ContactSuggestion, FindingPresentation, FindingSeverity,
+    ImapAccountEngineConfig, ImapAccountSyncReport, ImapAccountSyncState, ImapCredential,
+    ImapSecurity, MessageContentAvailability, MessageId, NewAccount, NewContact,
+    NewContactRelationship, RelationshipKind, RemoteContentPolicy, Result, SecretValue,
+    SimilarityPreview, Thread, ThreadFilter, ThreadId, ThreadSummary, ThreadWorkStatus, WarmRoute,
+    WorkflowView, DEFAULT_SIMILARITY_CUTOFF_MILLIS,
 };
 use std::{
     collections::{HashMap, VecDeque},
@@ -34,6 +34,7 @@ pub enum Screen {
     Queue(WorkflowView),
     Reader,
     Contacts,
+    ContactEdit,
     Help,
 }
 
@@ -163,6 +164,57 @@ pub struct OnboardingEdit {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ContactField {
+    Name,
+    Addresses,
+    Kind,
+    Route,
+    Notifications,
+    RemoteContent,
+}
+
+impl ContactField {
+    const ALL: [Self; 6] = [
+        Self::Name,
+        Self::Addresses,
+        Self::Kind,
+        Self::Route,
+        Self::Notifications,
+        Self::RemoteContent,
+    ];
+}
+
+pub struct ContactEditor {
+    pub contact_id: ContactId,
+    pub display_name: String,
+    /// Comma-separated bare mailbox addresses. The backend remains the
+    /// authority for normalization, uniqueness, and cross-contact conflicts.
+    pub addresses: String,
+    pub relationship: ContactRelationship,
+    pub selected_field: ContactField,
+    original_addresses: Vec<ContactAddress>,
+}
+
+impl ContactEditor {
+    fn new(contact: Contact, relationship: ContactRelationship) -> Self {
+        let addresses = contact
+            .addresses
+            .iter()
+            .map(|address| address.address.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        Self {
+            contact_id: contact.id,
+            display_name: contact.display_name,
+            addresses,
+            relationship,
+            selected_field: ContactField::Name,
+            original_addresses: contact.addresses,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct ReaderHtmlKey {
     message_id: MessageId,
     content_hash: u64,
@@ -225,6 +277,8 @@ pub enum AppCommand {
     AccountDelete,
     AccountConfirmDelete,
     AccountCancelDelete,
+    ContactEdit,
+    ContactSave,
     EditNextField,
     EditPreviousField,
     EditToggleChoice,
@@ -252,6 +306,8 @@ pub struct MailApp {
     pub similarity_selected: usize,
     similarity_return_screen: Option<Screen>,
     pub contacts: Vec<Contact>,
+    pub contact_relationships: HashMap<ContactId, ContactRelationship>,
+    pub contact_editor: Option<ContactEditor>,
     pub contact_names: HashMap<String, String>,
     pub status: Option<String>,
     pub background_status: Option<String>,
@@ -277,6 +333,13 @@ impl MailApp {
     pub async fn open(backend: Backend) -> Result<Self> {
         let accounts = backend.accounts().list().await?;
         let contacts = backend.contacts().list().await?;
+        let contact_relationships = backend
+            .contacts()
+            .relationships()
+            .await?
+            .into_iter()
+            .map(|relationship| (relationship.contact_id, relationship))
+            .collect();
         let onboarding_account = accounts.first().map(|account| account.id);
         let suggestions = if contacts.is_empty() {
             if let Some(account_id) = onboarding_account {
@@ -319,6 +382,8 @@ impl MailApp {
             similarity_selected: 0,
             similarity_return_screen: None,
             contacts,
+            contact_relationships,
+            contact_editor: None,
             contact_names: HashMap::new(),
             status: None,
             background_status: None,
@@ -360,8 +425,7 @@ impl MailApp {
                 self.clamp_selection();
             }
             Screen::Contacts => {
-                self.contacts = self.backend.contacts().list().await?;
-                self.rebuild_contact_names();
+                self.refresh_contacts().await?;
                 self.clamp_selection();
             }
             Screen::Reader => {
@@ -377,6 +441,7 @@ impl MailApp {
             | Screen::AccountDeleteConfirm
             | Screen::Onboarding
             | Screen::OnboardingEdit
+            | Screen::ContactEdit
             | Screen::SimilarityPreview
             | Screen::Help => {}
         }
@@ -401,6 +466,7 @@ impl MailApp {
             AppCommand::Contacts => {
                 self.previous_screen = self.screen;
                 self.screen = Screen::Contacts;
+                self.contact_editor = None;
                 self.selected = 0;
                 self.refresh().await?;
             }
@@ -444,9 +510,11 @@ impl MailApp {
             AppCommand::AccountDelete => self.begin_account_delete(),
             AppCommand::AccountConfirmDelete => self.confirm_account_delete().await?,
             AppCommand::AccountCancelDelete => self.cancel_account_delete(),
-            AppCommand::EditNextField => self.move_account_field(1),
-            AppCommand::EditPreviousField => self.move_account_field(-1),
-            AppCommand::EditToggleChoice => self.toggle_account_choice(),
+            AppCommand::ContactEdit => self.begin_selected_contact_edit().await?,
+            AppCommand::ContactSave => self.save_contact().await?,
+            AppCommand::EditNextField => self.move_editor_field(1),
+            AppCommand::EditPreviousField => self.move_editor_field(-1),
+            AppCommand::EditToggleChoice => self.toggle_editor_choice(),
             AppCommand::EditSpace => self.edit_space(),
             AppCommand::EditBackspace => self.edit_backspace(),
             AppCommand::EditCharacter(character) => self.edit_character(character),
@@ -487,24 +555,7 @@ impl MailApp {
             .account_states
             .get(&account_id)
             .map(|state| state.status);
-        self.background_status = Some(match state.status {
-            lizard_mail_backend::ImapAccountSyncStatus::Connecting => {
-                "Connecting securely to the mail server…".into()
-            }
-            lizard_mail_backend::ImapAccountSyncStatus::Authenticating => {
-                "Authenticating to the mail server…".into()
-            }
-            lizard_mail_backend::ImapAccountSyncStatus::Discovering => {
-                "Discovering remote mailboxes…".into()
-            }
-            lizard_mail_backend::ImapAccountSyncStatus::Synchronizing => {
-                "Synchronizing message headers…".into()
-            }
-            lizard_mail_backend::ImapAccountSyncStatus::Hydrating => {
-                "Headers are current; downloading and verifying the local mail copy…".into()
-            }
-            _ => "Synchronizing in an isolated worker…".into(),
-        });
+        self.background_status = Some(sync_background_status(&state));
         let refresh_headers = state.status
             == lizard_mail_backend::ImapAccountSyncStatus::Synchronizing
             || (state.status == lizard_mail_backend::ImapAccountSyncStatus::Hydrating
@@ -919,6 +970,102 @@ impl MailApp {
         self.accounts.get(self.selected)
     }
 
+    fn selected_contact(&self) -> Option<&Contact> {
+        self.contacts.get(self.selected)
+    }
+
+    async fn refresh_contacts(&mut self) -> Result<()> {
+        self.contacts = self.backend.contacts().list().await?;
+        self.contact_relationships = self
+            .backend
+            .contacts()
+            .relationships()
+            .await?
+            .into_iter()
+            .map(|relationship| (relationship.contact_id, relationship))
+            .collect();
+        self.rebuild_contact_names();
+        Ok(())
+    }
+
+    async fn begin_selected_contact_edit(&mut self) -> Result<()> {
+        let Some(contact) = self.selected_contact().cloned() else {
+            return Ok(());
+        };
+        let relationship = self.backend.contacts().relationship(contact.id).await?;
+        self.contact_editor = Some(ContactEditor::new(contact, relationship));
+        self.screen = Screen::ContactEdit;
+        Ok(())
+    }
+
+    async fn save_contact(&mut self) -> Result<()> {
+        let Some(editor) = self.contact_editor.take() else {
+            return Ok(());
+        };
+        let display_name = editor.display_name.trim().to_owned();
+        if display_name.is_empty() {
+            self.status = Some("A contact needs a display name".into());
+            self.contact_editor = Some(editor);
+            return Ok(());
+        }
+        let addresses = editor
+            .addresses
+            .split([',', ';'])
+            .map(str::trim)
+            .filter(|address| !address.is_empty())
+            .map(|address| {
+                let accepted_name = editor
+                    .original_addresses
+                    .iter()
+                    .find(|existing| existing.address.eq_ignore_ascii_case(address))
+                    .and_then(|existing| existing.accepted_name.clone());
+                ContactAddress {
+                    address: address.to_owned(),
+                    accepted_name,
+                }
+            })
+            .collect::<Vec<_>>();
+        if addresses.is_empty() {
+            self.status = Some("A contact needs at least one email address".into());
+            self.contact_editor = Some(editor);
+            return Ok(());
+        }
+        let contact_id = editor.contact_id;
+        let updated = self
+            .backend
+            .contacts()
+            .update(
+                contact_id,
+                NewContact {
+                    display_name,
+                    addresses,
+                },
+            )
+            .await;
+        if let Err(error) = updated {
+            self.contact_editor = Some(editor);
+            return Err(error);
+        }
+        if let Err(error) = self
+            .backend
+            .contacts()
+            .set_relationship(contact_id, editor.relationship.clone())
+            .await
+        {
+            self.contact_editor = Some(editor);
+            return Err(error);
+        }
+        self.refresh_contacts().await?;
+        self.selected = self
+            .contacts
+            .iter()
+            .position(|contact| contact.id == contact_id)
+            .unwrap_or(0);
+        self.screen = Screen::Contacts;
+        self.status = Some("Contact and future-mail workflow updated".into());
+        Ok(())
+    }
+
     async fn open_accounts(&mut self) -> Result<()> {
         if !matches!(
             self.screen,
@@ -1181,6 +1328,19 @@ impl MailApp {
         self.screen = Screen::Accounts;
     }
 
+    fn move_editor_field(&mut self, delta: isize) {
+        if let Some(editor) = &mut self.contact_editor {
+            let index = ContactField::ALL
+                .iter()
+                .position(|field| *field == editor.selected_field)
+                .unwrap_or(0);
+            let last = ContactField::ALL.len().saturating_sub(1);
+            editor.selected_field = ContactField::ALL[index.saturating_add_signed(delta).min(last)];
+        } else {
+            self.move_account_field(delta);
+        }
+    }
+
     fn move_account_field(&mut self, delta: isize) {
         let Some(editor) = &mut self.account_editor else {
             return;
@@ -1225,7 +1385,46 @@ impl MailApp {
         }
     }
 
+    fn toggle_editor_choice(&mut self) {
+        let Some(editor) = &mut self.contact_editor else {
+            self.toggle_account_choice();
+            return;
+        };
+        match editor.selected_field {
+            ContactField::Kind => cycle_relationship_kind(&mut editor.relationship.kind),
+            ContactField::Route => {
+                let action = editor.relationship.warm_route != WarmRoute::Action;
+                editor.relationship.warm_route = if action {
+                    WarmRoute::Action
+                } else {
+                    WarmRoute::Fyi
+                };
+                editor.relationship.may_create_obligations = action;
+            }
+            ContactField::Notifications => {
+                editor.relationship.notify = !editor.relationship.notify;
+            }
+            ContactField::RemoteContent => {
+                editor.relationship.remote_content = match editor.relationship.remote_content {
+                    RemoteContentPolicy::Ask => RemoteContentPolicy::Allow,
+                    RemoteContentPolicy::Allow => RemoteContentPolicy::Block,
+                    RemoteContentPolicy::Block => RemoteContentPolicy::Ask,
+                };
+            }
+            ContactField::Name | ContactField::Addresses => {}
+        }
+    }
+
     fn edit_space(&mut self) {
+        if self.contact_editor.as_ref().is_some_and(|editor| {
+            !matches!(
+                editor.selected_field,
+                ContactField::Name | ContactField::Addresses
+            )
+        }) {
+            self.toggle_editor_choice();
+            return;
+        }
         if self.account_editor.as_ref().is_some_and(|editor| {
             matches!(
                 editor.selected_field,
@@ -1241,6 +1440,21 @@ impl MailApp {
     fn edit_backspace(&mut self) {
         if let Some(edit) = &mut self.onboarding_edit {
             edit.display_name.pop();
+            return;
+        }
+        if let Some(editor) = &mut self.contact_editor {
+            match editor.selected_field {
+                ContactField::Name => {
+                    editor.display_name.pop();
+                }
+                ContactField::Addresses => {
+                    editor.addresses.pop();
+                }
+                ContactField::Kind
+                | ContactField::Route
+                | ContactField::Notifications
+                | ContactField::RemoteContent => {}
+            }
             return;
         }
         let Some(editor) = &mut self.account_editor else {
@@ -1277,6 +1491,25 @@ impl MailApp {
             }
             return;
         }
+        if let Some(editor) = &mut self.contact_editor {
+            match editor.selected_field {
+                ContactField::Name if editor.display_name.len() < 200 => {
+                    editor.display_name.push(character)
+                }
+                ContactField::Addresses
+                    if editor.addresses.len() < 16 * 1024 && !character.is_whitespace() =>
+                {
+                    editor.addresses.push(character)
+                }
+                ContactField::Name
+                | ContactField::Addresses
+                | ContactField::Kind
+                | ContactField::Route
+                | ContactField::Notifications
+                | ContactField::RemoteContent => {}
+            }
+            return;
+        }
         let Some(editor) = &mut self.account_editor else {
             return;
         };
@@ -1306,8 +1539,16 @@ impl MailApp {
     }
 
     fn edit_paste(&mut self, value: &str) {
-        for character in value.chars().filter(|character| !character.is_control()) {
-            self.edit_character(character);
+        let contact_addresses = self
+            .contact_editor
+            .as_ref()
+            .is_some_and(|editor| editor.selected_field == ContactField::Addresses);
+        for character in value.chars() {
+            if contact_addresses && matches!(character, '\r' | '\n' | '\t') {
+                self.edit_character(',');
+            } else if !character.is_control() {
+                self.edit_character(character);
+            }
         }
     }
 
@@ -1336,6 +1577,7 @@ impl MailApp {
             }
             Screen::Onboarding => self.begin_suggestion_edit(),
             Screen::Accounts => self.begin_selected_account_edit().await?,
+            Screen::Contacts => self.begin_selected_contact_edit().await?,
             _ => {}
         }
         Ok(())
@@ -1358,6 +1600,11 @@ impl MailApp {
                 self.account_editor = None;
                 self.screen = Screen::Accounts;
                 self.refresh_accounts().await?;
+            }
+            Screen::ContactEdit => {
+                self.contact_editor = None;
+                self.screen = Screen::Contacts;
+                self.refresh_contacts().await?;
             }
             Screen::AccountDeleteConfirm => self.cancel_account_delete(),
             Screen::OnboardingEdit => {
@@ -1690,14 +1937,7 @@ impl MailApp {
 
     fn cycle_onboarding_kind(&mut self) {
         if let Some(edit) = &mut self.onboarding_edit {
-            edit.relationship.kind = match edit.relationship.kind {
-                RelationshipKind::Person => RelationshipKind::Organization,
-                RelationshipKind::Organization => RelationshipKind::Merchant,
-                RelationshipKind::Merchant => RelationshipKind::Newsletter,
-                RelationshipKind::Newsletter => RelationshipKind::AutomatedService,
-                RelationshipKind::AutomatedService => RelationshipKind::Other,
-                RelationshipKind::Other => RelationshipKind::Person,
-            };
+            cycle_relationship_kind(&mut edit.relationship.kind);
         }
     }
 
@@ -1787,6 +2027,34 @@ impl Drop for MailApp {
     }
 }
 
+fn sync_background_status(state: &ImapAccountSyncState) -> String {
+    match state.status {
+        lizard_mail_backend::ImapAccountSyncStatus::Connecting => {
+            "Connecting securely to the mail server…".into()
+        }
+        lizard_mail_backend::ImapAccountSyncStatus::Authenticating => {
+            "Authenticating to the mail server…".into()
+        }
+        lizard_mail_backend::ImapAccountSyncStatus::Discovering => {
+            "Discovering remote mailboxes…".into()
+        }
+        lizard_mail_backend::ImapAccountSyncStatus::Synchronizing => {
+            "Synchronizing message headers…".into()
+        }
+        lizard_mail_backend::ImapAccountSyncStatus::Hydrating => {
+            if state.hydration_total_messages > 0 {
+                format!(
+                    "({}/{}) Downloading/verifying newest mail first",
+                    state.hydration_completed_messages, state.hydration_total_messages
+                )
+            } else {
+                "Headers are current; preparing local mail validation…".into()
+            }
+        }
+        _ => "Synchronizing in an isolated worker…".into(),
+    }
+}
+
 fn suggestion_relationship(suggestion: &ContactSuggestion) -> NewContactRelationship {
     NewContactRelationship {
         kind: suggestion.suggested_kind,
@@ -1795,6 +2063,17 @@ fn suggestion_relationship(suggestion: &ContactSuggestion) -> NewContactRelation
         notify: suggestion.suggested_may_create_obligations,
         remote_content: RemoteContentPolicy::Ask,
     }
+}
+
+fn cycle_relationship_kind(kind: &mut RelationshipKind) {
+    *kind = match *kind {
+        RelationshipKind::Person => RelationshipKind::Organization,
+        RelationshipKind::Organization => RelationshipKind::Merchant,
+        RelationshipKind::Merchant => RelationshipKind::Newsletter,
+        RelationshipKind::Newsletter => RelationshipKind::AutomatedService,
+        RelationshipKind::AutomatedService => RelationshipKind::Other,
+        RelationshipKind::Other => RelationshipKind::Person,
+    };
 }
 
 #[cfg(test)]
@@ -1876,5 +2155,25 @@ mod tests {
         assert!(app.enqueue_sync(imap_id, true, false));
         assert!(!app.enqueue_sync(imap_id, false, false));
         assert_eq!(app.queued_sync_accounts(), vec![imap_id]);
+    }
+
+    #[test]
+    fn hydration_status_reports_exact_newest_first_progress() {
+        let state = ImapAccountSyncState {
+            account_id: AccountId::new(),
+            capabilities: Vec::new(),
+            status: lizard_mail_backend::ImapAccountSyncStatus::Hydrating,
+            last_attempt_at: None,
+            last_success_at: None,
+            next_retry_at: None,
+            failure_count: 0,
+            last_error: None,
+            hydration_completed_messages: 17,
+            hydration_total_messages: 2_345,
+        };
+        assert_eq!(
+            sync_background_status(&state),
+            "(17/2345) Downloading/verifying newest mail first"
+        );
     }
 }

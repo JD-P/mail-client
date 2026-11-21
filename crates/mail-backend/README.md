@@ -120,8 +120,9 @@ Current invariants:
   making sender, subject, flags, size, threading and attachment presence useful
   without transferring message bodies;
 - after headers commit, the default policy builds a complete local mirror in
-  bounded batches over the same authenticated connection; durable sync state
-  distinguishes header reconciliation from this hydration phase;
+  newest-first bounded batches over the same authenticated connection; durable
+  sync state distinguishes header reconciliation from this hydration phase and
+  exposes completed/total message progress;
 - `MessageContentStatus` durably distinguishes `headers_only`, `downloading`,
   `complete` and `failed`, including expected/downloaded byte counts and the
   last failure; `Messages::raw` and the MIME APIs reject incomplete content;
