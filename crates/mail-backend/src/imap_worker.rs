@@ -661,12 +661,17 @@ pub(crate) fn run_worker_process() -> std::result::Result<(), String> {
         return Err("worker protocol version mismatch".into());
     }
     validate_worker_request(&request)?;
-    install_worker_sandbox(&request)?;
 
+    // The tokio IO driver initializes an internal AF_UNIX socket pair for its
+    // signal state. The sandbox denies socketpair, so build the runtime before
+    // entering it; the sandbox still covers the thread that runs the request
+    // and every thread created afterwards.
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|error| format!("creating worker runtime: {error}"))?;
+    install_worker_sandbox(&request)?;
+
     let response = runtime.block_on(run_worker_request(request));
     let response = WorkerResponse {
         protocol: WORKER_PROTOCOL_VERSION,
@@ -712,6 +717,8 @@ fn sandbox_self_test(profile: &Path) -> std::result::Result<(), String> {
         .map_err(|error| format!("creating self-test database: {error}"))?;
     std::fs::write(profile.join("mail.db-wal"), b"wal")
         .map_err(|error| format!("creating self-test database WAL: {error}"))?;
+    std::fs::write(profile.join("mail.db-tshm"), b"tshm")
+        .map_err(|error| format!("creating self-test WAL coordination file: {error}"))?;
     std::fs::write(profile.join("credentials/secret"), b"not for the worker")
         .map_err(|error| format!("creating self-test credential: {error}"))?;
     let limits = WorkerLimits {
@@ -915,7 +922,13 @@ fn enter_landlock(profile: &Path, tcp_ports: &[u16]) -> std::result::Result<(), 
             AccessFs::ReadDir,
         ))
         .map_err(|error| format!("could not allow worker profile listing: {error}"))?;
-    for path in [profile.join("mail.db"), profile.join("mail.db-wal")] {
+    for path in [
+        profile.join("mail.db"),
+        profile.join("mail.db-wal"),
+        // Turso's multi-process WAL coordination file; the supervisor creates
+        // it when it opens the profile and the worker must map it too.
+        profile.join("mail.db-tshm"),
+    ] {
         created = created
             .add_rule(PathBeneath::new(
                 PathFd::new(&path).map_err(|error| {

@@ -317,3 +317,27 @@ async fn html_worker_failure_uses_safe_plain_text_in_the_reader() {
     assert!(text.contains("SAFE PLAIN FALLBACK"));
     assert!(!text.contains("UNTRUSTED HTML VIEW"));
 }
+
+#[tokio::test]
+async fn automatic_sync_ignores_local_only_profiles() {
+    let profile = tempfile::tempdir().unwrap();
+    let backend = Backend::open(BackendConfig::new(profile.path()))
+        .await
+        .unwrap();
+    let account = backend
+        .accounts()
+        .add(NewAccount {
+            name: "Local".into(),
+            kind: AccountKind::Local,
+            credential_ref: None,
+            imap: None,
+        })
+        .await
+        .unwrap();
+    let mut app = MailApp::open(backend).await.unwrap();
+    assert!(!app.auto_sync_enabled());
+    app.enable_auto_sync();
+    app.poll_background_tasks().await.unwrap();
+    assert!(app.queued_sync_accounts().is_empty());
+    assert!(!app.account_syncing(account.id));
+}

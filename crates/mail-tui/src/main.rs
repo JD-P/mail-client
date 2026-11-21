@@ -34,6 +34,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let profile = profile_from_arguments(&arguments)?;
     let backend = Backend::open(BackendConfig::new(profile)).await?;
     let mut app = MailApp::open(backend).await?;
+    app.enable_auto_sync();
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();

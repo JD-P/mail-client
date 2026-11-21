@@ -1437,6 +1437,16 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
             "#,
         )
         .await?;
+    prepare_connection(connection).await?;
+    Ok(())
+}
+
+/// Create the connection-local scratch tables every backend connection needs.
+///
+/// Isolated synchronization workers deliberately skip migrations, so they must
+/// still be able to stage normalized ingest batches in their own connection's
+/// temporary database.
+pub(crate) async fn prepare_connection(connection: &turso::Connection) -> Result<()> {
     // Scratch rows never need durability. Keeping them in the connection's
     // temporary database avoids doubling main-database WAL traffic while a
     // normalized batch is copied into the authoritative messages table.
@@ -1556,6 +1566,40 @@ async fn backfill_account_identities(connection: &turso::Connection) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn sync_worker_connection_can_stage_ingest_batches() {
+        let profile = tempfile::tempdir().unwrap();
+        let parent = crate::Backend::open(crate::BackendConfig::new(profile.path()))
+            .await
+            .unwrap();
+        let observed = parent.storage().usage().await.unwrap();
+        let worker =
+            crate::Backend::open_sync_worker(crate::BackendConfig::new(profile.path()), observed)
+                .await
+                .unwrap();
+        // The worker sandbox has no writable temporary directory, so its
+        // scratch database must stay in memory.
+        let temp_store = {
+            let connection = worker.inner.connection.lock().await;
+            let mut rows = connection.query("PRAGMA temp_store", ()).await.unwrap();
+            rows.next()
+                .await
+                .unwrap()
+                .map(|row| row.get::<i64>(0))
+                .transpose()
+                .unwrap()
+        };
+        assert_eq!(temp_store, Some(2));
+        let id = worker
+            .messages()
+            .ingest(crate::IngestMessage::local(
+                b"From: worker@example.test\r\nSubject: staged\r\n\r\nbody\r\n".to_vec(),
+            ))
+            .await
+            .unwrap();
+        assert!(worker.messages().get(id).await.is_ok());
+    }
 
     #[tokio::test]
     async fn replaces_version_one_fts_with_native_index_queue() {

@@ -62,7 +62,7 @@ Filesystem authority is deliberately narrower than the profile directory:
 
 | Path | Worker authority |
 |---|---|
-| `mail.db`, `mail.db-wal` | read, write and truncate |
+| `mail.db`, `mail.db-wal`, `mail.db-tshm` | read, write and truncate |
 | `blobs/`, `downloads/` | mail-data CRUD, without execution, device, pipe, socket or symlink creation |
 | profile root | directory listing only |
 | `credentials/`, `search-index/`, other profile files | no file read or write |

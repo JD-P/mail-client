@@ -8,13 +8,17 @@ use lizard_mail_backend::{
     ThreadSummary, ThreadWorkStatus, WarmRoute, WorkflowView,
 };
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     hash::{DefaultHasher, Hash, Hasher},
+    time::{Duration as StdDuration, Instant},
 };
 use tokio::task::JoinHandle;
 use zeroize::Zeroizing;
 
 use crate::{IsolatedHtmlRenderer, RenderedPage};
+
+/// Default interval between automatic background synchronizations.
+const DEFAULT_AUTO_SYNC_INTERVAL: StdDuration = StdDuration::from_secs(5 * 60);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Screen {
@@ -136,8 +140,16 @@ impl AccountEditor {
 
 struct AccountSyncTask {
     account_id: AccountId,
+    announce: bool,
     begin_contact_onboarding: bool,
     handle: JoinHandle<Result<ImapAccountSyncReport>>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct QueuedSync {
+    account_id: AccountId,
+    announce: bool,
+    begin_contact_onboarding: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -219,6 +231,10 @@ pub struct MailApp {
     reader_html_key: Option<ReaderHtmlKey>,
     html_renderer: IsolatedHtmlRenderer,
     account_sync_task: Option<AccountSyncTask>,
+    sync_queue: VecDeque<QueuedSync>,
+    auto_sync: bool,
+    auto_sync_interval: StdDuration,
+    last_auto_sync: Option<Instant>,
     pub quit: bool,
 }
 
@@ -273,6 +289,10 @@ impl MailApp {
             reader_html_key: None,
             html_renderer: IsolatedHtmlRenderer::default(),
             account_sync_task: None,
+            sync_queue: VecDeque::new(),
+            auto_sync: false,
+            auto_sync_interval: DEFAULT_AUTO_SYNC_INTERVAL,
+            last_auto_sync: None,
             quit: false,
         };
         app.rebuild_contact_names();
@@ -383,7 +403,15 @@ impl MailApp {
 
     /// Reaps a completed background synchronization without blocking terminal
     /// input while the isolated worker connects to a remote provider.
+    /// Collect a finished synchronization, schedule the next automatic sync
+    /// when its interval has elapsed, and start the next queued account.
     pub async fn poll_background_tasks(&mut self) -> Result<()> {
+        self.collect_finished_sync().await?;
+        self.schedule_auto_sync(Instant::now());
+        self.start_next_queued_sync()
+    }
+
+    async fn collect_finished_sync(&mut self) -> Result<()> {
         let Some(task) = self.account_sync_task.take() else {
             return Ok(());
         };
@@ -402,10 +430,14 @@ impl MailApp {
                     .iter()
                     .map(|folder| folder.fetched_messages)
                     .sum::<usize>();
-                self.status = Some(format!(
-                    "Synchronization complete: {fetched} new message headers across {} folders",
-                    report.folders.len()
-                ));
+                if fetched > 0 {
+                    self.status = Some(format!(
+                        "Synchronization complete: {fetched} new message headers across {} folders",
+                        report.folders.len()
+                    ));
+                } else if task.announce {
+                    self.status = Some("Mailboxes are up to date".into());
+                }
                 if task.begin_contact_onboarding {
                     self.begin_contact_onboarding(task.account_id).await?;
                 } else if matches!(self.screen, Screen::Queue(_)) {
@@ -417,6 +449,99 @@ impl MailApp {
             }
         }
         Ok(())
+    }
+
+    /// Queue one isolated header synchronization per configured IMAP account
+    /// at startup and then once per interval.
+    fn schedule_auto_sync(&mut self, now: Instant) {
+        if !self.auto_sync {
+            return;
+        }
+        if self
+            .last_auto_sync
+            .is_some_and(|last| now.duration_since(last) < self.auto_sync_interval)
+        {
+            return;
+        }
+        self.last_auto_sync = Some(now);
+        let accounts = self
+            .accounts
+            .iter()
+            .filter(|account| account.kind == AccountKind::Imap)
+            .map(|account| account.id)
+            .collect::<Vec<_>>();
+        for account_id in accounts {
+            self.enqueue_sync(account_id, false, false);
+        }
+    }
+
+    fn enqueue_sync(
+        &mut self,
+        account_id: AccountId,
+        announce: bool,
+        begin_contact_onboarding: bool,
+    ) -> bool {
+        if self
+            .account_sync_task
+            .as_ref()
+            .is_some_and(|task| task.account_id == account_id)
+            || self
+                .sync_queue
+                .iter()
+                .any(|request| request.account_id == account_id)
+        {
+            return false;
+        }
+        self.sync_queue.push_back(QueuedSync {
+            account_id,
+            announce,
+            begin_contact_onboarding,
+        });
+        true
+    }
+
+    fn start_next_queued_sync(&mut self) -> Result<()> {
+        if self.account_sync_task.is_some() {
+            return Ok(());
+        }
+        let Some(request) = self.sync_queue.pop_front() else {
+            return Ok(());
+        };
+        let engine = self
+            .backend
+            .managed_imap_account_engine(ImapAccountEngineConfig::default())?;
+        self.status = Some("Synchronizing in an isolated worker…".into());
+        self.account_sync_task = Some(AccountSyncTask {
+            account_id: request.account_id,
+            announce: request.announce,
+            begin_contact_onboarding: request.begin_contact_onboarding,
+            handle: tokio::spawn(async move { engine.sync_once(request.account_id).await }),
+        });
+        Ok(())
+    }
+
+    /// Enable background synchronization: each configured IMAP account syncs
+    /// once at startup and again every automatic-sync interval.
+    pub fn enable_auto_sync(&mut self) {
+        self.auto_sync = true;
+        self.last_auto_sync = None;
+    }
+
+    pub fn disable_auto_sync(&mut self) {
+        self.auto_sync = false;
+    }
+
+    pub fn auto_sync_enabled(&self) -> bool {
+        self.auto_sync
+    }
+
+    /// Accounts with a background synchronization waiting behind the running
+    /// one, in execution order.
+    pub fn queued_sync_accounts(&self) -> Vec<AccountId> {
+        self.sync_queue
+            .iter()
+            .map(|request| request.account_id)
+            .collect()
     }
 
     pub fn account_syncing(&self, account_id: AccountId) -> bool {
@@ -703,7 +828,8 @@ impl MailApp {
             self.selected = index;
         }
         self.status = Some("Account saved; starting isolated synchronization…".into());
-        if let Err(error) = self.start_account_sync(saved.id, first_account) {
+        self.enqueue_sync(saved.id, true, first_account);
+        if let Err(error) = self.start_next_queued_sync() {
             self.status = Some(format!(
                 "Account saved, but synchronization could not start: {error}"
             ));
@@ -715,28 +841,19 @@ impl MailApp {
         let Some(account_id) = self.selected_account().map(|account| account.id) else {
             return Ok(());
         };
-        self.start_account_sync(account_id, false)
-    }
-
-    fn start_account_sync(
-        &mut self,
-        account_id: AccountId,
-        begin_contact_onboarding: bool,
-    ) -> Result<()> {
+        let newly_queued = self.enqueue_sync(account_id, true, false);
         if self.account_sync_task.is_some() {
-            self.status = Some("Another account synchronization is already running".into());
+            self.status = Some(
+                if newly_queued {
+                    "Synchronization queued behind the running account"
+                } else {
+                    "This account is already synchronizing"
+                }
+                .into(),
+            );
             return Ok(());
         }
-        let engine = self
-            .backend
-            .managed_imap_account_engine(ImapAccountEngineConfig::default())?;
-        self.status = Some("Synchronizing in an isolated worker…".into());
-        self.account_sync_task = Some(AccountSyncTask {
-            account_id,
-            begin_contact_onboarding,
-            handle: tokio::spawn(async move { engine.sync_once(account_id).await }),
-        });
-        Ok(())
+        self.start_next_queued_sync()
     }
 
     async fn begin_contact_onboarding(&mut self, account_id: AccountId) -> Result<()> {
@@ -779,6 +896,8 @@ impl MailApp {
             return Ok(());
         };
         self.backend.accounts().remove(account_id).await?;
+        self.sync_queue
+            .retain(|request| request.account_id != account_id);
         self.refresh_accounts().await?;
         if self.accounts.is_empty() {
             self.account_editor = Some(AccountEditor::new());
@@ -1239,5 +1358,87 @@ fn suggestion_relationship(suggestion: &ContactSuggestion) -> NewContactRelation
         may_create_obligations: suggestion.suggested_may_create_obligations,
         notify: suggestion.suggested_may_create_obligations,
         remote_content: RemoteContentPolicy::Ask,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lizard_mail_backend::{AccountKind, Backend, BackendConfig, ImapSecurity, ImapSettings};
+
+    async fn backend_with_imap_account() -> (tempfile::TempDir, Backend, AccountId) {
+        let profile = tempfile::tempdir().unwrap();
+        let backend = Backend::open(BackendConfig::new(profile.path()))
+            .await
+            .unwrap();
+        let account = backend
+            .accounts()
+            .add(NewAccount {
+                name: "Remote".into(),
+                kind: AccountKind::Imap,
+                credential_ref: Some("test:automatic-sync".into()),
+                imap: Some(ImapSettings {
+                    host: "imap.example.test".into(),
+                    port: 993,
+                    username: "reader@example.test".into(),
+                    security: ImapSecurity::ImplicitTls,
+                }),
+            })
+            .await
+            .unwrap();
+        (profile, backend, account.id)
+    }
+
+    #[tokio::test]
+    async fn automatic_sync_schedules_imap_accounts_once_per_interval() {
+        let (_profile, backend, imap_id) = backend_with_imap_account().await;
+        let local = backend
+            .accounts()
+            .add(NewAccount {
+                name: "Local".into(),
+                kind: AccountKind::Local,
+                credential_ref: None,
+                imap: None,
+            })
+            .await
+            .unwrap();
+        let mut app = MailApp::open(backend).await.unwrap();
+
+        assert!(!app.auto_sync_enabled());
+        app.schedule_auto_sync(Instant::now());
+        assert!(
+            app.queued_sync_accounts().is_empty(),
+            "disabled automatic sync must not queue work"
+        );
+
+        app.enable_auto_sync();
+        let start = Instant::now();
+        app.schedule_auto_sync(start);
+        assert_eq!(app.queued_sync_accounts(), vec![imap_id]);
+
+        app.schedule_auto_sync(start + StdDuration::from_secs(1));
+        assert_eq!(
+            app.queued_sync_accounts(),
+            vec![imap_id],
+            "a call inside the interval must not duplicate the queue"
+        );
+
+        app.sync_queue.clear();
+        app.schedule_auto_sync(start + app.auto_sync_interval + StdDuration::from_millis(1));
+        assert_eq!(
+            app.queued_sync_accounts(),
+            vec![imap_id],
+            "the next interval re-queues the configured IMAP account"
+        );
+        assert!(!app.queued_sync_accounts().contains(&local.id));
+    }
+
+    #[tokio::test]
+    async fn queued_sync_deduplicates_requests() {
+        let (_profile, backend, imap_id) = backend_with_imap_account().await;
+        let mut app = MailApp::open(backend).await.unwrap();
+        assert!(app.enqueue_sync(imap_id, true, false));
+        assert!(!app.enqueue_sync(imap_id, false, false));
+        assert_eq!(app.queued_sync_accounts(), vec![imap_id]);
     }
 }

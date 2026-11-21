@@ -255,6 +255,11 @@ impl Backend {
             .ok_or_else(|| BackendError::InvalidInput("profile path is not UTF-8".into()))?;
         let database = turso::Builder::new_local(database_path)
             .experimental_index_method(true)
+            // The supervisor and disposable workers open the same profile from
+            // separate processes. Turso otherwise takes an exclusive lock on
+            // mail.db and the worker fails with "File is locked by another
+            // process"; shared WAL coordination is the documented contract.
+            .experimental_multiprocess_wal(true)
             .build()
             .await?;
         let mut connection = database.connect()?;
@@ -262,6 +267,13 @@ impl Backend {
             schema::migrate(&connection).await?;
             crate::spam::initialize(&mut connection).await?;
             crate::security::initialize(&mut connection).await?;
+        } else {
+            // Workers deliberately skip migrations, but bounded ingestion
+            // still stages normalized batches in this connection's temporary
+            // database. The Landlock sandbox has no writable temporary
+            // directory, so scratch tables must live in memory.
+            connection.execute("PRAGMA temp_store = MEMORY", ()).await?;
+            schema::prepare_connection(&connection).await?;
         }
         let search_index = if sync_worker {
             Arc::new(SearchIndex::create_deferred(&config.profile_dir)?)

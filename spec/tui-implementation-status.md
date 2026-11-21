@@ -19,7 +19,10 @@ not implemented merely because it is described there.
 - First-run IMAP account connection with TLS/STARTTLS, password/app-password or
   access-token credentials, masked and zeroized secret entry, secure credential
   storage, and asynchronous isolated header-first synchronization.
-- Account management for adding, editing, manually synchronizing, diagnosing,
+- Automatic header synchronization for configured IMAP accounts at startup and
+  every five minutes, serialized through a bounded queue of disposable isolated
+  workers, with manual synchronization available from the Accounts screen.
+- Account management for adding, editing, synchronizing on demand, diagnosing,
   and removing IMAP accounts. Removal has an intrusive confirmation and uses
   the backend's durable credential-cleanup path.
 - A default platform profile directory, with explicit `--profile` and legacy
