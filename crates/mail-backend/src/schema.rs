@@ -1422,6 +1422,8 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 ON threads(sender_trust, normalized_subject, updated_at DESC);
             CREATE INDEX IF NOT EXISTS thread_participants_address
                 ON thread_participants(address, thread_id, message_id);
+            CREATE INDEX IF NOT EXISTS thread_participants_thread
+                ON thread_participants(thread_id, address);
             CREATE INDEX IF NOT EXISTS messages_content_availability
                 ON messages(content_availability);
             CREATE INDEX IF NOT EXISTS openpgp_bindings_address

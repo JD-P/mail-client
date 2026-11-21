@@ -9,7 +9,7 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use lizard_verified_kernel::{thread_candidate_allowed, TrustState};
 use mail_parser::thread_name;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use turso::{params_from_iter, Connection, Value};
 use uuid::Uuid;
 
@@ -166,10 +166,7 @@ impl Threads {
         }
         let has_more = ids.len() > page_size;
         ids.truncate(page_size);
-        let mut items = Vec::with_capacity(ids.len());
-        for (id, _) in &ids {
-            items.push(load_summary_on(&connection, *id).await?);
-        }
+        let items = load_summaries_on(&connection, &ids).await?;
         let next_cursor = if has_more {
             ids.last()
                 .map(|(id, latest)| encode_cursor(*id, *latest))
@@ -658,70 +655,142 @@ async fn own_addresses_on(connection: &Connection) -> Result<HashSet<String>> {
 }
 
 async fn load_summary_on(connection: &Connection, id: ThreadId) -> Result<ThreadSummary> {
-    let mut rows = connection
-        .query(
-            "SELECT t.subject, t.normalized_subject, t.sender_trust, COUNT(m.id), COALESCE(SUM(CASE WHEN m.is_read = 0 THEN 1 ELSE 0 END), 0), COALESCE(SUM(CASE WHEN m.is_starred = 1 THEN 1 ELSE 0 END), 0), t.openpgp_encryption_required FROM threads t JOIN messages m ON m.thread_id = t.id WHERE t.id = ?1 GROUP BY t.id",
-            (id.to_string(),),
-        )
-        .await?;
-    let row = rows.next().await?.ok_or_else(|| BackendError::NotFound {
-        entity: "thread",
-        id: id.to_string(),
-    })?;
-    let subject = row.get(0)?;
-    let normalized_subject = row.get(1)?;
-    let sender_trust = parse_trust(&row.get::<String>(2)?)?;
-    let message_count = row.get::<i64>(3)? as u64;
-    let unread_count = row.get::<i64>(4)? as u64;
-    let starred_count = row.get::<i64>(5)? as u64;
-    let openpgp_encryption_required = row.get::<bool>(6)?;
-    drop(rows);
+    load_summaries_on(connection, &[(id, 0)])
+        .await?
+        .pop()
+        .ok_or_else(|| BackendError::NotFound {
+            entity: "thread",
+            id: id.to_string(),
+        })
+}
 
-    let mut rows = connection
-        .query(
-            "SELECT id, received_at, preview, from_address, from_name FROM messages WHERE thread_id = ?1 ORDER BY received_at DESC, id DESC LIMIT 1",
-            (id.to_string(),),
-        )
-        .await?;
-    let latest = rows.next().await?.ok_or_else(|| BackendError::NotFound {
-        entity: "thread",
-        id: id.to_string(),
-    })?;
-    let latest_message_id = parse_message_id(latest.get(0)?)?;
-    let latest_received_at = latest.get(1)?;
-    let latest_preview = latest.get(2)?;
-    let latest_from_address = latest.get(3)?;
-    let latest_from_name = latest.get(4)?;
-    drop(rows);
-
-    let mut rows = connection
-        .query(
-            "SELECT DISTINCT address FROM thread_participants WHERE thread_id = ?1 ORDER BY address",
-            (id.to_string(),),
-        )
-        .await?;
-    let mut participants = Vec::new();
-    while let Some(row) = rows.next().await? {
-        participants.push(row.get(0)?);
+/// Load a bounded page of thread summaries in two queries rather than issuing
+/// four queries for every thread. `Threads::list` caps the input at 200 IDs;
+/// the single-item `Threads::get` path uses the same loader so their summary
+/// semantics cannot drift.
+async fn load_summaries_on(
+    connection: &Connection,
+    ids: &[(ThreadId, i64)],
+) -> Result<Vec<ThreadSummary>> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
     }
-    let work_state = load_work_state_on(connection, id).await?;
-    Ok(ThreadSummary {
-        id,
-        subject,
-        normalized_subject,
-        latest_from_address,
-        latest_from_name,
-        participants,
-        message_count,
-        unread_count,
-        starred_count,
-        latest_message_id,
-        latest_received_at,
-        latest_preview,
-        sender_trust,
-        openpgp_encryption_required,
-        work_state,
-    })
+    let selected_values = std::iter::repeat_n("(?, ?)", ids.len())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        r#"WITH selected(thread_id, ordinal) AS (VALUES {selected_values}),
+        message_rollup AS (
+            SELECT m.thread_id, m.id, m.received_at, m.preview,
+                m.from_address, m.from_name,
+                COUNT(*) OVER (PARTITION BY m.thread_id) AS message_count,
+                SUM(CASE WHEN m.is_read = 0 THEN 1 ELSE 0 END)
+                    OVER (PARTITION BY m.thread_id) AS unread_count,
+                SUM(CASE WHEN m.is_starred = 1 THEN 1 ELSE 0 END)
+                    OVER (PARTITION BY m.thread_id) AS starred_count,
+                ROW_NUMBER() OVER (
+                    PARTITION BY m.thread_id
+                    ORDER BY m.received_at DESC, m.id DESC
+                ) AS newest
+            FROM messages m
+            JOIN selected s ON s.thread_id = m.thread_id
+        )
+        SELECT s.thread_id, t.subject, t.normalized_subject, t.sender_trust,
+            mr.message_count, mr.unread_count, mr.starred_count,
+            t.openpgp_encryption_required,
+            mr.id, mr.received_at, mr.preview, mr.from_address, mr.from_name,
+            COALESCE(tws.status, 'active'), tws.snoozed_until,
+            COALESCE(tws.actionable_once, 0), COALESCE(tws.updated_at, 0)
+        FROM selected s
+        JOIN threads t ON t.id = s.thread_id
+        JOIN message_rollup mr ON mr.thread_id = s.thread_id AND mr.newest = 1
+        LEFT JOIN thread_work_state tws ON tws.thread_id = s.thread_id
+        ORDER BY s.ordinal"#
+    );
+    let mut parameters = Vec::with_capacity(ids.len() * 2);
+    for (ordinal, (id, _)) in ids.iter().enumerate() {
+        parameters.push(Value::Text(id.to_string()));
+        parameters.push(Value::Integer(ordinal as i64));
+    }
+    let mut rows = connection.query(sql, params_from_iter(parameters)).await?;
+    let mut summaries = Vec::with_capacity(ids.len());
+    while let Some(row) = rows.next().await? {
+        let id = parse_thread_id(row.get(0)?)?;
+        summaries.push(ThreadSummary {
+            id,
+            subject: row.get(1)?,
+            normalized_subject: row.get(2)?,
+            sender_trust: parse_trust(&row.get::<String>(3)?)?,
+            message_count: nonnegative_u64(row.get(4)?, "thread message count")?,
+            unread_count: nonnegative_u64(row.get(5)?, "thread unread count")?,
+            starred_count: nonnegative_u64(row.get(6)?, "thread starred count")?,
+            openpgp_encryption_required: row.get(7)?,
+            latest_message_id: parse_message_id(row.get(8)?)?,
+            latest_received_at: row.get(9)?,
+            latest_preview: row.get(10)?,
+            latest_from_address: row.get(11)?,
+            latest_from_name: row.get(12)?,
+            participants: Vec::new(),
+            work_state: ThreadWorkState {
+                status: parse_work_status(&row.get::<String>(13)?)?,
+                snoozed_until: row.get(14)?,
+                actionable_once: row.get(15)?,
+                updated_at: row.get(16)?,
+            },
+        });
+    }
+    drop(rows);
+    if summaries.len() != ids.len() {
+        let returned = summaries
+            .iter()
+            .map(|summary| summary.id)
+            .collect::<HashSet<_>>();
+        let missing = ids
+            .iter()
+            .map(|(id, _)| *id)
+            .find(|id| !returned.contains(id))
+            .unwrap_or(ids[0].0);
+        return Err(BackendError::NotFound {
+            entity: "thread",
+            id: missing.to_string(),
+        });
+    }
+
+    let placeholders = std::iter::repeat_n("?", ids.len())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut participant_rows = connection
+        .query(
+            format!(
+                "SELECT thread_id, address FROM thread_participants WHERE thread_id IN ({placeholders}) GROUP BY thread_id, address ORDER BY thread_id, address"
+            ),
+            params_from_iter(
+                ids.iter()
+                    .map(|(id, _)| Value::Text(id.to_string()))
+                    .collect::<Vec<_>>(),
+            ),
+        )
+        .await?;
+    let positions = summaries
+        .iter()
+        .enumerate()
+        .map(|(index, summary)| (summary.id, index))
+        .collect::<HashMap<_, _>>();
+    while let Some(row) = participant_rows.next().await? {
+        let id = parse_thread_id(row.get(0)?)?;
+        let Some(index) = positions.get(&id).copied() else {
+            return Err(BackendError::InvalidInput(
+                "database returned a participant for an unrequested thread".into(),
+            ));
+        };
+        summaries[index].participants.push(row.get(1)?);
+    }
+    Ok(summaries)
+}
+
+fn nonnegative_u64(value: i64, label: &str) -> Result<u64> {
+    u64::try_from(value)
+        .map_err(|_| BackendError::InvalidInput(format!("database contains invalid {label}")))
 }
 
 async fn load_work_state_on(connection: &Connection, id: ThreadId) -> Result<ThreadWorkState> {
