@@ -111,8 +111,11 @@ async fn owns_tls_auth_discovery_and_remote_reconciliation() {
     assert!(!stored.items[0].is_read);
     assert_eq!(
         stored.items[0].content_availability,
-        MessageContentAvailability::HeadersOnly
+        MessageContentAvailability::Complete
     );
+    assert_eq!(first.offline_downloaded_messages, 1);
+    assert_eq!(first.offline_download_failures, 0);
+    assert!(first.offline_copy_complete);
     let downloaded = engine.fetch_message_content(message_id).await.unwrap();
     assert_eq!(
         downloaded.availability,

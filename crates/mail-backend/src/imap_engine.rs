@@ -148,6 +148,9 @@ pub enum ImapAccountSyncStatus {
     Authenticating,
     Discovering,
     Synchronizing,
+    /// Header and flag reconciliation is complete; full RFC 5322 payloads are
+    /// being downloaded, verified, parsed, and indexed into the local mirror.
+    Hydrating,
     Waiting,
     Backoff,
     Error,
@@ -209,6 +212,11 @@ pub struct ImapAccountSyncReport {
     pub folders: Vec<ImapFolderSyncReport>,
     pub offline_downloaded_messages: usize,
     pub offline_download_failures: usize,
+    /// False when one or more policy-selected messages still lack a complete
+    /// local RFC 5322 payload. Header synchronization may nevertheless be
+    /// complete and usable.
+    #[serde(default)]
+    pub offline_copy_complete: bool,
     pub evicted_cached_bodies: usize,
 }
 
@@ -600,32 +608,70 @@ impl ImapAccountEngine {
         let mut offline_downloaded_messages = 0usize;
         let mut offline_download_failures = 0usize;
         if self.config.offline_download_batch_size > 0 {
-            let candidates = self
-                .backend
-                .data_lifecycle()
-                .offline_download_candidates(
-                    account_id,
-                    self.config
-                        .offline_download_batch_size
-                        .min(crate::lifecycle::MAX_OFFLINE_BATCH),
-                )
-                .await?;
-            for message_id in candidates {
-                match timeout(
-                    self.config.folder_sync_timeout,
-                    self.backend.sync().fetch_imap_message_content(
-                        &mut session,
-                        account_id,
-                        message_id,
-                    ),
-                )
-                .await
-                {
-                    Ok(Ok(_)) => offline_downloaded_messages += 1,
-                    Ok(Err(_)) | Err(_) => offline_download_failures += 1,
+            self.store_account_state(
+                account_id,
+                ImapAccountSyncStatus::Hydrating,
+                Some(&capability_names),
+                None,
+                None,
+                false,
+            )
+            .await?;
+            let batch_size = self
+                .config
+                .offline_download_batch_size
+                .min(crate::lifecycle::MAX_OFFLINE_BATCH);
+            let mut failed_this_pass = std::collections::HashSet::new();
+            loop {
+                let candidates = self
+                    .backend
+                    .data_lifecycle()
+                    .offline_download_candidates(account_id, batch_size)
+                    .await?;
+                if candidates.is_empty() {
+                    break;
+                }
+                let mut completed_in_batch = 0usize;
+                for message_id in candidates {
+                    if failed_this_pass.contains(&message_id) {
+                        continue;
+                    }
+                    match timeout(
+                        self.config.folder_sync_timeout,
+                        self.backend.sync().fetch_imap_message_content(
+                            &mut session,
+                            account_id,
+                            message_id,
+                        ),
+                    )
+                    .await
+                    {
+                        Ok(Ok(_)) => {
+                            offline_downloaded_messages += 1;
+                            completed_in_batch += 1;
+                        }
+                        Ok(Err(_)) | Err(_) => {
+                            offline_download_failures += 1;
+                            failed_this_pass.insert(message_id);
+                        }
+                    }
+                }
+                // Do not spin forever on permanently malformed messages or a
+                // provider that repeatedly rejects the same body fetch. A
+                // later synchronization retries durable failures.
+                if completed_in_batch == 0 {
+                    break;
                 }
             }
         }
+        // This query also makes a deliberately disabled hydration batch
+        // visible as incomplete instead of reporting a false success.
+        let offline_copy_complete = self
+            .backend
+            .data_lifecycle()
+            .offline_download_candidates(account_id, 1)
+            .await?
+            .is_empty();
         let evicted_cached_bodies = if self.config.body_retention_batch_size == 0 {
             0
         } else {
@@ -649,6 +695,7 @@ impl ImapAccountEngine {
             folders,
             offline_downloaded_messages,
             offline_download_failures,
+            offline_copy_complete,
             evicted_cached_bodies,
         })
     }
@@ -1747,7 +1794,9 @@ impl ImapAccountEngine {
 
         // The lower-level puller persists selected headers and BODYSTRUCTURE,
         // then advances UIDNEXT only after each projection chunk is durable.
-        // Complete bodies are a separate on-demand operation.
+        // Complete bodies are a separate bounded hydration phase, allowing
+        // header projections to become useful before the local mirror catches
+        // up.
         let pulled = self
             .backend
             .sync()
@@ -2661,6 +2710,7 @@ fn account_status_text(status: ImapAccountSyncStatus) -> &'static str {
         ImapAccountSyncStatus::Authenticating => "authenticating",
         ImapAccountSyncStatus::Discovering => "discovering",
         ImapAccountSyncStatus::Synchronizing => "synchronizing",
+        ImapAccountSyncStatus::Hydrating => "hydrating",
         ImapAccountSyncStatus::Waiting => "waiting",
         ImapAccountSyncStatus::Backoff => "backoff",
         ImapAccountSyncStatus::Error => "error",
@@ -2675,6 +2725,7 @@ fn parse_account_status(value: &str) -> Result<ImapAccountSyncStatus> {
         "authenticating" => Ok(ImapAccountSyncStatus::Authenticating),
         "discovering" => Ok(ImapAccountSyncStatus::Discovering),
         "synchronizing" => Ok(ImapAccountSyncStatus::Synchronizing),
+        "hydrating" => Ok(ImapAccountSyncStatus::Hydrating),
         "waiting" => Ok(ImapAccountSyncStatus::Waiting),
         "backoff" => Ok(ImapAccountSyncStatus::Backoff),
         "error" => Ok(ImapAccountSyncStatus::Error),

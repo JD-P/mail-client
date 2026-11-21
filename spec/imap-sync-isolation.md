@@ -124,5 +124,6 @@ writes, outside-profile reads/writes, execution, UDP and unlisted TCP ports
 are denied. On an incapable kernel the test instead verifies a fail-closed
 Landlock error. Integration coverage kills the worker and verifies the parent
 database and search API remain usable. A Docker/Dovecot test exercises real
-synchronization, on-demand body retrieval and parent-side search publication
-when run on a Landlock ABI 6 host.
+header-first synchronization, default local-mirror hydration,
+priority/on-demand recovery and parent-side search publication when run on a
+Landlock ABI 6 host.

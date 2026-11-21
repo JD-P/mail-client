@@ -166,7 +166,7 @@ fn draw_account_editor(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
         .constraints([Constraint::Length(7), Constraint::Min(7)])
         .split(area);
     let introduction = if editor.account_id.is_none() {
-        "Connect an existing mailbox. Lizard performs a header-first synchronization in an isolated process, so the first screen becomes useful without downloading every body. Ordinary plaintext IMAP is not supported."
+        "Connect an existing mailbox. Lizard makes headers usable first, then downloads and verifies a full local copy in bounded batches inside an isolated process. Ordinary plaintext IMAP is not supported."
     } else {
         "Update this account's IMAP connection. Leave the secret unchanged to retain the stored credential. Saving tests the new settings with an isolated synchronization."
     };

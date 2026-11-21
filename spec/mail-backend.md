@@ -576,8 +576,10 @@ The implemented account engine supports:
 - CONDSTORE/QRESYNC/MODSEQ when available;
 - IDLE with reconnect, polling fallback and cancellation;
 - header-first synchronization using selected header fields and BODYSTRUCTURE;
-- bounded on-demand full-body fetches that resume a durable partial file at its
-  exact byte offset;
+- a default full local mirror, hydrated after the header pass in bounded
+  batches over the existing authenticated session;
+- priority/on-demand full-body fetches that resume a durable partial file at
+  its exact byte offset when a message is opened before hydration reaches it;
 - remote flag and deletion reconciliation;
 - backoff, offline operation and resumable synchronization; and
 - explicit per-message `headers_only`/`downloading`/`complete`/`failed` state,
@@ -1045,9 +1047,13 @@ that is removed on validation failure. Native OS-keychain secrets are
 intentionally not exportable and the backup report calls out their surviving
 opaque references.
 
-Body-cache policy is per account: on-demand, all messages, a recent-day window,
-or selected remote folders. Header-first IMAP sync automatically hydrates a
-bounded policy-selected batch. Retention can discard only complete bodies with
+Body-cache policy is per account: all messages by default, with explicit
+storage-saving choices for on-demand, a recent-day window, or selected remote
+folders. Header-first IMAP sync continues through bounded policy-selected
+batches on the same authenticated connection until the local mirror is caught
+up; one failed body cannot block untouched mail and is retried by a later sync.
+Reports and durable account state distinguish current headers from the body
+hydration phase. Retention can discard only complete bodies with
 a live selectable remote instance; local-folder membership, an explicit pin,
 star retention and every owning account's offline requirement are hard stops.
 Eviction keeps the header projection and marks MIME, search and DKIM body

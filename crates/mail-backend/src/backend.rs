@@ -4504,7 +4504,7 @@ impl Events {
 }
 
 /// Boundary used by IMAP transport code for cheap header discovery and later
-/// on-demand, resumable body hydration.
+/// background or priority resumable body hydration.
 #[derive(Clone)]
 pub struct Sync(Backend);
 
@@ -4517,7 +4517,8 @@ impl Sync {
     /// lookup outside this method prevents the backend from accepting plaintext
     /// passwords or silently weakening TLS. Initial sync requests only the
     /// header fields needed for listing, search, and threading plus
-    /// `BODYSTRUCTURE`; complete bodies are downloaded separately on demand.
+    /// `BODYSTRUCTURE`; complete bodies are downloaded separately by the
+    /// policy-driven local-mirror phase, or with priority when opened first.
     ///
     /// The folder cursor is advanced only after every fetched message has been
     /// durably ingested. If the operation fails partway through, retrying is

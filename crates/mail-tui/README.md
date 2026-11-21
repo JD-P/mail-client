@@ -22,7 +22,9 @@ cargo run -p lizard-mail-tui
 Use `--profile /path/to/profile` for a portable, test, or recovery profile.
 The first run opens an account-connection form. It stores passwords or access
 tokens through the backend credential manager, starts header-first IMAP
-synchronization in the isolated worker, and then offers contact suggestions.
+synchronization in the isolated worker, then builds a verified full local copy
+in bounded batches while the header projections are already usable, and then
+offers contact suggestions.
 Configured IMAP accounts synchronize automatically at startup and every five
 minutes in disposable workers; press `A` from the ordinary client to add, edit,
 synchronize on demand with `s`, diagnose, or remove accounts. Account removal

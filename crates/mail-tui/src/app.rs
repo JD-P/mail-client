@@ -20,6 +20,7 @@ use crate::{IsolatedHtmlRenderer, RenderedPage};
 
 /// Default interval between automatic background synchronizations.
 const DEFAULT_AUTO_SYNC_INTERVAL: StdDuration = StdDuration::from_secs(5 * 60);
+const SYNC_PROGRESS_REFRESH_INTERVAL: StdDuration = StdDuration::from_secs(1);
 const SIMILARITY_PREVIEW_LIMIT: usize = 5_000;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -268,6 +269,7 @@ pub struct MailApp {
     auto_sync: bool,
     auto_sync_interval: StdDuration,
     last_auto_sync: Option<Instant>,
+    last_sync_progress_refresh: Option<Instant>,
     pub quit: bool,
 }
 
@@ -334,6 +336,7 @@ impl MailApp {
             auto_sync: false,
             auto_sync_interval: DEFAULT_AUTO_SYNC_INTERVAL,
             last_auto_sync: None,
+            last_sync_progress_refresh: None,
             quit: false,
         };
         app.rebuild_contact_names();
@@ -458,9 +461,59 @@ impl MailApp {
     /// when its interval has elapsed, and start the next queued account.
     pub async fn poll_background_tasks(&mut self) -> Result<()> {
         self.collect_finished_reader_tasks().await;
+        self.refresh_running_sync_progress(Instant::now()).await?;
         self.collect_finished_sync().await?;
         self.schedule_auto_sync(Instant::now());
         self.start_next_queued_sync()
+    }
+
+    async fn refresh_running_sync_progress(&mut self, now: Instant) -> Result<()> {
+        let Some(account_id) = self.account_sync_task.as_ref().map(|task| task.account_id) else {
+            self.last_sync_progress_refresh = None;
+            return Ok(());
+        };
+        if self
+            .last_sync_progress_refresh
+            .is_some_and(|last| now.duration_since(last) < SYNC_PROGRESS_REFRESH_INTERVAL)
+        {
+            return Ok(());
+        }
+        self.last_sync_progress_refresh = Some(now);
+        let state_reader = self
+            .backend
+            .managed_imap_account_engine_in_process(ImapAccountEngineConfig::default())?;
+        let state = state_reader.state(account_id).await?;
+        let previous_status = self
+            .account_states
+            .get(&account_id)
+            .map(|state| state.status);
+        self.background_status = Some(match state.status {
+            lizard_mail_backend::ImapAccountSyncStatus::Connecting => {
+                "Connecting securely to the mail server…".into()
+            }
+            lizard_mail_backend::ImapAccountSyncStatus::Authenticating => {
+                "Authenticating to the mail server…".into()
+            }
+            lizard_mail_backend::ImapAccountSyncStatus::Discovering => {
+                "Discovering remote mailboxes…".into()
+            }
+            lizard_mail_backend::ImapAccountSyncStatus::Synchronizing => {
+                "Synchronizing message headers…".into()
+            }
+            lizard_mail_backend::ImapAccountSyncStatus::Hydrating => {
+                "Headers are current; downloading and verifying the local mail copy…".into()
+            }
+            _ => "Synchronizing in an isolated worker…".into(),
+        });
+        let refresh_headers = state.status
+            == lizard_mail_backend::ImapAccountSyncStatus::Synchronizing
+            || (state.status == lizard_mail_backend::ImapAccountSyncStatus::Hydrating
+                && previous_status != Some(lizard_mail_backend::ImapAccountSyncStatus::Hydrating));
+        self.account_states.insert(account_id, state);
+        if refresh_headers && matches!(self.screen, Screen::Queue(_)) {
+            self.refresh().await?;
+        }
+        Ok(())
     }
 
     async fn collect_finished_reader_tasks(&mut self) {
@@ -585,13 +638,21 @@ impl MailApp {
                     .iter()
                     .map(|folder| folder.fetched_messages)
                     .sum::<usize>();
-                if fetched > 0 {
+                if !report.offline_copy_complete {
                     self.background_status = Some(format!(
-                        "Synchronization complete: {fetched} new message headers across {} folders",
-                        report.folders.len()
+                        "Headers are current; local copy incomplete ({} downloaded, {} failed this pass)",
+                        report.offline_downloaded_messages,
+                        report.offline_download_failures
+                    ));
+                } else if fetched > 0 {
+                    self.background_status = Some(format!(
+                        "Synchronization complete: {fetched} new message headers and {} verified local messages across {} folders",
+                        report.offline_downloaded_messages,
+                        report.folders.len(),
                     ));
                 } else if task.announce {
-                    self.background_status = Some("Mailboxes are up to date".into());
+                    self.background_status =
+                        Some("Headers and local mail copy are up to date".into());
                 } else {
                     self.background_status = None;
                 }

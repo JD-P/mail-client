@@ -1339,6 +1339,22 @@ pub struct AccountBodyPolicy {
 }
 
 impl AccountBodyPolicy {
+    /// Default policy for a mail client profile: keep an authenticated,
+    /// lossless local copy of every remotely available message.  Header-only
+    /// synchronization is still used as the fast first phase, but it is not
+    /// considered the steady state.
+    pub fn local_mirror(account_id: AccountId) -> Self {
+        Self {
+            account_id,
+            offline: OfflineDownloadPolicy::All,
+            retention: BodyRetentionPolicy::KeepAll,
+            retain_starred: true,
+            updated_at: 0,
+        }
+    }
+
+    /// Explicit storage-saving policy.  This is never the implicit default;
+    /// callers must deliberately opt an account out of the local mirror.
     pub fn on_demand(account_id: AccountId) -> Self {
         Self {
             account_id,

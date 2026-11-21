@@ -319,3 +319,44 @@ async fn retention_never_evicts_irreplaceable_or_pinned_mail() {
         vec![remote_id]
     );
 }
+
+#[tokio::test]
+async fn remote_accounts_default_to_a_full_local_mirror_but_preserve_opt_out() {
+    let profile = tempfile::tempdir().unwrap();
+    let backend = Backend::open(config(profile.path())).await.unwrap();
+    let account = backend
+        .accounts()
+        .add(NewAccount {
+            name: "Mirrored account".into(),
+            kind: AccountKind::Imap,
+            credential_ref: Some("external:test".into()),
+            imap: Some(ImapSettings {
+                host: "imap.example.test".into(),
+                port: 993,
+                username: "owner@example.test".into(),
+                security: ImapSecurity::ImplicitTls,
+            }),
+        })
+        .await
+        .unwrap();
+
+    let default_policy = backend
+        .data_lifecycle()
+        .body_policy(account.id)
+        .await
+        .unwrap();
+    assert_eq!(default_policy.offline, OfflineDownloadPolicy::All);
+    assert_eq!(default_policy.retention, BodyRetentionPolicy::KeepAll);
+
+    backend
+        .data_lifecycle()
+        .set_body_policy(AccountBodyPolicy::on_demand(account.id))
+        .await
+        .unwrap();
+    let explicit_policy = backend
+        .data_lifecycle()
+        .body_policy(account.id)
+        .await
+        .unwrap();
+    assert_eq!(explicit_policy.offline, OfflineDownloadPolicy::OnDemand);
+}

@@ -87,7 +87,7 @@ impl DataLifecycle {
             )
             .await?;
         let Some(row) = rows.next().await? else {
-            return Ok(AccountBodyPolicy::on_demand(account_id));
+            return Ok(AccountBodyPolicy::local_mirror(account_id));
         };
         let mut policy: AccountBodyPolicy = serde_json::from_str(&row.get::<String>(0)?)?;
         policy.account_id = account_id;
@@ -216,7 +216,7 @@ impl DataLifecycle {
         }
         parameters.push(Value::Integer(limit as i64));
         let sql = format!(
-            "SELECT DISTINCT m.id, m.received_at FROM messages m JOIN message_instances mi ON mi.message_id = m.id JOIN folders f ON f.id = mi.folder_id LEFT JOIN imap_mailbox_state ims ON ims.folder_id = f.id WHERE {} ORDER BY m.received_at DESC, m.id DESC LIMIT ?",
+            "SELECT DISTINCT m.id, m.received_at, m.content_availability FROM messages m JOIN message_instances mi ON mi.message_id = m.id JOIN folders f ON f.id = mi.folder_id LEFT JOIN imap_mailbox_state ims ON ims.folder_id = f.id WHERE {} ORDER BY CASE WHEN m.content_availability = 'failed' THEN 1 ELSE 0 END, m.received_at DESC, m.id DESC LIMIT ?",
             clauses.join(" AND ")
         );
         let mut rows = connection.query(&sql, params_from_iter(parameters)).await?;

@@ -119,10 +119,13 @@ Current invariants:
 - initial IMAP synchronization fetches bounded header fields and BODYSTRUCTURE,
   making sender, subject, flags, size, threading and attachment presence useful
   without transferring message bodies;
+- after headers commit, the default policy builds a complete local mirror in
+  bounded batches over the same authenticated connection; durable sync state
+  distinguishes header reconciliation from this hydration phase;
 - `MessageContentStatus` durably distinguishes `headers_only`, `downloading`,
   `complete` and `failed`, including expected/downloaded byte counts and the
   last failure; `Messages::raw` and the MIME APIs reject incomplete content;
-- on-demand body downloads use bounded `BODY.PEEK[]<offset.count>` requests,
+- priority/on-demand body downloads use bounded `BODY.PEEK[]<offset.count>` requests,
   persist a partial file, resume at its exact durable offset after failure or
   restart, and publish MIME, DKIM, body search and heuristic results only after
   the exact complete payload commits; dropping a download future durably marks
@@ -163,9 +166,10 @@ Current invariants:
 - checksummed profile backups exclude rebuildable Tantivy and partial-download
   state, retain encrypted profile-vault material, and explicitly report native
   keychain references whose secrets cannot be exported;
-- per-account offline policy supports on-demand, all, recent and selected-folder
-  body hydration. Retention may evict only unpinned, non-local mail with a live
-  remote source, and never a body required offline by any owning account.
+- per-account offline policy defaults to all-message mirroring and supports
+  explicit on-demand, recent and selected-folder storage-saving modes.
+  Retention may evict only unpinned, non-local mail with a live remote source,
+  and never a body required offline by any owning account.
 
 `Backend::threads` lists and reads conversation objects rather than requiring
 frontends to group messages themselves. Membership exposes the selected parent,

@@ -18,7 +18,8 @@ not implemented merely because it is described there.
   accept/dismiss decisions.
 - First-run IMAP account connection with TLS/STARTTLS, password/app-password or
   access-token credentials, masked and zeroized secret entry, secure credential
-  storage, and asynchronous isolated header-first synchronization.
+  storage, asynchronous isolated header-first synchronization, and default
+  background hydration into a verified full local mirror.
 - Automatic header synchronization for configured IMAP accounts at startup and
   every five minutes, serialized through a bounded queue of disposable isolated
   workers, with manual synchronization available from the Accounts screen.
