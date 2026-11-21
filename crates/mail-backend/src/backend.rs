@@ -9,12 +9,12 @@ use crate::search_index::{QueuedSearchDocument, SearchDocument, SearchIndex};
 use crate::{
     Account, AccountId, AccountKind, Attachment, BackendConfig, BackendError, BackendEvent,
     Contact, ContactAddress, ContactId, ContentState, Folder, FolderId, FolderKind,
-    ImapFetchedHeaders, ImapFetchedMessage, ImapSettings, InboxClass, IngestMessage, Message,
-    MessageContentAvailability, MessageContentStatus, MessageFilter, MessageId, MessageInstance,
-    MessageLink, MessageLinkSource, MessageSort, MessageSummary, NewAccount, NewContact, NewFolder,
-    Page, ProviderSpamAssessment, ProviderSpamEvidence, ProviderSpamEvidenceSource,
-    ProviderSpamVerdict, RemoteMessageIdentity, Result, SearchPage, SearchRequest,
-    SpamEvidenceVerdict, SyncBatchResult, ThreadMembership, UserClassification,
+    ImapFetchedHeaders, ImapFetchedMessage, ImapSettings, InboxClass, IngestMessage,
+    LocalSpamAssessment, Message, MessageContentAvailability, MessageContentStatus, MessageFilter,
+    MessageId, MessageInstance, MessageLink, MessageLinkSource, MessageSort, MessageSummary,
+    NewAccount, NewContact, NewFolder, Page, ProviderSpamAssessment, ProviderSpamEvidence,
+    ProviderSpamEvidenceSource, ProviderSpamVerdict, RemoteMessageIdentity, Result, SearchPage,
+    SearchRequest, SpamEvidenceVerdict, SyncBatchResult, ThreadMembership, UserClassification,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use chrono::Utc;
@@ -38,6 +38,7 @@ use uuid::Uuid;
 const MAX_INGEST_BATCH_MESSAGES: usize = 1_000;
 const MAX_INGEST_BATCH_BYTES: usize = 64 * 1024 * 1024;
 const MAX_PREPARE_CONCURRENCY: usize = 16;
+const MAX_MESSAGE_LOAD_BATCH: usize = 100;
 const MAX_IMAP_METADATA_UIDS: usize = 100;
 const IMAP_BODY_CHUNK_BYTES: usize = 1024 * 1024;
 
@@ -1080,19 +1081,27 @@ impl Backend {
     }
 
     async fn evaluate_automation(&self, message_ids: &[MessageId]) -> Result<()> {
-        let mut evaluated = HashSet::new();
         let run_filters = self.filter_rules().has_enabled().await?;
         let run_heuristics = self.heuristics().has_enabled().await?;
-        for message_id in message_ids {
-            if !evaluated.insert(*message_id) {
-                continue;
-            }
-            if run_filters {
-                self.filter_rules().evaluate_message(*message_id).await?;
-            }
-            if run_heuristics {
-                self.heuristics().evaluate_message(*message_id).await?;
-            }
+        if !run_filters && !run_heuristics {
+            return Ok(());
+        }
+        let mut evaluated = HashSet::new();
+        let ids = message_ids
+            .iter()
+            .copied()
+            .filter(|message_id| evaluated.insert(*message_id))
+            .collect::<Vec<_>>();
+        let messages = self.messages().get_many(&ids).await?;
+        if run_filters {
+            self.filter_rules()
+                .evaluate_loaded_messages(&messages)
+                .await?;
+        }
+        if run_heuristics {
+            self.heuristics()
+                .evaluate_loaded_messages(&messages)
+                .await?;
         }
         Ok(())
     }
@@ -3551,6 +3560,21 @@ impl Messages {
         })
     }
 
+    /// Hydrate a bounded set of complete messages with a fixed number of
+    /// database queries. Callers that need conversation or corpus-sized reads
+    /// must use this rather than repeatedly calling `get`.
+    pub(crate) async fn get_many(&self, ids: &[MessageId]) -> Result<Vec<Message>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let connection = self.0.inner.connection.lock().await;
+        let mut messages = Vec::with_capacity(ids.len());
+        for chunk in ids.chunks(MAX_MESSAGE_LOAD_BATCH) {
+            messages.extend(load_messages_on(&connection, chunk).await?);
+        }
+        Ok(messages)
+    }
+
     pub async fn raw(&self, id: MessageId) -> Result<Vec<u8>> {
         let hash = {
             let connection = self.0.inner.connection.lock().await;
@@ -4039,29 +4063,63 @@ impl Contacts {
             });
         }
         drop(rows);
-        for contact in &mut contacts {
-            let mut rows = connection
-                .query(
-                    "SELECT address, accepted_name FROM contact_addresses WHERE contact_id = ?1 ORDER BY address",
-                    (contact.id.to_string(),),
+        let positions = contacts
+            .iter()
+            .enumerate()
+            .map(|(index, contact)| (contact.id, index))
+            .collect::<HashMap<_, _>>();
+        let mut rows = connection
+            .query(
+                "SELECT contact_id, address, accepted_name FROM contact_addresses ORDER BY contact_id, address",
+                (),
+            )
+            .await?;
+        while let Some(row) = rows.next().await? {
+            let contact_id = parse_id(row.get::<String>(0)?, "contact")?;
+            let index = positions.get(&contact_id).copied().ok_or_else(|| {
+                BackendError::InvalidInput(
+                    "database contains an address for a missing contact".into(),
                 )
-                .await?;
-            while let Some(row) = rows.next().await? {
-                contact.addresses.push(ContactAddress {
-                    address: row.get(0)?,
-                    accepted_name: row.get(1)?,
-                });
-            }
+            })?;
+            contacts[index].addresses.push(ContactAddress {
+                address: row.get(1)?,
+                accepted_name: row.get(2)?,
+            });
         }
         Ok(contacts)
     }
 
     pub async fn get(&self, id: ContactId) -> Result<Contact> {
-        self.list()
-            .await?
-            .into_iter()
-            .find(|contact| contact.id == id)
-            .ok_or_else(|| not_found("contact", id))
+        let connection = self.0.inner.connection.lock().await;
+        let mut rows = connection
+            .query(
+                "SELECT display_name, provenance_json, created_at, updated_at FROM contacts WHERE id = ?1",
+                (id.to_string(),),
+            )
+            .await?;
+        let row = rows.next().await?.ok_or_else(|| not_found("contact", id))?;
+        let mut contact = Contact {
+            id,
+            display_name: row.get(0)?,
+            addresses: Vec::new(),
+            provenance: serde_json::from_str(&row.get::<String>(1)?)?,
+            created_at: row.get(2)?,
+            updated_at: row.get(3)?,
+        };
+        drop(rows);
+        let mut rows = connection
+            .query(
+                "SELECT address, accepted_name FROM contact_addresses WHERE contact_id = ?1 ORDER BY address",
+                (id.to_string(),),
+            )
+            .await?;
+        while let Some(row) = rows.next().await? {
+            contact.addresses.push(ContactAddress {
+                address: row.get(0)?,
+                accepted_name: row.get(1)?,
+            });
+        }
+        Ok(contact)
     }
 
     pub async fn relationship(&self, id: ContactId) -> Result<crate::ContactRelationship> {
@@ -5318,6 +5376,426 @@ async fn lookup_remote_on(
         .await?
         .map(|row| parse_id(row.get::<String>(0)?, "message"))
         .transpose()
+}
+
+async fn load_messages_on(connection: &Connection, ids: &[MessageId]) -> Result<Vec<Message>> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    if ids.iter().copied().collect::<HashSet<_>>().len() != ids.len() {
+        return Err(BackendError::InvalidInput(
+            "bulk message loading requires unique identifiers".into(),
+        ));
+    }
+    let placeholders = sql_placeholders(ids.len());
+    let parameters = message_id_parameters(ids);
+    let mut rows = connection
+        .query(
+            format!(
+                "SELECT {}, rfc_message_id, to_addresses, cc_addresses, bcc_addresses, sender_addresses, delivered_to_addresses, list_id, body_text, body_html, dkim_json, delivery_auth_json, in_reply_to_json, references_json, reply_to_addresses, parent_message_id, threading_source, sender_trust, user_classification FROM messages m WHERE m.id IN ({placeholders})",
+                SUMMARY_COLUMNS
+            ),
+            params_from_iter(parameters),
+        )
+        .await?;
+    let mut by_id = HashMap::with_capacity(ids.len());
+    while let Some(row) = rows.next().await? {
+        let summary = summary_from_row(&row)?;
+        let id = summary.id;
+        let rfc_message_id = row.get(SUMMARY_COLUMN_COUNT)?;
+        let to_addresses = json_addresses(row.get(SUMMARY_COLUMN_COUNT + 1)?)?;
+        let cc_addresses = json_addresses(row.get(SUMMARY_COLUMN_COUNT + 2)?)?;
+        let bcc_addresses = json_addresses(row.get(SUMMARY_COLUMN_COUNT + 3)?)?;
+        let sender_addresses = json_addresses(row.get(SUMMARY_COLUMN_COUNT + 4)?)?;
+        let delivered_to_addresses = json_addresses(row.get(SUMMARY_COLUMN_COUNT + 5)?)?;
+        let list_id = row.get(SUMMARY_COLUMN_COUNT + 6)?;
+        let body_text = row.get(SUMMARY_COLUMN_COUNT + 7)?;
+        let body_html = row.get(SUMMARY_COLUMN_COUNT + 8)?;
+        let dkim = serde_json::from_str(&row.get::<String>(SUMMARY_COLUMN_COUNT + 9)?)?;
+        let delivery_authentication =
+            serde_json::from_str(&row.get::<String>(SUMMARY_COLUMN_COUNT + 10)?)?;
+        let in_reply_to = serde_json::from_str(&row.get::<String>(SUMMARY_COLUMN_COUNT + 11)?)?;
+        let references = serde_json::from_str(&row.get::<String>(SUMMARY_COLUMN_COUNT + 12)?)?;
+        let reply_to_addresses = json_addresses(row.get(SUMMARY_COLUMN_COUNT + 13)?)?;
+        let parent_message_id = row
+            .get::<Option<String>>(SUMMARY_COLUMN_COUNT + 14)?
+            .map(|value| parse_id(value, "message"))
+            .transpose()?;
+        let source = crate::thread::parse_source(&row.get::<String>(SUMMARY_COLUMN_COUNT + 15)?)?;
+        let sender_trust =
+            crate::thread::parse_sender_trust(&row.get::<String>(SUMMARY_COLUMN_COUNT + 16)?)?;
+        let user_classification = row
+            .get::<Option<String>>(SUMMARY_COLUMN_COUNT + 17)?
+            .map(|value| parse_user_classification(&value))
+            .transpose()?;
+        let thread_id = summary.thread_id;
+        by_id.insert(
+            id,
+            Message {
+                summary,
+                rfc_message_id,
+                in_reply_to,
+                references,
+                sender_addresses,
+                reply_to_addresses,
+                threading: ThreadMembership {
+                    thread_id,
+                    parent_message_id,
+                    source,
+                    sender_trust,
+                },
+                to_addresses,
+                cc_addresses,
+                bcc_addresses,
+                delivered_to_addresses,
+                list_id,
+                body_text,
+                body_html,
+                attachments: Vec::new(),
+                links: Vec::new(),
+                instances: Vec::new(),
+                local_folder_ids: Vec::new(),
+                user_classification,
+                provider_spam: ProviderSpamAssessment {
+                    verdict: ProviderSpamVerdict::Unknown,
+                    evidence: Vec::new(),
+                },
+                local_spam: None,
+                dkim,
+                delivery_authentication,
+                openpgp: crate::OpenPgpMessageSecurity::default(),
+                findings: Vec::new(),
+            },
+        );
+    }
+    drop(rows);
+    for id in ids {
+        if !by_id.contains_key(id) {
+            return Err(not_found("message", id));
+        }
+    }
+
+    refresh_delivery_auth_trust_many_on(connection, by_id.values_mut()).await?;
+
+    let mut rows = connection
+        .query(
+            format!(
+                "SELECT message_id, ordinal, part_id, name, declared_media_type, detected_media_type, decoded_size, inline, content_id, decode_state FROM attachments WHERE message_id IN ({placeholders}) ORDER BY message_id, ordinal"
+            ),
+            params_from_iter(message_id_parameters(ids)),
+        )
+        .await?;
+    while let Some(row) = rows.next().await? {
+        let message_id = parse_id(row.get::<String>(0)?, "message")?;
+        let ordinal = u32::try_from(row.get::<i64>(1)?).map_err(|_| {
+            BackendError::InvalidInput("database contains invalid attachment ordinal".into())
+        })?;
+        message_mut(&mut by_id, message_id)?
+            .attachments
+            .push(Attachment {
+                id: format!("attachment:{ordinal}"),
+                ordinal,
+                mime_part_id: u32::try_from(row.get::<i64>(2)?).map_err(|_| {
+                    BackendError::InvalidInput("database contains invalid MIME part ID".into())
+                })?,
+                name: row.get(3)?,
+                declared_media_type: row.get(4)?,
+                detected_media_type: row.get(5)?,
+                decoded_size: u64::try_from(row.get::<i64>(6)?).map_err(|_| {
+                    BackendError::InvalidInput("database contains invalid attachment size".into())
+                })?,
+                inline: row.get(7)?,
+                content_id: row.get(8)?,
+                decode_state: parse_mime_decode_state(&row.get::<String>(9)?)?,
+            });
+    }
+    drop(rows);
+
+    let mut rows = connection
+        .query(
+            format!(
+                "SELECT message_id, ordinal, destination, scheme, host, registrable_domain, source FROM message_links WHERE message_id IN ({placeholders}) ORDER BY message_id, ordinal"
+            ),
+            params_from_iter(message_id_parameters(ids)),
+        )
+        .await?;
+    while let Some(row) = rows.next().await? {
+        let message_id = parse_id(row.get::<String>(0)?, "message")?;
+        let ordinal = u32::try_from(row.get::<i64>(1)?).map_err(|_| {
+            BackendError::InvalidInput("database contains invalid link ordinal".into())
+        })?;
+        message_mut(&mut by_id, message_id)?
+            .links
+            .push(MessageLink {
+                id: format!("link:{ordinal}"),
+                ordinal,
+                destination: row.get(2)?,
+                scheme: row.get(3)?,
+                host: row.get(4)?,
+                registrable_domain: row.get(5)?,
+                source: match row.get::<String>(6)?.as_str() {
+                    "plain_text" => MessageLinkSource::PlainText,
+                    "html" => MessageLinkSource::Html,
+                    _ => {
+                        return Err(BackendError::InvalidInput(
+                            "database contains invalid link source".into(),
+                        ))
+                    }
+                },
+            });
+    }
+    drop(rows);
+
+    let mut rows = connection
+        .query(
+            format!(
+                "SELECT message_id, account_id, folder_id, uid_validity, imap_uid, mod_sequence, flags_json FROM message_instances WHERE message_id IN ({placeholders}) ORDER BY message_id, account_id, folder_id, uid_validity, imap_uid"
+            ),
+            params_from_iter(message_id_parameters(ids)),
+        )
+        .await?;
+    while let Some(row) = rows.next().await? {
+        let message_id = parse_id(row.get::<String>(0)?, "message")?;
+        message_mut(&mut by_id, message_id)?
+            .instances
+            .push(MessageInstance {
+                account_id: parse_id(row.get::<String>(1)?, "account")?,
+                folder_id: parse_id(row.get::<String>(2)?, "folder")?,
+                uid_validity: u32::try_from(row.get::<i64>(3)?).map_err(|_| {
+                    BackendError::InvalidInput("database contains invalid UIDVALIDITY".into())
+                })?,
+                uid: u32::try_from(row.get::<i64>(4)?).map_err(|_| {
+                    BackendError::InvalidInput("database contains invalid IMAP UID".into())
+                })?,
+                mod_sequence: row
+                    .get::<Option<i64>>(5)?
+                    .map(|value| {
+                        u64::try_from(value).map_err(|_| {
+                            BackendError::InvalidInput(
+                                "database contains invalid IMAP modification sequence".into(),
+                            )
+                        })
+                    })
+                    .transpose()?,
+                flags: serde_json::from_str(&row.get::<String>(6)?)?,
+            });
+    }
+    drop(rows);
+
+    let mut rows = connection
+        .query(
+            format!(
+                "SELECT message_id, folder_id FROM local_folder_memberships WHERE message_id IN ({placeholders}) ORDER BY message_id, folder_id"
+            ),
+            params_from_iter(message_id_parameters(ids)),
+        )
+        .await?;
+    while let Some(row) = rows.next().await? {
+        let message_id = parse_id(row.get::<String>(0)?, "message")?;
+        message_mut(&mut by_id, message_id)?
+            .local_folder_ids
+            .push(parse_id(row.get::<String>(1)?, "folder")?);
+    }
+    drop(rows);
+
+    let mut rows = connection
+        .query(
+            format!(
+                "SELECT message_id, account_id, folder_id, uid_validity, imap_uid, source, verdict, observed_at FROM provider_spam_evidence WHERE message_id IN ({placeholders}) ORDER BY message_id, account_id, folder_id, uid_validity, imap_uid, source"
+            ),
+            params_from_iter(message_id_parameters(ids)),
+        )
+        .await?;
+    while let Some(row) = rows.next().await? {
+        let message_id = parse_id(row.get::<String>(0)?, "message")?;
+        message_mut(&mut by_id, message_id)?
+            .provider_spam
+            .evidence
+            .push(ProviderSpamEvidence {
+                account_id: parse_id(row.get::<String>(1)?, "account")?,
+                folder_id: parse_id(row.get::<String>(2)?, "folder")?,
+                uid_validity: u32::try_from(row.get::<i64>(3)?).map_err(|_| {
+                    BackendError::InvalidInput(
+                        "database contains invalid provider-evidence UIDVALIDITY".into(),
+                    )
+                })?,
+                uid: u32::try_from(row.get::<i64>(4)?).map_err(|_| {
+                    BackendError::InvalidInput(
+                        "database contains invalid provider-evidence UID".into(),
+                    )
+                })?,
+                source: parse_provider_spam_source(&row.get::<String>(5)?)?,
+                verdict: parse_spam_evidence_verdict(&row.get::<String>(6)?)?,
+                observed_at: row.get(7)?,
+            });
+    }
+    drop(rows);
+    for message in by_id.values_mut() {
+        let has_spam = message
+            .provider_spam
+            .evidence
+            .iter()
+            .any(|evidence| evidence.verdict == SpamEvidenceVerdict::Spam);
+        let has_not_spam = message
+            .provider_spam
+            .evidence
+            .iter()
+            .any(|evidence| evidence.verdict == SpamEvidenceVerdict::NotSpam);
+        message.provider_spam.verdict = match (has_spam, has_not_spam) {
+            (false, false) => ProviderSpamVerdict::Unknown,
+            (true, false) => ProviderSpamVerdict::Spam,
+            (false, true) => ProviderSpamVerdict::NotSpam,
+            (true, true) => ProviderSpamVerdict::Conflicting,
+        };
+    }
+
+    let mut rows = connection
+        .query(
+            format!(
+                "SELECT message_id, verdict, score, model_version, evidence_json, evaluated_at FROM local_spam_assessments WHERE message_id IN ({placeholders})"
+            ),
+            params_from_iter(message_id_parameters(ids)),
+        )
+        .await?;
+    while let Some(row) = rows.next().await? {
+        let message_id = parse_id(row.get::<String>(0)?, "message")?;
+        message_mut(&mut by_id, message_id)?.local_spam = Some(LocalSpamAssessment {
+            verdict: crate::spam::parse_local_verdict(&row.get::<String>(1)?)?,
+            score: row.get(2)?,
+            model_version: u64::try_from(row.get::<i64>(3)?).map_err(|_| {
+                BackendError::InvalidInput("database contains invalid spam model version".into())
+            })?,
+            evidence: serde_json::from_str(&row.get::<String>(4)?)?,
+            evaluated_at: row.get(5)?,
+        });
+    }
+    drop(rows);
+
+    let mut rows = connection
+        .query(
+            format!(
+                "SELECT hf.message_id, hf.id, hf.heuristic_id, hf.heuristic_version, hf.code, hf.presentation, hf.severity, hf.target_kind, hf.target_id, hf.text, hf.evidence_json, hf.source_kind, hf.created_at, responses.dismissed_at FROM heuristic_findings hf JOIN heuristics h ON h.id = hf.heuristic_id AND h.version = hf.heuristic_version AND h.enabled = 1 AND h.deleted_at IS NULL LEFT JOIN heuristic_finding_responses responses ON responses.finding_id = hf.id WHERE hf.message_id IN ({placeholders}) ORDER BY hf.message_id, CASE hf.severity WHEN 'danger' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END, hf.presentation, hf.id"
+            ),
+            params_from_iter(message_id_parameters(ids)),
+        )
+        .await?;
+    while let Some(row) = rows.next().await? {
+        let message_id = parse_id(row.get::<String>(0)?, "message")?;
+        message_mut(&mut by_id, message_id)?
+            .findings
+            .push(crate::HeuristicFinding {
+                id: parse_id(row.get::<String>(1)?, "heuristic finding")?,
+                message_id,
+                heuristic_id: parse_id(row.get::<String>(2)?, "heuristic")?,
+                heuristic_version: u32::try_from(row.get::<i64>(3)?).map_err(|_| {
+                    BackendError::InvalidInput("database contains invalid heuristic version".into())
+                })?,
+                code: row.get(4)?,
+                presentation: crate::automation::parse_presentation(&row.get::<String>(5)?)?,
+                severity: crate::automation::parse_severity(&row.get::<String>(6)?)?,
+                target_kind: crate::automation::parse_target_kind(&row.get::<String>(7)?)?,
+                target_id: row.get(8)?,
+                text: row.get(9)?,
+                evidence: serde_json::from_str(&row.get::<String>(10)?)?,
+                source_kind: crate::automation::parse_source_kind(&row.get::<String>(11)?)?,
+                created_at: row.get(12)?,
+                dismissed_at: row.get(13)?,
+            });
+    }
+    drop(rows);
+
+    let mut rows = connection
+        .query(
+            format!(
+                "SELECT message_id, evidence_json FROM openpgp_message_evidence WHERE message_id IN ({placeholders})"
+            ),
+            params_from_iter(message_id_parameters(ids)),
+        )
+        .await?;
+    while let Some(row) = rows.next().await? {
+        let message_id = parse_id(row.get::<String>(0)?, "message")?;
+        let message = message_mut(&mut by_id, message_id)?;
+        message.openpgp = serde_json::from_str(&row.get::<String>(1)?)?;
+        if message.openpgp.encryption != crate::OpenPgpEncryptionStatus::NotEncrypted
+            || !message.openpgp.signatures.is_empty()
+        {
+            message.body_html = None;
+        }
+    }
+
+    ids.iter()
+        .map(|id| by_id.remove(id).ok_or_else(|| not_found("message", id)))
+        .collect()
+}
+
+async fn refresh_delivery_auth_trust_many_on<'a>(
+    connection: &Connection,
+    messages: impl Iterator<Item = &'a mut Message>,
+) -> Result<()> {
+    let mut messages = messages.collect::<Vec<_>>();
+    let account_ids = messages
+        .iter()
+        .flat_map(|message| message.delivery_authentication.observations.iter())
+        .filter_map(|observation| observation.account_id)
+        .collect::<HashSet<_>>();
+    if account_ids.is_empty() {
+        return Ok(());
+    }
+    let mut trusted: HashMap<AccountId, Vec<String>> = HashMap::with_capacity(account_ids.len());
+    let account_ids = account_ids.into_iter().collect::<Vec<_>>();
+    for chunk in account_ids.chunks(MAX_MESSAGE_LOAD_BATCH) {
+        let placeholders = sql_placeholders(chunk.len());
+        let mut rows = connection
+            .query(
+                format!(
+                    "SELECT id, trusted_authserv_ids_json FROM accounts WHERE id IN ({placeholders})"
+                ),
+                params_from_iter(
+                    chunk
+                        .iter()
+                        .map(|id| Value::Text(id.to_string()))
+                        .collect::<Vec<_>>(),
+                ),
+            )
+            .await?;
+        while let Some(row) = rows.next().await? {
+            trusted.insert(
+                parse_id(row.get::<String>(0)?, "account")?,
+                serde_json::from_str::<Vec<String>>(&row.get::<String>(1)?)?,
+            );
+        }
+    }
+    for message in &mut messages {
+        for account_id in &account_ids {
+            crate::delivery_auth::refresh_trust(
+                &mut message.delivery_authentication,
+                *account_id,
+                trusted
+                    .get(account_id)
+                    .map(Vec::as_slice)
+                    .unwrap_or_default(),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn message_mut(messages: &mut HashMap<MessageId, Message>, id: MessageId) -> Result<&mut Message> {
+    messages.get_mut(&id).ok_or_else(|| {
+        BackendError::InvalidInput(format!(
+            "database returned related data for missing message {id}"
+        ))
+    })
+}
+
+fn sql_placeholders(count: usize) -> String {
+    std::iter::repeat_n("?", count)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn message_id_parameters(ids: &[MessageId]) -> Vec<Value> {
+    ids.iter().map(|id| Value::Text(id.to_string())).collect()
 }
 
 async fn load_content_status_on(

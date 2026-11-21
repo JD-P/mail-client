@@ -28,14 +28,16 @@ use pgp::{
 use rand::thread_rng;
 use serde_json::json;
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     io::{Read, Write},
     path::PathBuf,
     process::{Command, Stdio},
+    str::FromStr,
     sync::Arc,
     thread,
     time::{Duration, Instant},
 };
+use turso::{params_from_iter, Value};
 use zeroize::Zeroizing;
 
 const MAX_CERTIFICATE_BYTES: usize = 4 * 1024 * 1024;
@@ -206,23 +208,75 @@ impl OpenPgp {
 
     pub async fn certificates_for_address(&self, address: &str) -> Result<Vec<OpenPgpCertificate>> {
         let address = normalize_address(address)?;
-        let fingerprints = {
-            let connection = self.0.inner.connection.lock().await;
-            let mut rows = connection
-                .query(
-                    "SELECT fingerprint FROM openpgp_certificate_bindings WHERE address = ?1 COLLATE NOCASE ORDER BY CASE state WHEN 'accepted' THEN 0 WHEN 'candidate' THEN 1 WHEN 'retired' THEN 2 ELSE 3 END, fingerprint",
-                    (address,),
+        let connection = self.0.inner.connection.lock().await;
+        let mut rows = connection
+            .query(
+                r#"SELECT certificate.fingerprint, certificate.user_ids_json,
+                    certificate.signing_capable, certificate.encryption_capable,
+                    certificate.revoked, certificate.key_created_at,
+                    certificate.key_expires_at, certificate.imported_at,
+                    certificate.source
+                FROM openpgp_certificate_bindings target
+                JOIN openpgp_certificates certificate
+                    ON certificate.fingerprint = target.fingerprint
+                WHERE target.address = ?1 COLLATE NOCASE
+                ORDER BY CASE target.state
+                    WHEN 'accepted' THEN 0 WHEN 'candidate' THEN 1
+                    WHEN 'retired' THEN 2 ELSE 3 END,
+                    certificate.fingerprint"#,
+                (address.clone(),),
+            )
+            .await?;
+        let mut certificates = Vec::new();
+        while let Some(row) = rows.next().await? {
+            certificates.push(OpenPgpCertificate {
+                fingerprint: row.get(0)?,
+                user_ids: serde_json::from_str(&row.get::<String>(1)?)?,
+                signing_capable: row.get(2)?,
+                encryption_capable: row.get(3)?,
+                revoked: row.get(4)?,
+                created_at: row.get(5)?,
+                expires_at: row.get(6)?,
+                imported_at: row.get(7)?,
+                source: parse_source(&row.get::<String>(8)?)?,
+                bindings: Vec::new(),
+            });
+        }
+        drop(rows);
+        let positions = certificates
+            .iter()
+            .enumerate()
+            .map(|(index, certificate)| (certificate.fingerprint.clone(), index))
+            .collect::<HashMap<_, _>>();
+        let mut rows = connection
+            .query(
+                r#"SELECT binding.address, binding.fingerprint, binding.state,
+                    binding.source, binding.created_at, binding.updated_at
+                FROM openpgp_certificate_bindings binding
+                JOIN openpgp_certificate_bindings target
+                    ON target.fingerprint = binding.fingerprint
+                WHERE target.address = ?1 COLLATE NOCASE
+                ORDER BY binding.fingerprint, binding.address"#,
+                (address,),
+            )
+            .await?;
+        while let Some(row) = rows.next().await? {
+            let fingerprint: String = row.get(1)?;
+            let index = positions.get(&fingerprint).copied().ok_or_else(|| {
+                BackendError::InvalidInput(
+                    "database returned a binding for an unselected certificate".into(),
                 )
-                .await?;
-            let mut values = Vec::new();
-            while let Some(row) = rows.next().await? {
-                values.push(row.get::<String>(0)?);
-            }
-            values
-        };
-        let mut certificates = Vec::with_capacity(fingerprints.len());
-        for fingerprint in fingerprints {
-            certificates.push(self.load_certificate(&fingerprint).await?.summary);
+            })?;
+            certificates[index]
+                .bindings
+                .push(OpenPgpCertificateBinding {
+                    address: row.get(0)?,
+                    fingerprint,
+                    state: parse_binding_state(&row.get::<String>(2)?)?,
+                    source: parse_source(&row.get::<String>(3)?)?,
+                    created_at: row.get(4)?,
+                    updated_at: row.get(5)?,
+                });
         }
         Ok(certificates)
     }
@@ -533,46 +587,102 @@ impl OpenPgp {
         &self,
         message_id: MessageId,
     ) -> Result<OpenPgpMessageSecurity> {
-        let raw = self.0.messages().raw(message_id).await?;
-        let from_address = self
-            .0
-            .messages()
-            .get(message_id)
+        self.refresh_message_evidences(&[message_id])
             .await?
-            .summary
-            .from_address;
-        let certificates = self.load_all_certificates().await?;
-        let now = Utc::now().timestamp();
-        let mut evidence = inspect_openpgp_mime(
-            &raw,
-            from_address.as_deref(),
-            &certificates,
-            &self.0.inner.config.limits,
-        );
-        evidence.evaluated_at = Some(now);
-        let mut connection = self.0.inner.connection.lock().await;
-        let transaction = connection.transaction().await?;
-        store_evidence_on(&transaction, message_id, &evidence, now).await?;
-        if evidence.encryption != OpenPgpEncryptionStatus::NotEncrypted {
-            transaction
-                .execute(
-                    "UPDATE threads SET openpgp_encryption_required = 1 WHERE id = (SELECT thread_id FROM messages WHERE id = ?1)",
-                    (message_id.to_string(),),
-                )
-                .await?;
-        }
-        transaction.commit().await?;
-        Ok(evidence)
+            .pop()
+            .map(|(_, evidence)| evidence)
+            .ok_or_else(|| not_found("message", message_id))
     }
 
     pub(crate) async fn refresh_messages(&self, message_ids: &[MessageId]) -> Result<()> {
+        self.refresh_message_evidences(message_ids).await?;
+        Ok(())
+    }
+
+    async fn refresh_message_evidences(
+        &self,
+        message_ids: &[MessageId],
+    ) -> Result<Vec<(MessageId, OpenPgpMessageSecurity)>> {
         let mut seen = HashSet::new();
-        for message_id in message_ids {
-            if seen.insert(*message_id) {
-                self.refresh_message_evidence(*message_id).await?;
+        let message_ids = message_ids
+            .iter()
+            .copied()
+            .filter(|message_id| seen.insert(*message_id))
+            .collect::<Vec<_>>();
+        if message_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let inputs = self.openpgp_message_inputs(&message_ids).await?;
+        let certificates = self.load_all_certificates().await?;
+        let now = Utc::now().timestamp();
+        let mut evidences = Vec::with_capacity(inputs.len());
+        for (message_id, blob_hash, from_address) in inputs {
+            let raw = self.0.inner.blobs.get(&blob_hash).await?;
+            let mut evidence = inspect_openpgp_mime(
+                &raw,
+                from_address.as_deref(),
+                &certificates,
+                &self.0.inner.config.limits,
+            );
+            evidence.evaluated_at = Some(now);
+            evidences.push((message_id, evidence));
+        }
+        let mut connection = self.0.inner.connection.lock().await;
+        let transaction = connection.transaction().await?;
+        store_evidences_on(&transaction, &evidences, now).await?;
+        transaction.commit().await?;
+        Ok(evidences)
+    }
+
+    async fn openpgp_message_inputs(
+        &self,
+        message_ids: &[MessageId],
+    ) -> Result<Vec<(MessageId, String, Option<String>)>> {
+        const INPUT_BATCH: usize = 200;
+        let connection = self.0.inner.connection.lock().await;
+        let mut inputs = HashMap::with_capacity(message_ids.len());
+        for chunk in message_ids.chunks(INPUT_BATCH) {
+            let placeholders = std::iter::repeat_n("?", chunk.len())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let mut rows = connection
+                .query(
+                    format!(
+                        "SELECT id, blob_hash, from_address, content_availability FROM messages WHERE id IN ({placeholders})"
+                    ),
+                    params_from_iter(
+                        chunk
+                            .iter()
+                            .map(|id| Value::Text(id.to_string()))
+                            .collect::<Vec<_>>(),
+                    ),
+                )
+                .await?;
+            while let Some(row) = rows.next().await? {
+                let message_id = MessageId::from_str(&row.get::<String>(0)?).map_err(|_| {
+                    BackendError::InvalidInput(
+                        "database contains invalid message identifier".into(),
+                    )
+                })?;
+                let state: String = row.get(3)?;
+                if state != "complete" {
+                    return Err(BackendError::ContentUnavailable {
+                        id: message_id.to_string(),
+                        state,
+                    });
+                }
+                inputs.insert(message_id, (row.get::<String>(1)?, row.get(2)?));
             }
         }
-        Ok(())
+        message_ids
+            .iter()
+            .map(|message_id| {
+                inputs
+                    .remove(message_id)
+                    .map(|(hash, from)| (*message_id, hash, from))
+                    .ok_or_else(|| not_found("message", message_id))
+            })
+            .collect()
     }
 
     /// Decrypt and fully authenticate a message before returning any plaintext.
@@ -1217,23 +1327,74 @@ impl OpenPgp {
     }
 
     async fn load_all_certificates(&self) -> Result<Vec<(OpenPgpCertificate, SignedPublicKey)>> {
-        let fingerprints = {
+        let certificates = {
             let connection = self.0.inner.connection.lock().await;
             let mut rows = connection
                 .query(
-                    "SELECT fingerprint FROM openpgp_certificates ORDER BY fingerprint LIMIT 4096",
+                    "SELECT fingerprint, certificate_bytes, user_ids_json, signing_capable, encryption_capable, revoked, key_created_at, key_expires_at, imported_at, source FROM openpgp_certificates ORDER BY fingerprint LIMIT 4096",
                     (),
                 )
                 .await?;
             let mut values = Vec::new();
             while let Some(row) = rows.next().await? {
-                values.push(row.get::<String>(0)?);
+                values.push(StoredCertificate {
+                    summary: OpenPgpCertificate {
+                        fingerprint: row.get(0)?,
+                        user_ids: serde_json::from_str(&row.get::<String>(2)?)?,
+                        signing_capable: row.get(3)?,
+                        encryption_capable: row.get(4)?,
+                        revoked: row.get(5)?,
+                        created_at: row.get(6)?,
+                        expires_at: row.get(7)?,
+                        imported_at: row.get(8)?,
+                        source: parse_source(&row.get::<String>(9)?)?,
+                        bindings: Vec::new(),
+                    },
+                    bytes: row.get(1)?,
+                });
+            }
+            drop(rows);
+            let positions = values
+                .iter()
+                .enumerate()
+                .map(|(index, certificate)| (certificate.summary.fingerprint.clone(), index))
+                .collect::<HashMap<_, _>>();
+            let mut rows = connection
+                .query(
+                    r#"SELECT binding.address, binding.fingerprint, binding.state,
+                        binding.source, binding.created_at, binding.updated_at
+                    FROM openpgp_certificate_bindings binding
+                    JOIN (
+                        SELECT fingerprint FROM openpgp_certificates
+                        ORDER BY fingerprint LIMIT 4096
+                    ) selected ON selected.fingerprint = binding.fingerprint
+                    ORDER BY binding.fingerprint, binding.address"#,
+                    (),
+                )
+                .await?;
+            while let Some(row) = rows.next().await? {
+                let fingerprint: String = row.get(1)?;
+                let index = positions.get(&fingerprint).copied().ok_or_else(|| {
+                    BackendError::InvalidInput(
+                        "database returned a binding for an unselected certificate".into(),
+                    )
+                })?;
+                values[index]
+                    .summary
+                    .bindings
+                    .push(OpenPgpCertificateBinding {
+                        address: row.get(0)?,
+                        fingerprint,
+                        state: parse_binding_state(&row.get::<String>(2)?)?,
+                        source: parse_source(&row.get::<String>(3)?)?,
+                        created_at: row.get(4)?,
+                        updated_at: row.get(5)?,
+                    });
             }
             values
         };
-        let mut output = Vec::with_capacity(fingerprints.len());
-        for fingerprint in fingerprints {
-            let stored = self.load_certificate(&fingerprint).await?;
+        let mut output = Vec::with_capacity(certificates.len());
+        for stored in certificates {
             output.push((stored.summary, parse_public_certificate(&stored.bytes)?));
         }
         Ok(output)
@@ -2540,6 +2701,58 @@ async fn store_evidence_on(
             ),
         )
         .await?;
+    Ok(())
+}
+
+async fn store_evidences_on(
+    connection: &turso::Connection,
+    evidences: &[(MessageId, OpenPgpMessageSecurity)],
+    now: i64,
+) -> Result<()> {
+    const STORE_BATCH: usize = 200;
+    for chunk in evidences.chunks(STORE_BATCH) {
+        let values = std::iter::repeat_n("(?, ?, ?)", chunk.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut parameters = Vec::with_capacity(chunk.len() * 3);
+        for (message_id, evidence) in chunk {
+            parameters.push(Value::Text(message_id.to_string()));
+            parameters.push(Value::Text(serde_json::to_string(evidence)?));
+            parameters.push(Value::Integer(now));
+        }
+        connection
+            .execute(
+                format!(
+                    r#"INSERT INTO openpgp_message_evidence(
+                        message_id, evidence_json, evaluated_at
+                    ) VALUES {values}
+                    ON CONFLICT(message_id) DO UPDATE SET
+                        evidence_json = excluded.evidence_json,
+                        evaluated_at = excluded.evaluated_at"#
+                ),
+                params_from_iter(parameters),
+            )
+            .await?;
+
+        let encrypted = chunk
+            .iter()
+            .filter(|(_, evidence)| evidence.encryption != OpenPgpEncryptionStatus::NotEncrypted)
+            .map(|(message_id, _)| Value::Text(message_id.to_string()))
+            .collect::<Vec<_>>();
+        if !encrypted.is_empty() {
+            let placeholders = std::iter::repeat_n("?", encrypted.len())
+                .collect::<Vec<_>>()
+                .join(", ");
+            connection
+                .execute(
+                    format!(
+                        "UPDATE threads SET openpgp_encryption_required = 1 WHERE id IN (SELECT thread_id FROM messages WHERE id IN ({placeholders}))"
+                    ),
+                    params_from_iter(encrypted),
+                )
+                .await?;
+        }
+    }
     Ok(())
 }
 

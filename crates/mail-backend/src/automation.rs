@@ -17,11 +17,12 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use turso::{params_from_iter, Value};
 use uuid::Uuid;
 
 const PREVIEW_SAMPLE_LIMIT: usize = 20;
+const AUTOMATION_MESSAGE_BATCH: usize = 100;
 const FILTER_PREVIEW_FROM: &str = r#"FROM messages m
     LEFT JOIN openpgp_decrypted_messages odm ON odm.message_id = m.id
     LEFT JOIN openpgp_message_evidence opme ON opme.message_id = m.id"#;
@@ -333,16 +334,44 @@ impl FilterRules {
             return Ok(Vec::new());
         }
         let message = self.0.messages().get(message_id).await?;
+        self.evaluate_loaded_with_rules(&rules, &message).await
+    }
+
+    pub(crate) async fn evaluate_loaded_messages(
+        &self,
+        messages: &[Message],
+    ) -> Result<Vec<FilterRuleApplication>> {
+        let rules = self
+            .list()
+            .await?
+            .into_iter()
+            .filter(|rule| rule.enabled)
+            .collect::<Vec<_>>();
+        if rules.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut applications = Vec::new();
+        for message in messages {
+            applications.extend(self.evaluate_loaded_with_rules(&rules, message).await?);
+        }
+        Ok(applications)
+    }
+
+    async fn evaluate_loaded_with_rules(
+        &self,
+        rules: &[FilterRule],
+        message: &Message,
+    ) -> Result<Vec<FilterRuleApplication>> {
         let mut applications = Vec::new();
         for rule in rules {
             let decision = self
-                .evaluate_rule(&rule.conditions, &message, None, true)
+                .evaluate_rule(&rule.conditions, message, None, true)
                 .await?;
-            self.store_evaluation(&rule, &decision).await?;
+            self.store_evaluation(rule, &decision).await?;
             if decision.status != AutomationEvaluationStatus::Matched {
                 continue;
             }
-            if let Some(application) = self.apply_rule(&rule, message_id).await? {
+            if let Some(application) = self.apply_rule(rule, message.summary.id).await? {
                 applications.push(application);
             }
             if rule
@@ -384,9 +413,11 @@ impl FilterRules {
         let pending_content_messages = self
             .count_filter_outcome(&rule.conditions, FilterSqlOutcome::PendingContent)
             .await?;
-        let mut samples = Vec::new();
-        for message_id in self.sample_message_ids(PREVIEW_SAMPLE_LIMIT).await? {
-            let message = self.0.messages().get(message_id).await?;
+        let sample_ids = self.sample_message_ids(PREVIEW_SAMPLE_LIMIT).await?;
+        let messages = self.0.messages().get_many(&sample_ids).await?;
+        let mut samples = Vec::with_capacity(messages.len());
+        for message in messages {
+            let message_id = message.summary.id;
             let decision = self
                 .evaluate_rule(&rule.conditions, &message, None, true)
                 .await?;
@@ -438,28 +469,30 @@ impl FilterRules {
         let mut already_applied_messages = 0u64;
         let mut pending_content_messages = 0u64;
         let mut pending_decryption_messages = 0u64;
-        for message_id in &ids {
-            let message = self.0.messages().get(*message_id).await?;
-            let decision = self
-                .evaluate_rule(&rule.conditions, &message, None, true)
-                .await?;
-            self.store_evaluation(&rule, &decision).await?;
-            match decision.status {
-                AutomationEvaluationStatus::Matched => matching_messages += 1,
-                AutomationEvaluationStatus::PendingContent => {
-                    pending_content_messages += 1;
-                    continue;
+        for chunk in ids.chunks(AUTOMATION_MESSAGE_BATCH) {
+            for message in self.0.messages().get_many(chunk).await? {
+                let message_id = message.summary.id;
+                let decision = self
+                    .evaluate_rule(&rule.conditions, &message, None, true)
+                    .await?;
+                self.store_evaluation(&rule, &decision).await?;
+                match decision.status {
+                    AutomationEvaluationStatus::Matched => matching_messages += 1,
+                    AutomationEvaluationStatus::PendingContent => {
+                        pending_content_messages += 1;
+                        continue;
+                    }
+                    AutomationEvaluationStatus::PendingDecryption => {
+                        pending_decryption_messages += 1;
+                        continue;
+                    }
+                    _ => continue,
                 }
-                AutomationEvaluationStatus::PendingDecryption => {
-                    pending_decryption_messages += 1;
-                    continue;
+                if self.apply_rule(&rule, message_id).await?.is_some() {
+                    newly_applied_messages += 1;
+                } else {
+                    already_applied_messages += 1;
                 }
-                _ => continue,
-            }
-            if self.apply_rule(&rule, *message_id).await?.is_some() {
-                newly_applied_messages += 1;
-            } else {
-                already_applied_messages += 1;
             }
         }
         Ok(FilterRuleReplay {
@@ -726,38 +759,47 @@ impl FilterRules {
         }
         let mut evaluated_messages = 0u64;
         let mut remaining_stale_messages = 0u64;
-        for message_id in self.all_message_ids().await? {
-            let message = self.0.messages().get(message_id).await?;
-            let mut decisions = Vec::with_capacity(rules.len());
-            let mut stale = false;
-            for rule in &rules {
-                let decision = self
-                    .evaluate_rule(&rule.conditions, &message, None, true)
-                    .await?;
-                stale |= self.evaluation_is_stale(rule, &decision).await?;
-                decisions.push((rule, decision));
-            }
-            if !stale {
-                continue;
-            }
-            if evaluated_messages as usize >= limit.max(1) {
-                remaining_stale_messages += 1;
-                continue;
-            }
-            for (rule, decision) in decisions {
-                self.store_evaluation(rule, &decision).await?;
-                if decision.status == AutomationEvaluationStatus::Matched {
-                    let _ = self.apply_rule(rule, message_id).await?;
-                    if rule
-                        .actions
-                        .iter()
-                        .any(|action| matches!(action, FilterAction::Stop))
-                    {
-                        break;
+        let ids = self.all_message_ids().await?;
+        for chunk in ids.chunks(AUTOMATION_MESSAGE_BATCH) {
+            let evaluations = self.evaluations_for_messages(chunk).await?;
+            for message in self.0.messages().get_many(chunk).await? {
+                let message_id = message.summary.id;
+                let mut decisions = Vec::with_capacity(rules.len());
+                let mut stale = false;
+                for rule in &rules {
+                    let decision = self
+                        .evaluate_rule(&rule.conditions, &message, None, true)
+                        .await?;
+                    stale |= evaluations.get(&(rule.id, message_id)).is_none_or(
+                        |(revision, evidence_revision)| {
+                            *revision != rule.revision
+                                || evidence_revision != &decision.evidence_revision
+                        },
+                    );
+                    decisions.push((rule, decision));
+                }
+                if !stale {
+                    continue;
+                }
+                if evaluated_messages as usize >= limit.max(1) {
+                    remaining_stale_messages += 1;
+                    continue;
+                }
+                for (rule, decision) in decisions {
+                    self.store_evaluation(rule, &decision).await?;
+                    if decision.status == AutomationEvaluationStatus::Matched {
+                        let _ = self.apply_rule(rule, message_id).await?;
+                        if rule
+                            .actions
+                            .iter()
+                            .any(|action| matches!(action, FilterAction::Stop))
+                        {
+                            break;
+                        }
                     }
                 }
+                evaluated_messages += 1;
             }
-            evaluated_messages += 1;
         }
         Ok(AutomationReevaluation {
             evaluated_messages,
@@ -940,25 +982,44 @@ impl FilterRules {
         Ok(())
     }
 
-    async fn evaluation_is_stale(
+    async fn evaluations_for_messages(
         &self,
-        rule: &FilterRule,
-        decision: &FilterDecision,
-    ) -> Result<bool> {
+        message_ids: &[MessageId],
+    ) -> Result<HashMap<(FilterRuleId, MessageId), (u32, String)>> {
+        if message_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let placeholders = std::iter::repeat_n("?", message_ids.len())
+            .collect::<Vec<_>>()
+            .join(", ");
         let connection = self.0.inner.connection.lock().await;
         let mut rows = connection
             .query(
-                "SELECT rule_revision, evidence_revision FROM filter_rule_evaluations WHERE rule_id = ?1 AND message_id = ?2",
-                (rule.id.to_string(), decision.message_id.to_string()),
+                format!(
+                    "SELECT rule_id, message_id, rule_revision, evidence_revision FROM filter_rule_evaluations WHERE message_id IN ({placeholders})"
+                ),
+                params_from_iter(
+                    message_ids
+                        .iter()
+                        .map(|id| Value::Text(id.to_string()))
+                        .collect::<Vec<_>>(),
+                ),
             )
             .await?;
-        let Some(row) = rows.next().await? else {
-            return Ok(true);
-        };
-        Ok(
-            database_u32(row.get(0)?, "filter rule revision")? != rule.revision
-                || row.get::<String>(1)? != decision.evidence_revision,
-        )
+        let mut evaluations = HashMap::new();
+        while let Some(row) = rows.next().await? {
+            evaluations.insert(
+                (
+                    parse_id(row.get::<String>(0)?, "filter rule")?,
+                    parse_id(row.get::<String>(1)?, "message")?,
+                ),
+                (
+                    database_u32(row.get(2)?, "filter rule revision")?,
+                    row.get(3)?,
+                ),
+            );
+        }
+        Ok(evaluations)
     }
 
     pub(crate) async fn has_enabled(&self) -> Result<bool> {
@@ -1479,15 +1540,54 @@ impl Heuristics {
     pub async fn evaluate_message(&self, message_id: MessageId) -> Result<Vec<HeuristicFinding>> {
         let programs = self.load_enabled_programs().await?;
         let message = self.0.messages().get(message_id).await?;
-        let mut all_findings = self.evaluate_builtin(&message).await?;
+        self.evaluate_loaded_with_programs(&programs, &message)
+            .await
+    }
+
+    pub(crate) async fn evaluate_loaded_messages(
+        &self,
+        messages: &[Message],
+    ) -> Result<Vec<HeuristicFinding>> {
+        let programs = self.load_enabled_programs().await?;
+        let builtin_evaluations = crate::security::evaluate_many(&self.0, messages).await?;
+        let contact_revision = self.contact_model_revision().await?;
+        let mut all_findings = Vec::new();
+        for (message, builtin) in messages.iter().zip(builtin_evaluations) {
+            all_findings.extend(
+                self.store_builtin_evaluation(message, builtin, contact_revision)
+                    .await?,
+            );
+            for (heuristic, program) in &programs {
+                let decision = self.evaluate_program(program, message, None, true).await?;
+                all_findings.extend(
+                    self.replace_findings(
+                        heuristic,
+                        message.summary.id,
+                        decision.status,
+                        decision.detail,
+                        decision.findings,
+                        decision.evidence_revision,
+                        decision.trace,
+                    )
+                    .await?,
+                );
+            }
+        }
+        Ok(all_findings)
+    }
+
+    async fn evaluate_loaded_with_programs(
+        &self,
+        programs: &[(Heuristic, CompiledHeuristic)],
+        message: &Message,
+    ) -> Result<Vec<HeuristicFinding>> {
+        let mut all_findings = self.evaluate_builtin(message).await?;
         for (heuristic, program) in programs {
-            let decision = self
-                .evaluate_program(&program, &message, None, true)
-                .await?;
+            let decision = self.evaluate_program(program, message, None, true).await?;
             all_findings.extend(
                 self.replace_findings(
-                    &heuristic,
-                    message_id,
+                    heuristic,
+                    message.summary.id,
                     decision.status,
                     decision.detail,
                     decision.findings,
@@ -1551,31 +1651,35 @@ impl Heuristics {
             failed_messages: 0,
             samples: Vec::new(),
         };
-        for message_id in ids {
-            let message = self.0.messages().get(message_id).await?;
-            let decision = self
-                .evaluate_program(&program, &message, None, true)
-                .await?;
-            preview.evaluated_messages += 1;
-            match decision.status {
-                HeuristicEvaluationStatus::Complete => {
-                    if !decision.findings.is_empty() {
-                        preview.affected_messages += 1;
+        for chunk in ids.chunks(AUTOMATION_MESSAGE_BATCH) {
+            for message in self.0.messages().get_many(chunk).await? {
+                let message_id = message.summary.id;
+                let decision = self
+                    .evaluate_program(&program, &message, None, true)
+                    .await?;
+                preview.evaluated_messages += 1;
+                match decision.status {
+                    HeuristicEvaluationStatus::Complete => {
+                        if !decision.findings.is_empty() {
+                            preview.affected_messages += 1;
+                        }
+                        preview.finding_count += decision.findings.len() as u64;
                     }
-                    preview.finding_count += decision.findings.len() as u64;
+                    HeuristicEvaluationStatus::PendingContent => {
+                        preview.pending_content_messages += 1
+                    }
+                    HeuristicEvaluationStatus::PendingDecryption => {
+                        preview.pending_decryption_messages += 1
+                    }
+                    HeuristicEvaluationStatus::NotEvaluatedBudget
+                    | HeuristicEvaluationStatus::Failed => preview.failed_messages += 1,
                 }
-                HeuristicEvaluationStatus::PendingContent => preview.pending_content_messages += 1,
-                HeuristicEvaluationStatus::PendingDecryption => {
-                    preview.pending_decryption_messages += 1
+                if requested.contains(&message_id)
+                    || (automatic_samples && preview.samples.len() < PREVIEW_SAMPLE_LIMIT)
+                {
+                    seen_requested.insert(message_id);
+                    preview.samples.push(decision.preview(message_id));
                 }
-                HeuristicEvaluationStatus::NotEvaluatedBudget
-                | HeuristicEvaluationStatus::Failed => preview.failed_messages += 1,
-            }
-            if requested.contains(&message_id)
-                || (automatic_samples && preview.samples.len() < PREVIEW_SAMPLE_LIMIT)
-            {
-                seen_requested.insert(message_id);
-                preview.samples.push(decision.preview(message_id));
             }
         }
         if !automatic_samples && seen_requested.len() != requested.len() {
@@ -1596,45 +1700,43 @@ impl Heuristics {
             "built_in_security".into(),
             format!("contact_model:{contact_revision}"),
         ];
-        let mut evaluated_messages = 0u64;
+        let mut stale_messages = Vec::new();
         let mut remaining_stale_messages = 0u64;
-        for message_id in self.all_message_ids().await? {
-            let message = self.0.messages().get(message_id).await?;
-            let builtin = crate::security::definition();
-            let builtin_revision = evidence_revision(&message, &builtin_features, false)?;
-            let mut stale = self
-                .evaluation_record_is_stale(
-                    builtin.id,
+        let ids = self.all_message_ids().await?;
+        for chunk in ids.chunks(AUTOMATION_MESSAGE_BATCH) {
+            let evaluations = self.evaluation_records_for_messages(chunk).await?;
+            for message in self.0.messages().get_many(chunk).await? {
+                let message_id = message.summary.id;
+                let builtin = crate::security::definition();
+                let builtin_revision = evidence_revision(&message, &builtin_features, false)?;
+                let mut stale = heuristic_record_is_stale(
+                    evaluations.get(&(builtin.id, message_id)),
                     builtin.version,
-                    message_id,
                     &builtin_revision,
-                )
-                .await?;
-            for (heuristic, program) in &programs {
-                let prepared = self
-                    .prepare_program_message(program, &message, None, true)
-                    .await?;
-                stale |= self
-                    .evaluation_record_is_stale(
-                        heuristic.id,
+                );
+                for (heuristic, program) in &programs {
+                    let prepared = self
+                        .prepare_program_message(program, &message, None, true)
+                        .await?;
+                    stale |= heuristic_record_is_stale(
+                        evaluations.get(&(heuristic.id, message_id)),
                         heuristic.version,
-                        message_id,
                         &prepared.evidence_revision,
-                    )
-                    .await?;
-            }
-            if !stale {
-                continue;
-            }
-            if evaluated_messages as usize >= limit.max(1) {
-                remaining_stale_messages += 1;
-            } else {
-                self.evaluate_message(message_id).await?;
-                evaluated_messages += 1;
+                    );
+                }
+                if !stale {
+                    continue;
+                }
+                if stale_messages.len() >= limit.max(1) {
+                    remaining_stale_messages += 1;
+                } else {
+                    stale_messages.push(message);
+                }
             }
         }
+        self.evaluate_loaded_messages(&stale_messages).await?;
         Ok(AutomationReevaluation {
-            evaluated_messages,
+            evaluated_messages: stale_messages.len() as u64,
             remaining_stale_messages,
         })
     }
@@ -1648,9 +1750,19 @@ impl Heuristics {
     }
 
     async fn evaluate_builtin(&self, message: &Message) -> Result<Vec<HeuristicFinding>> {
-        let heuristic = crate::security::definition();
         let evaluation = crate::security::evaluate(&self.0, message).await?;
         let contact_revision = self.contact_model_revision().await?;
+        self.store_builtin_evaluation(message, evaluation, contact_revision)
+            .await
+    }
+
+    async fn store_builtin_evaluation(
+        &self,
+        message: &Message,
+        evaluation: crate::security::NativeEvaluation,
+        contact_revision: i64,
+    ) -> Result<Vec<HeuristicFinding>> {
+        let heuristic = crate::security::definition();
         let revision = evidence_revision(
             message,
             &[
@@ -1966,29 +2078,45 @@ impl Heuristics {
             .unwrap_or(false))
     }
 
-    async fn evaluation_record_is_stale(
+    async fn evaluation_records_for_messages(
         &self,
-        heuristic_id: HeuristicId,
-        heuristic_version: u32,
-        message_id: MessageId,
-        evidence_revision: &str,
-    ) -> Result<bool> {
+        message_ids: &[MessageId],
+    ) -> Result<HashMap<(HeuristicId, MessageId), (u32, String, u32)>> {
+        if message_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let placeholders = std::iter::repeat_n("?", message_ids.len())
+            .collect::<Vec<_>>()
+            .join(", ");
         let connection = self.0.inner.connection.lock().await;
         let mut rows = connection
             .query(
-                "SELECT heuristic_version, evidence_revision, compiler_version FROM heuristic_evaluations WHERE message_id = ?1 AND heuristic_id = ?2",
-                (message_id.to_string(), heuristic_id.to_string()),
+                format!(
+                    "SELECT heuristic_id, message_id, heuristic_version, evidence_revision, compiler_version FROM heuristic_evaluations WHERE message_id IN ({placeholders})"
+                ),
+                params_from_iter(
+                    message_ids
+                        .iter()
+                        .map(|id| Value::Text(id.to_string()))
+                        .collect::<Vec<_>>(),
+                ),
             )
             .await?;
-        let Some(row) = rows.next().await? else {
-            return Ok(true);
-        };
-        Ok(
-            database_u32(row.get(0)?, "heuristic version")? != heuristic_version
-                || row.get::<String>(1)? != evidence_revision
-                || database_u32(row.get(2)?, "heuristic compiler version")?
-                    != HEURISTIC_COMPILER_VERSION,
-        )
+        let mut evaluations = HashMap::new();
+        while let Some(row) = rows.next().await? {
+            evaluations.insert(
+                (
+                    parse_id(row.get::<String>(0)?, "heuristic")?,
+                    parse_id(row.get::<String>(1)?, "message")?,
+                ),
+                (
+                    database_u32(row.get(2)?, "heuristic version")?,
+                    row.get(3)?,
+                    database_u32(row.get(4)?, "heuristic compiler version")?,
+                ),
+            );
+        }
+        Ok(evaluations)
     }
 
     async fn load_enabled_programs(&self) -> Result<Vec<(Heuristic, CompiledHeuristic)>> {
@@ -2775,6 +2903,18 @@ fn contains_case_insensitive(haystack: &str, needle: &str) -> bool {
     haystack
         .to_ascii_lowercase()
         .contains(&needle.to_ascii_lowercase())
+}
+
+fn heuristic_record_is_stale(
+    record: Option<&(u32, String, u32)>,
+    heuristic_version: u32,
+    evidence_revision: &str,
+) -> bool {
+    record.is_none_or(|(version, revision, compiler_version)| {
+        *version != heuristic_version
+            || revision != evidence_revision
+            || *compiler_version != HEURISTIC_COMPILER_VERSION
+    })
 }
 
 fn database_u32(value: i64, label: &str) -> Result<u32> {

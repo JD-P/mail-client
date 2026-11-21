@@ -97,10 +97,7 @@ impl Threads {
             }
             (summary, message_ids)
         };
-        let mut messages = Vec::with_capacity(message_ids.len());
-        for message_id in message_ids {
-            messages.push(self.0.messages().get(message_id).await?);
-        }
+        let messages = self.0.messages().get_many(&message_ids).await?;
         Ok(Thread { summary, messages })
     }
 

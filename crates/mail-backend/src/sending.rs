@@ -13,7 +13,10 @@ use lizard_verified_kernel::{
     SubmissionState as VerifiedSubmissionState,
 };
 use serde_json::json;
-use std::{collections::HashSet, str::FromStr};
+use std::{
+    collections::{HashMap, HashSet},
+    str::FromStr,
+};
 use tokio::io::AsyncRead;
 use turso::Connection;
 use uuid::Uuid;
@@ -328,20 +331,40 @@ impl Drafts {
     }
 
     pub async fn list(&self) -> Result<Vec<Draft>> {
-        let ids = {
-            let connection = self.0.inner.connection.lock().await;
-            let mut rows = connection
-                .query("SELECT id FROM drafts ORDER BY updated_at DESC, id", ())
-                .await?;
-            let mut ids = Vec::new();
-            while let Some(row) = rows.next().await? {
-                ids.push(parse_id(row.get::<String>(0)?, "draft")?);
-            }
-            ids
-        };
-        let mut drafts = Vec::with_capacity(ids.len());
-        for id in ids {
-            drafts.push(self.get(id).await?);
+        let connection = self.0.inner.connection.lock().await;
+        let mut rows = connection
+            .query(
+                "SELECT id, account_id, identity_id, revision, status, thread_id, parent_message_id, to_addresses, cc_addresses, bcc_addresses, subject, body_text, body_html, in_reply_to, references_json, created_at, updated_at FROM drafts ORDER BY updated_at DESC, id",
+                (),
+            )
+            .await?;
+        let mut drafts = Vec::new();
+        while let Some(row) = rows.next().await? {
+            let id = parse_id(row.get::<String>(0)?, "draft")?;
+            drafts.push(draft_from_row(&row, id, 1)?);
+        }
+        drop(rows);
+        let positions = drafts
+            .iter()
+            .enumerate()
+            .map(|(index, draft)| (draft.id, index))
+            .collect::<HashMap<_, _>>();
+        let mut rows = connection
+            .query(
+                "SELECT draft_id, id, ordinal, name, media_type, disposition, content_id, size_bytes FROM draft_attachments ORDER BY draft_id, ordinal",
+                (),
+            )
+            .await?;
+        while let Some(row) = rows.next().await? {
+            let draft_id = parse_id(row.get::<String>(0)?, "draft")?;
+            let index = positions.get(&draft_id).copied().ok_or_else(|| {
+                BackendError::InvalidInput(
+                    "database contains an attachment for a missing draft".into(),
+                )
+            })?;
+            drafts[index]
+                .attachments
+                .push(draft_attachment_from_row(&row, 1)?);
         }
         Ok(drafts)
     }
@@ -744,23 +767,17 @@ impl Outbox {
     }
 
     pub async fn list(&self) -> Result<Vec<Submission>> {
-        let ids = {
-            let connection = self.0.inner.connection.lock().await;
-            let mut rows = connection
-                .query(
-                    "SELECT id FROM submissions ORDER BY created_at DESC, id",
-                    (),
-                )
-                .await?;
-            let mut ids = Vec::new();
-            while let Some(row) = rows.next().await? {
-                ids.push(parse_id(row.get::<String>(0)?, "submission")?);
-            }
-            ids
-        };
-        let mut values = Vec::with_capacity(ids.len());
-        for id in ids {
-            values.push(self.get(id).await?);
+        let connection = self.0.inner.connection.lock().await;
+        let mut rows = connection
+            .query(
+                "SELECT id, draft_id, account_id, rfc_message_id, status, attempts, next_attempt_at, last_error, smtp_response, sent_message_id, created_at, updated_at, completed_at FROM submissions ORDER BY created_at DESC, id",
+                (),
+            )
+            .await?;
+        let mut values = Vec::new();
+        while let Some(row) = rows.next().await? {
+            let id = parse_id(row.get::<String>(0)?, "submission")?;
+            values.push(submission_from_row(&row, id, 1)?);
         }
         Ok(values)
     }
@@ -1678,31 +1695,7 @@ async fn load_draft_on(connection: &Connection, id: DraftId) -> Result<Draft> {
         )
         .await?;
     let row = rows.next().await?.ok_or_else(|| not_found("draft", id))?;
-    let content = DraftContent {
-        account_id: parse_id(row.get::<String>(0)?, "account")?,
-        identity_id: row
-            .get::<Option<String>>(1)?
-            .map(|value| parse_id(value, "account identity"))
-            .transpose()?,
-        thread_id: parse_id(row.get::<String>(4)?, "thread")?,
-        parent_message_id: row
-            .get::<Option<String>>(5)?
-            .map(|value| parse_id(value, "message"))
-            .transpose()?,
-        to_addresses: serde_json::from_str(&row.get::<String>(6)?)?,
-        cc_addresses: serde_json::from_str(&row.get::<String>(7)?)?,
-        bcc_addresses: serde_json::from_str(&row.get::<String>(8)?)?,
-        subject: row.get(9)?,
-        body_text: row.get(10)?,
-        body_html: row.get(11)?,
-        in_reply_to: row.get(12)?,
-        references: serde_json::from_str(&row.get::<String>(13)?)?,
-    };
-    let revision = u32::try_from(row.get::<i64>(2)?)
-        .map_err(|_| BackendError::InvalidInput("invalid draft revision".into()))?;
-    let status = parse_draft_status(&row.get::<String>(3)?)?;
-    let created_at = row.get(14)?;
-    let updated_at = row.get(15)?;
+    let mut draft = draft_from_row(&row, id, 0)?;
     drop(rows);
     let mut rows = connection
         .query(
@@ -1710,28 +1703,60 @@ async fn load_draft_on(connection: &Connection, id: DraftId) -> Result<Draft> {
             (id.to_string(),),
         )
         .await?;
-    let mut attachments = Vec::new();
     while let Some(row) = rows.next().await? {
-        attachments.push(DraftAttachment {
-            id: parse_id(row.get::<String>(0)?, "draft attachment")?,
-            ordinal: u32::try_from(row.get::<i64>(1)?)
-                .map_err(|_| BackendError::InvalidInput("invalid attachment ordinal".into()))?,
-            name: row.get(2)?,
-            media_type: row.get(3)?,
-            disposition: parse_disposition(&row.get::<String>(4)?)?,
-            content_id: row.get(5)?,
-            size_bytes: u64::try_from(row.get::<i64>(6)?)
-                .map_err(|_| BackendError::InvalidInput("invalid attachment size".into()))?,
-        });
+        draft.attachments.push(draft_attachment_from_row(&row, 0)?);
     }
+    Ok(draft)
+}
+
+fn draft_from_row(row: &turso::Row, id: DraftId, offset: usize) -> Result<Draft> {
+    let content = DraftContent {
+        account_id: parse_id(row.get::<String>(offset)?, "account")?,
+        identity_id: row
+            .get::<Option<String>>(offset + 1)?
+            .map(|value| parse_id(value, "account identity"))
+            .transpose()?,
+        thread_id: parse_id(row.get::<String>(offset + 4)?, "thread")?,
+        parent_message_id: row
+            .get::<Option<String>>(offset + 5)?
+            .map(|value| parse_id(value, "message"))
+            .transpose()?,
+        to_addresses: serde_json::from_str(&row.get::<String>(offset + 6)?)?,
+        cc_addresses: serde_json::from_str(&row.get::<String>(offset + 7)?)?,
+        bcc_addresses: serde_json::from_str(&row.get::<String>(offset + 8)?)?,
+        subject: row.get(offset + 9)?,
+        body_text: row.get(offset + 10)?,
+        body_html: row.get(offset + 11)?,
+        in_reply_to: row.get(offset + 12)?,
+        references: serde_json::from_str(&row.get::<String>(offset + 13)?)?,
+    };
+    let revision = u32::try_from(row.get::<i64>(offset + 2)?)
+        .map_err(|_| BackendError::InvalidInput("invalid draft revision".into()))?;
+    let status = parse_draft_status(&row.get::<String>(offset + 3)?)?;
+    let created_at = row.get(offset + 14)?;
+    let updated_at = row.get(offset + 15)?;
     Ok(Draft {
         id,
         revision,
         status,
         content,
-        attachments,
+        attachments: Vec::new(),
         created_at,
         updated_at,
+    })
+}
+
+fn draft_attachment_from_row(row: &turso::Row, offset: usize) -> Result<DraftAttachment> {
+    Ok(DraftAttachment {
+        id: parse_id(row.get::<String>(offset)?, "draft attachment")?,
+        ordinal: u32::try_from(row.get::<i64>(offset + 1)?)
+            .map_err(|_| BackendError::InvalidInput("invalid attachment ordinal".into()))?,
+        name: row.get(offset + 2)?,
+        media_type: row.get(offset + 3)?,
+        disposition: parse_disposition(&row.get::<String>(offset + 4)?)?,
+        content_id: row.get(offset + 5)?,
+        size_bytes: u64::try_from(row.get::<i64>(offset + 6)?)
+            .map_err(|_| BackendError::InvalidInput("invalid attachment size".into()))?,
     })
 }
 
@@ -1768,24 +1793,28 @@ async fn load_submission_on(connection: &Connection, id: SubmissionId) -> Result
         .next()
         .await?
         .ok_or_else(|| not_found("submission", id))?;
+    submission_from_row(&row, id, 0)
+}
+
+fn submission_from_row(row: &turso::Row, id: SubmissionId, offset: usize) -> Result<Submission> {
     Ok(Submission {
         id,
-        draft_id: parse_id(row.get::<String>(0)?, "draft")?,
-        account_id: parse_id(row.get::<String>(1)?, "account")?,
-        rfc_message_id: row.get(2)?,
-        status: parse_submission_status(&row.get::<String>(3)?)?,
-        attempts: u32::try_from(row.get::<i64>(4)?)
+        draft_id: parse_id(row.get::<String>(offset)?, "draft")?,
+        account_id: parse_id(row.get::<String>(offset + 1)?, "account")?,
+        rfc_message_id: row.get(offset + 2)?,
+        status: parse_submission_status(&row.get::<String>(offset + 3)?)?,
+        attempts: u32::try_from(row.get::<i64>(offset + 4)?)
             .map_err(|_| BackendError::InvalidInput("invalid submission attempt count".into()))?,
-        next_attempt_at: row.get(5)?,
-        last_error: row.get(6)?,
-        smtp_response: row.get(7)?,
+        next_attempt_at: row.get(offset + 5)?,
+        last_error: row.get(offset + 6)?,
+        smtp_response: row.get(offset + 7)?,
         sent_message_id: row
-            .get::<Option<String>>(8)?
+            .get::<Option<String>>(offset + 8)?
             .map(|value| parse_id(value, "message"))
             .transpose()?,
-        created_at: row.get(9)?,
-        updated_at: row.get(10)?,
-        completed_at: row.get(11)?,
+        created_at: row.get(offset + 9)?,
+        updated_at: row.get(offset + 10)?,
+        completed_at: row.get(offset + 11)?,
     })
 }
 

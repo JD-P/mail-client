@@ -13,8 +13,8 @@ use html5ever::tokenizer::{
 };
 use serde_json::json;
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeMap, BTreeSet, HashSet};
-use std::sync::OnceLock;
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use turso::{params_from_iter, Connection, Value};
 use unicode_security::skeleton;
@@ -119,7 +119,28 @@ pub(crate) async fn initialize(connection: &mut Connection) -> Result<()> {
 }
 
 pub(crate) async fn evaluate(backend: &Backend, message: &Message) -> Result<NativeEvaluation> {
-    let context = contact_context(backend, message.summary.from_address.as_deref()).await?;
+    let facts = load_contact_facts(backend).await?;
+    evaluate_with_contact_facts(backend, message, &facts).await
+}
+
+pub(crate) async fn evaluate_many(
+    backend: &Backend,
+    messages: &[Message],
+) -> Result<Vec<NativeEvaluation>> {
+    let facts = load_contact_facts(backend).await?;
+    let mut evaluations = Vec::with_capacity(messages.len());
+    for message in messages {
+        evaluations.push(evaluate_with_contact_facts(backend, message, &facts).await?);
+    }
+    Ok(evaluations)
+}
+
+async fn evaluate_with_contact_facts(
+    backend: &Backend,
+    message: &Message,
+    facts: &ContactFacts,
+) -> Result<NativeEvaluation> {
+    let context = contact_context(facts, message.summary.from_address.as_deref());
     let mut collector = FindingCollector::default();
     sender_header_findings(backend, message, &mut collector).await?;
     identity_findings(backend, message, &context, &mut collector).await?;
@@ -237,16 +258,24 @@ impl FindingCollector {
     }
 }
 
-#[derive(Default)]
-struct ContactContext {
-    matched_names: Vec<String>,
-    all_names: HashSet<String>,
-    all_name_skeletons: HashSet<String>,
-    meaningful_domains: BTreeSet<String>,
+struct ContactFacts {
+    names_by_address: HashMap<String, Vec<String>>,
+    all_names: Arc<HashSet<String>>,
+    all_name_skeletons: Arc<HashSet<String>>,
+    meaningful_domains: Arc<BTreeSet<String>>,
     limited: bool,
 }
 
-async fn contact_context(backend: &Backend, from: Option<&str>) -> Result<ContactContext> {
+struct ContactContext {
+    matched_names: Vec<String>,
+    all_names: Arc<HashSet<String>>,
+    all_name_skeletons: Arc<HashSet<String>>,
+    meaningful_domains: Arc<BTreeSet<String>>,
+    sender_domain: Option<String>,
+    limited: bool,
+}
+
+async fn load_contact_facts(backend: &Backend) -> Result<ContactFacts> {
     let connection = backend.inner.connection.lock().await;
     let mut rows = connection
         .query(
@@ -254,40 +283,58 @@ async fn contact_context(backend: &Backend, from: Option<&str>) -> Result<Contac
             (i64::try_from(MAX_CONTACT_FACTS + 1).unwrap_or(i64::MAX),),
         )
         .await?;
-    let mut context = ContactContext::default();
-    let normalized_from = from.map(normalize_address);
+    let mut names_by_address = HashMap::<String, Vec<String>>::new();
+    let mut all_names = HashSet::new();
+    let mut all_name_skeletons = HashSet::new();
+    let mut meaningful_domains = BTreeSet::new();
+    let mut limited = false;
     let mut count = 0usize;
     while let Some(row) = rows.next().await? {
         count += 1;
         if count > MAX_CONTACT_FACTS {
-            context.limited = true;
+            limited = true;
             break;
         }
         let display_name = row.get::<String>(0)?;
         let address = row.get::<String>(1)?;
         let accepted_name = row.get::<Option<String>>(2)?;
-        context.all_names.insert(normalize_name(&display_name));
-        context
-            .all_name_skeletons
-            .insert(skeleton_string(&display_name));
+        all_names.insert(normalize_name(&display_name));
+        all_name_skeletons.insert(skeleton_string(&display_name));
+        let names = names_by_address
+            .entry(normalize_address(&address))
+            .or_default();
+        names.push(display_name);
         if let Some(name) = accepted_name.as_deref() {
-            context.all_names.insert(normalize_name(name));
-            context.all_name_skeletons.insert(skeleton_string(name));
-        }
-        if normalized_from.as_deref() == Some(normalize_address(&address).as_str()) {
-            context.matched_names.push(display_name);
-            if let Some(name) = accepted_name {
-                context.matched_names.push(name);
-            }
+            all_names.insert(normalize_name(name));
+            all_name_skeletons.insert(skeleton_string(name));
+            names.push(name.to_owned());
         }
         if let Some(domain) = address_domain(&address) {
-            context.meaningful_domains.insert(domain);
+            meaningful_domains.insert(domain);
         }
     }
-    if let Some(domain) = from.and_then(address_domain) {
-        context.meaningful_domains.insert(domain);
+    Ok(ContactFacts {
+        names_by_address,
+        all_names: Arc::new(all_names),
+        all_name_skeletons: Arc::new(all_name_skeletons),
+        meaningful_domains: Arc::new(meaningful_domains),
+        limited,
+    })
+}
+
+fn contact_context(facts: &ContactFacts, from: Option<&str>) -> ContactContext {
+    let matched_names = from
+        .and_then(|address| facts.names_by_address.get(&normalize_address(address)))
+        .cloned()
+        .unwrap_or_default();
+    ContactContext {
+        matched_names,
+        all_names: Arc::clone(&facts.all_names),
+        all_name_skeletons: Arc::clone(&facts.all_name_skeletons),
+        meaningful_domains: Arc::clone(&facts.meaningful_domains),
+        sender_domain: from.and_then(address_domain),
+        limited: facts.limited,
     }
-    Ok(context)
 }
 
 async fn identity_findings(
@@ -780,7 +827,10 @@ fn anchor_findings(
     if normalized.is_empty() {
         return;
     }
-    let mut meaningful = context.meaningful_domains.clone();
+    let mut meaningful = context.meaningful_domains.as_ref().clone();
+    if let Some(sender_domain) = &context.sender_domain {
+        meaningful.insert(sender_domain.clone());
+    }
     if let Some(displayed) = displayed_host {
         meaningful.insert(displayed);
     }

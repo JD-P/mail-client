@@ -286,11 +286,17 @@ async fn queued_submission(
         )
         .await
         .unwrap();
-    backend
+    assert_eq!(backend.drafts().list().await.unwrap(), vec![draft.clone()]);
+    let submission = backend
         .outbox()
         .enqueue(draft.id, draft.revision, SendingLimits::default())
         .await
-        .unwrap()
+        .unwrap();
+    assert_eq!(
+        backend.outbox().list().await.unwrap(),
+        vec![submission.clone()]
+    );
+    submission
 }
 
 #[tokio::test]

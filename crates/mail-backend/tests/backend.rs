@@ -142,6 +142,11 @@ async fn complete_local_backend_flow() {
         })
         .await
         .unwrap();
+    assert_eq!(backend.contacts().get(contact.id).await.unwrap(), contact);
+    assert_eq!(
+        backend.contacts().list().await.unwrap(),
+        vec![contact.clone()]
+    );
     assert_eq!(
         backend
             .messages()

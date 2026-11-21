@@ -978,7 +978,7 @@ fn local_verdict_text(verdict: LocalSpamVerdict) -> &'static str {
     }
 }
 
-fn parse_local_verdict(value: &str) -> Result<LocalSpamVerdict> {
+pub(crate) fn parse_local_verdict(value: &str) -> Result<LocalSpamVerdict> {
     match value {
         "spam" => Ok(LocalSpamVerdict::Spam),
         "not_spam" => Ok(LocalSpamVerdict::NotSpam),
