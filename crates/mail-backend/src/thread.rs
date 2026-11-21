@@ -1,9 +1,9 @@
 use crate::backend::{insert_event, COLD_PREDICATE, SPAM_PREDICATE, WARM_PREDICATE};
 use crate::{
     Backend, BackendError, CompositionKind, InboxClass, MessageComposition, MessageId, MessageSort,
-    Page, ReplyAudience, Result, Thread, ThreadFilter, ThreadId, ThreadMembership,
-    ThreadSenderTrust, ThreadSummary, ThreadWorkState, ThreadWorkStatus, ThreadingSource,
-    WorkflowView,
+    Page, ReplyAudience, Result, RouteOverrideSource, SimilarityRuleId, Thread, ThreadFilter,
+    ThreadId, ThreadMembership, ThreadSenderTrust, ThreadSummary, ThreadWorkState,
+    ThreadWorkStatus, ThreadingSource, WarmRoute, WorkflowView,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use lizard_verified_kernel::{thread_candidate_allowed, TrustState};
@@ -274,13 +274,24 @@ impl Threads {
         transaction
             .execute(
                 r#"INSERT INTO thread_work_state(
-                    thread_id, status, snoozed_until, actionable_once, updated_at
-                ) VALUES (?1, 'active', NULL, ?2, ?3)
+                    thread_id, status, snoozed_until, actionable_once,
+                    route_override, route_override_source, route_override_rule_id,
+                    updated_at
+                ) VALUES (?1, 'active', NULL, ?2, ?4, ?5, NULL, ?3)
                 ON CONFLICT(thread_id) DO UPDATE SET
                     status = 'active', snoozed_until = NULL,
                     actionable_once = excluded.actionable_once,
+                    route_override = excluded.route_override,
+                    route_override_source = excluded.route_override_source,
+                    route_override_rule_id = NULL,
                     updated_at = excluded.updated_at"#,
-                (id.to_string(), actionable, now),
+                turso::params![
+                    id.to_string(),
+                    actionable,
+                    now,
+                    actionable.then_some("action"),
+                    actionable.then_some("manual"),
+                ],
             )
             .await?;
         let event = insert_event(
@@ -289,6 +300,84 @@ impl Threads {
             "thread_actionable_once_changed",
             id.to_string(),
             serde_json::json!({"thread_id": id, "actionable_once": actionable}),
+        )
+        .await?;
+        transaction.commit().await?;
+        drop(connection);
+        let _ = self.0.inner.events.send(event);
+        self.work_state(id).await
+    }
+
+    /// Set or clear the explicit Action/FYI route for one conversation. This
+    /// is a user-owned correction and therefore outranks similarity rules.
+    pub async fn set_route_override(
+        &self,
+        id: ThreadId,
+        route: Option<WarmRoute>,
+    ) -> Result<ThreadWorkState> {
+        let now = chrono::Utc::now().timestamp();
+        let mut connection = self.0.inner.connection.lock().await;
+        let transaction = connection.transaction().await?;
+        let mut rows = transaction
+            .query("SELECT 1 FROM threads WHERE id = ?1", (id.to_string(),))
+            .await?;
+        if rows.next().await?.is_none() {
+            drop(rows);
+            transaction.rollback().await?;
+            return Err(BackendError::NotFound {
+                entity: "thread",
+                id: id.to_string(),
+            });
+        }
+        drop(rows);
+        if route == Some(WarmRoute::Fyi) {
+            let mut known_rows = transaction
+                .query(
+                    r#"SELECT 1
+                    FROM messages m
+                    JOIN contact_addresses ca
+                        ON ca.address = m.from_address COLLATE NOCASE
+                    WHERE m.thread_id = ?1
+                    LIMIT 1"#,
+                    (id.to_string(),),
+                )
+                .await?;
+            if known_rows.next().await?.is_none() {
+                drop(known_rows);
+                transaction.rollback().await?;
+                return Err(BackendError::InvalidInput(
+                    "FYI routing requires a known contact; Cold mail can instead be made actionable once or its sender can be added to contacts"
+                        .into(),
+                ));
+            }
+        }
+        transaction
+            .execute(
+                r#"INSERT INTO thread_work_state(
+                    thread_id, status, snoozed_until, actionable_once,
+                    route_override, route_override_source, route_override_rule_id,
+                    updated_at
+                ) VALUES (?1, 'active', NULL, 0, ?2, ?3, NULL, ?4)
+                ON CONFLICT(thread_id) DO UPDATE SET
+                    actionable_once = 0,
+                    route_override = excluded.route_override,
+                    route_override_source = excluded.route_override_source,
+                    route_override_rule_id = NULL,
+                    updated_at = excluded.updated_at"#,
+                turso::params![
+                    id.to_string(),
+                    route.map(warm_route_text),
+                    route.map(|_| "manual"),
+                    now,
+                ],
+            )
+            .await?;
+        let event = insert_event(
+            &transaction,
+            now,
+            "thread_route_override_changed",
+            id.to_string(),
+            serde_json::json!({"thread_id": id, "route_override": route}),
         )
         .await?;
         transaction.commit().await?;
@@ -697,7 +786,9 @@ async fn load_summaries_on(
             t.openpgp_encryption_required,
             mr.id, mr.received_at, mr.preview, mr.from_address, mr.from_name,
             COALESCE(tws.status, 'active'), tws.snoozed_until,
-            COALESCE(tws.actionable_once, 0), COALESCE(tws.updated_at, 0)
+            COALESCE(tws.actionable_once, 0), tws.route_override,
+            tws.route_override_source, tws.route_override_rule_id,
+            COALESCE(tws.updated_at, 0)
         FROM selected s
         JOIN threads t ON t.id = s.thread_id
         JOIN message_rollup mr ON mr.thread_id = s.thread_id AND mr.newest = 1
@@ -732,7 +823,19 @@ async fn load_summaries_on(
                 status: parse_work_status(&row.get::<String>(13)?)?,
                 snoozed_until: row.get(14)?,
                 actionable_once: row.get(15)?,
-                updated_at: row.get(16)?,
+                route_override: row
+                    .get::<Option<String>>(16)?
+                    .map(|value| parse_warm_route(&value))
+                    .transpose()?,
+                route_override_source: row
+                    .get::<Option<String>>(17)?
+                    .map(|value| parse_route_source(&value))
+                    .transpose()?,
+                route_override_rule_id: row
+                    .get::<Option<String>>(18)?
+                    .map(|value| parse_similarity_rule_id(&value))
+                    .transpose()?,
+                updated_at: row.get(19)?,
             },
         });
     }
@@ -793,7 +896,7 @@ fn nonnegative_u64(value: i64, label: &str) -> Result<u64> {
 async fn load_work_state_on(connection: &Connection, id: ThreadId) -> Result<ThreadWorkState> {
     let mut rows = connection
         .query(
-            "SELECT status, snoozed_until, actionable_once, updated_at FROM thread_work_state WHERE thread_id = ?1",
+            "SELECT status, snoozed_until, actionable_once, route_override, route_override_source, route_override_rule_id, updated_at FROM thread_work_state WHERE thread_id = ?1",
             (id.to_string(),),
         )
         .await?;
@@ -804,7 +907,19 @@ async fn load_work_state_on(connection: &Connection, id: ThreadId) -> Result<Thr
         status: parse_work_status(&row.get::<String>(0)?)?,
         snoozed_until: row.get(1)?,
         actionable_once: row.get(2)?,
-        updated_at: row.get(3)?,
+        route_override: row
+            .get::<Option<String>>(3)?
+            .map(|value| parse_warm_route(&value))
+            .transpose()?,
+        route_override_source: row
+            .get::<Option<String>>(4)?
+            .map(|value| parse_route_source(&value))
+            .transpose()?,
+        route_override_rule_id: row
+            .get::<Option<String>>(5)?
+            .map(|value| parse_similarity_rule_id(&value))
+            .transpose()?,
+        updated_at: row.get(6)?,
     })
 }
 
@@ -813,13 +928,13 @@ fn workflow_predicate(view: WorkflowView) -> String {
     const HAS_INBOUND: &str = "EXISTS (SELECT 1 FROM messages inbound WHERE inbound.thread_id = m.thread_id AND inbound.from_address IS NOT NULL AND trim(inbound.from_address) != '' AND NOT EXISTS (SELECT 1 FROM account_identities own_identity WHERE own_identity.email_address = inbound.from_address COLLATE NOCASE))";
     match view {
         WorkflowView::WarmAction => format!(
-            "({WARM_PREDICATE} OR COALESCE((SELECT tws.actionable_once FROM thread_work_state tws WHERE tws.thread_id = m.thread_id), 0) = 1) AND {ACTIVE} AND {HAS_INBOUND} AND (COALESCE((SELECT tws.actionable_once FROM thread_work_state tws WHERE tws.thread_id = m.thread_id), 0) = 1 OR EXISTS (SELECT 1 FROM messages tm JOIN contact_addresses ca ON ca.address = tm.from_address COLLATE NOCASE JOIN contact_relationships cr ON cr.contact_id = ca.contact_id WHERE tm.thread_id = m.thread_id AND cr.may_create_obligations = 1))"
+            "NOT ({SPAM_PREDICATE}) AND ({WARM_PREDICATE} OR COALESCE((SELECT tws.actionable_once FROM thread_work_state tws WHERE tws.thread_id = m.thread_id), 0) = 1 OR (SELECT tws.route_override FROM thread_work_state tws WHERE tws.thread_id = m.thread_id) = 'action') AND {ACTIVE} AND {HAS_INBOUND} AND (COALESCE((SELECT tws.actionable_once FROM thread_work_state tws WHERE tws.thread_id = m.thread_id), 0) = 1 OR (SELECT tws.route_override FROM thread_work_state tws WHERE tws.thread_id = m.thread_id) = 'action' OR ((SELECT tws.route_override FROM thread_work_state tws WHERE tws.thread_id = m.thread_id) IS NULL AND EXISTS (SELECT 1 FROM messages tm JOIN contact_addresses ca ON ca.address = tm.from_address COLLATE NOCASE JOIN contact_relationships cr ON cr.contact_id = ca.contact_id WHERE tm.thread_id = m.thread_id AND cr.may_create_obligations = 1)))"
         ),
         WorkflowView::WarmFyi => format!(
-            "{WARM_PREDICATE} AND {ACTIVE} AND {HAS_INBOUND} AND COALESCE((SELECT tws.actionable_once FROM thread_work_state tws WHERE tws.thread_id = m.thread_id), 0) = 0 AND EXISTS (SELECT 1 FROM messages tm JOIN contact_addresses ca ON ca.address = tm.from_address COLLATE NOCASE JOIN contact_relationships cr ON cr.contact_id = ca.contact_id WHERE tm.thread_id = m.thread_id AND cr.may_create_obligations = 0) AND NOT EXISTS (SELECT 1 FROM messages tm JOIN contact_addresses ca ON ca.address = tm.from_address COLLATE NOCASE JOIN contact_relationships cr ON cr.contact_id = ca.contact_id WHERE tm.thread_id = m.thread_id AND cr.may_create_obligations = 1)"
+            "{WARM_PREDICATE} AND {ACTIVE} AND {HAS_INBOUND} AND COALESCE((SELECT tws.actionable_once FROM thread_work_state tws WHERE tws.thread_id = m.thread_id), 0) = 0 AND ((SELECT tws.route_override FROM thread_work_state tws WHERE tws.thread_id = m.thread_id) = 'fyi' OR ((SELECT tws.route_override FROM thread_work_state tws WHERE tws.thread_id = m.thread_id) IS NULL AND EXISTS (SELECT 1 FROM messages tm JOIN contact_addresses ca ON ca.address = tm.from_address COLLATE NOCASE JOIN contact_relationships cr ON cr.contact_id = ca.contact_id WHERE tm.thread_id = m.thread_id AND cr.may_create_obligations = 0) AND NOT EXISTS (SELECT 1 FROM messages tm JOIN contact_addresses ca ON ca.address = tm.from_address COLLATE NOCASE JOIN contact_relationships cr ON cr.contact_id = ca.contact_id WHERE tm.thread_id = m.thread_id AND cr.may_create_obligations = 1)))"
         ),
         WorkflowView::ColdReview => format!(
-            "{COLD_PREDICATE} AND {ACTIVE} AND {HAS_INBOUND} AND COALESCE((SELECT tws.actionable_once FROM thread_work_state tws WHERE tws.thread_id = m.thread_id), 0) = 0"
+            "{COLD_PREDICATE} AND {ACTIVE} AND {HAS_INBOUND} AND COALESCE((SELECT tws.actionable_once FROM thread_work_state tws WHERE tws.thread_id = m.thread_id), 0) = 0 AND COALESCE((SELECT tws.route_override FROM thread_work_state tws WHERE tws.thread_id = m.thread_id), '') != 'action'"
         ),
         WorkflowView::SpamQuarantine => {
             format!("{SPAM_PREDICATE} AND {ACTIVE} AND {HAS_INBOUND}")
@@ -828,6 +943,39 @@ fn workflow_predicate(view: WorkflowView) -> String {
         WorkflowView::Snoozed => "COALESCE((SELECT tws.status FROM thread_work_state tws WHERE tws.thread_id = m.thread_id), 'active') = 'snoozed' AND (SELECT tws.snoozed_until FROM thread_work_state tws WHERE tws.thread_id = m.thread_id) > unixepoch()".into(),
         WorkflowView::Done => "COALESCE((SELECT tws.status FROM thread_work_state tws WHERE tws.thread_id = m.thread_id), 'active') = 'done'".into(),
     }
+}
+
+fn warm_route_text(value: WarmRoute) -> &'static str {
+    match value {
+        WarmRoute::Action => "action",
+        WarmRoute::Fyi => "fyi",
+    }
+}
+
+fn parse_warm_route(value: &str) -> Result<WarmRoute> {
+    match value {
+        "action" => Ok(WarmRoute::Action),
+        "fyi" => Ok(WarmRoute::Fyi),
+        _ => Err(BackendError::InvalidInput(
+            "database contains invalid thread route override".into(),
+        )),
+    }
+}
+
+fn parse_route_source(value: &str) -> Result<RouteOverrideSource> {
+    match value {
+        "manual" => Ok(RouteOverrideSource::Manual),
+        "similarity_rule" => Ok(RouteOverrideSource::SimilarityRule),
+        _ => Err(BackendError::InvalidInput(
+            "database contains invalid thread route source".into(),
+        )),
+    }
+}
+
+fn parse_similarity_rule_id(value: &str) -> Result<SimilarityRuleId> {
+    value.parse().map_err(|_| {
+        BackendError::InvalidInput("database contains invalid similarity rule ID".into())
+    })
 }
 
 fn work_status_text(value: ThreadWorkStatus) -> &'static str {

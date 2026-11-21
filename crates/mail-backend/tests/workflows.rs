@@ -1,8 +1,8 @@
 use lizard_mail_backend::{
     AccountKind, Backend, BackendConfig, ContactAddress, ContactRelationship, FolderKind,
     ImapSecurity, ImapSettings, IngestMessage, NewAccount, NewContact, NewContactRelationship,
-    NewFolder, RelationshipKind, RemoteContentPolicy, RemoteMessageIdentity, ThreadFilter,
-    ThreadWorkStatus, WarmRoute, WorkflowView,
+    NewFolder, RelationshipKind, RemoteContentPolicy, RemoteMessageIdentity, RouteOverrideSource,
+    ThreadFilter, ThreadWorkStatus, WarmRoute, WorkflowView, DEFAULT_SIMILARITY_CUTOFF_MILLIS,
 };
 
 fn message(from_name: &str, from: &str, id: &str, subject: &str) -> Vec<u8> {
@@ -172,6 +172,40 @@ async fn onboarding_seeds_relationships_and_workflow_views_remain_independent() 
         1
     );
 
+    let manual_action = backend
+        .threads()
+        .set_route_override(maya_thread, Some(WarmRoute::Action))
+        .await
+        .unwrap();
+    assert_eq!(manual_action.route_override, Some(WarmRoute::Action));
+    assert_eq!(
+        manual_action.route_override_source,
+        Some(RouteOverrideSource::Manual)
+    );
+    assert_eq!(
+        backend
+            .threads()
+            .list(ThreadFilter {
+                workflow: Some(WorkflowView::WarmAction),
+                ..ThreadFilter::default()
+            })
+            .await
+            .unwrap()
+            .items
+            .len(),
+        1
+    );
+    let manual_fyi = backend
+        .threads()
+        .set_route_override(maya_thread, Some(WarmRoute::Fyi))
+        .await
+        .unwrap();
+    assert_eq!(manual_fyi.route_override, Some(WarmRoute::Fyi));
+    assert_eq!(
+        manual_fyi.route_override_source,
+        Some(RouteOverrideSource::Manual)
+    );
+
     backend
         .threads()
         .set_work_state(maya_thread, ThreadWorkStatus::Done, None)
@@ -203,6 +237,14 @@ async fn onboarding_seeds_relationships_and_workflow_views_remain_independent() 
         .unwrap()
         .summary
         .thread_id;
+    let fyi_error = backend
+        .threads()
+        .set_route_override(mallory_thread, Some(WarmRoute::Fyi))
+        .await
+        .unwrap_err();
+    assert!(fyi_error
+        .to_string()
+        .contains("FYI routing requires a known contact"));
     backend
         .threads()
         .set_actionable_once(mallory_thread, true)
@@ -219,4 +261,257 @@ async fn onboarding_seeds_relationships_and_workflow_views_remain_independent() 
     assert_eq!(action.items.len(), 1);
     assert_eq!(action.items[0].id, mallory_thread);
     assert!(action.items[0].work_state.actionable_once);
+}
+
+#[tokio::test]
+async fn similar_mail_preview_is_sender_scoped_and_manual_corrections_win() {
+    let profile = tempfile::tempdir().unwrap();
+    let backend = Backend::open(BackendConfig::new(profile.path()))
+        .await
+        .unwrap();
+    backend
+        .contacts()
+        .add(NewContact {
+            display_name: "Northwind News".into(),
+            addresses: vec![ContactAddress {
+                address: "news@northwind.example".into(),
+                accepted_name: Some("Northwind News".into()),
+            }],
+        })
+        .await
+        .unwrap();
+    backend
+        .contacts()
+        .add(NewContact {
+            display_name: "Unrelated News".into(),
+            addresses: vec![ContactAddress {
+                address: "news@unrelated.example".into(),
+                accepted_name: Some("Unrelated News".into()),
+            }],
+        })
+        .await
+        .unwrap();
+
+    async fn ingest_news(
+        backend: &Backend,
+        sender: &str,
+        id: &str,
+        subject: &str,
+        body: &str,
+    ) -> lizard_mail_backend::MessageId {
+        backend
+            .ingest(IngestMessage::local(
+                format!(
+                    "From: News <{sender}>\r\nTo: reader@example.test\r\nMessage-ID: <{id}>\r\nSubject: {subject}\r\n\r\n{body}\r\n"
+                )
+                .into_bytes(),
+            ))
+            .await
+            .unwrap()
+    }
+
+    let template = "Weekly product newsletter. Save twenty percent on blue widgets. Browse featured products and seasonal offers.";
+    let seed = ingest_news(
+        &backend,
+        "news@northwind.example",
+        "northwind-january@example.test",
+        "January blue widget offers",
+        template,
+    )
+    .await;
+    let similar = ingest_news(
+        &backend,
+        "news@northwind.example",
+        "northwind-february@example.test",
+        "February blue widget offers",
+        "Weekly product newsletter. Save thirty percent on blue widgets. Browse featured products and seasonal offers.",
+    )
+    .await;
+    let unrelated = ingest_news(
+        &backend,
+        "news@northwind.example",
+        "northwind-invoice@example.test",
+        "Invoice 9281 requires approval",
+        "Your invoice is due Friday. Review the attached accounting statement and approve payment in the official portal.",
+    )
+    .await;
+    let other_sender = ingest_news(
+        &backend,
+        "news@unrelated.example",
+        "unrelated-january@example.test",
+        "January blue widget offers",
+        template,
+    )
+    .await;
+
+    let preview = backend
+        .similarity_rules()
+        .preview(seed, WarmRoute::Fyi, DEFAULT_SIMILARITY_CUTOFF_MILLIS, 50)
+        .await
+        .unwrap();
+    let preview_ids = preview
+        .matches
+        .iter()
+        .map(|matched| matched.message.id)
+        .collect::<std::collections::HashSet<_>>();
+    assert!(preview_ids.contains(&seed));
+    assert!(preview_ids.contains(&similar));
+    assert!(!preview_ids.contains(&unrelated));
+    assert!(!preview_ids.contains(&other_sender));
+    assert!(preview.matches.iter().all(|matched| matched.would_move));
+
+    let late_match = ingest_news(
+        &backend,
+        "news@northwind.example",
+        "northwind-preview-race@example.test",
+        "Preview-race blue widget offers",
+        "Weekly product newsletter. Save forty percent on blue widgets. Browse featured products and seasonal offers.",
+    )
+    .await;
+    let changed_error = backend
+        .similarity_rules()
+        .create_from_preview(&preview)
+        .await
+        .unwrap_err();
+    assert!(changed_error
+        .to_string()
+        .contains("match set changed after preview"));
+    assert_eq!(
+        backend
+            .threads()
+            .work_state(
+                backend
+                    .messages()
+                    .get(late_match)
+                    .await
+                    .unwrap()
+                    .summary
+                    .thread_id
+            )
+            .await
+            .unwrap()
+            .route_override,
+        None
+    );
+    let refreshed_preview = backend
+        .similarity_rules()
+        .preview(seed, WarmRoute::Fyi, DEFAULT_SIMILARITY_CUTOFF_MILLIS, 50)
+        .await
+        .unwrap();
+    let application = backend
+        .similarity_rules()
+        .create_from_preview(&refreshed_preview)
+        .await
+        .unwrap();
+    assert_eq!(
+        application.matching_messages,
+        refreshed_preview.matching_messages
+    );
+    assert!(application.matching_messages >= 1);
+    let seed_thread = backend
+        .messages()
+        .get(seed)
+        .await
+        .unwrap()
+        .summary
+        .thread_id;
+    assert_eq!(
+        backend
+            .threads()
+            .work_state(seed_thread)
+            .await
+            .unwrap()
+            .route_override,
+        Some(WarmRoute::Fyi)
+    );
+    let fyi = backend
+        .threads()
+        .list(ThreadFilter {
+            workflow: Some(WorkflowView::WarmFyi),
+            ..ThreadFilter::default()
+        })
+        .await
+        .unwrap();
+    assert!(fyi.items.iter().any(|item| item.id == seed_thread));
+
+    backend
+        .threads()
+        .set_route_override(seed_thread, Some(WarmRoute::Action))
+        .await
+        .unwrap();
+    let future = ingest_news(
+        &backend,
+        "news@northwind.example",
+        "northwind-march@example.test",
+        "March blue widget offers",
+        "Weekly product newsletter. Save twenty five percent on blue widgets. Browse featured products and seasonal offers.",
+    )
+    .await;
+    let future_thread = backend
+        .messages()
+        .get(future)
+        .await
+        .unwrap()
+        .summary
+        .thread_id;
+    assert_eq!(
+        backend
+            .threads()
+            .work_state(future_thread)
+            .await
+            .unwrap()
+            .route_override,
+        Some(WarmRoute::Fyi)
+    );
+    assert_eq!(
+        backend
+            .threads()
+            .work_state(seed_thread)
+            .await
+            .unwrap()
+            .route_override,
+        Some(WarmRoute::Action)
+    );
+    let action = backend
+        .threads()
+        .list(ThreadFilter {
+            workflow: Some(WorkflowView::WarmAction),
+            ..ThreadFilter::default()
+        })
+        .await
+        .unwrap();
+    assert!(action.items.iter().any(|item| item.id == seed_thread));
+    let fyi = backend
+        .threads()
+        .list(ThreadFilter {
+            workflow: Some(WorkflowView::WarmFyi),
+            ..ThreadFilter::default()
+        })
+        .await
+        .unwrap();
+    assert!(fyi.items.iter().all(|item| item.id != seed_thread));
+
+    backend
+        .similarity_rules()
+        .remove(application.rule.id)
+        .await
+        .unwrap();
+    assert_eq!(
+        backend
+            .threads()
+            .work_state(future_thread)
+            .await
+            .unwrap()
+            .route_override,
+        None
+    );
+    assert_eq!(
+        backend
+            .threads()
+            .work_state(seed_thread)
+            .await
+            .unwrap()
+            .route_override,
+        Some(WarmRoute::Action)
+    );
 }

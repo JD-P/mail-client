@@ -48,10 +48,10 @@ impl Onboarding {
         drop(account_rows);
         let sql = format!(
             r#"WITH candidate_messages(address, claimed_name, message_id,
-                    received_at, list_message) AS (
+                    received_at, list_message, outbound_message) AS (
                 SELECT lower(m.from_address), NULLIF(trim(m.from_name), ''),
                     m.id, m.received_at,
-                    CASE WHEN m.list_id IS NOT NULL THEN 1 ELSE 0 END
+                    CASE WHEN m.list_id IS NOT NULL THEN 1 ELSE 0 END, 0
                 FROM messages m
                 WHERE m.received_at >= ?1
                   AND m.from_address IS NOT NULL AND trim(m.from_address) != ''
@@ -63,7 +63,7 @@ impl Onboarding {
 
                 UNION ALL
 
-                SELECT lower(trim(recipient.value)), NULL, m.id, m.received_at, 0
+                SELECT lower(trim(recipient.value)), NULL, m.id, m.received_at, 0, 1
                 FROM messages m
                 JOIN json_each(
                     json_array(m.to_addresses, m.cc_addresses, m.bcc_addresses)
@@ -84,7 +84,7 @@ impl Onboarding {
             )
             SELECT cm.address, MAX(cm.claimed_name),
                 COUNT(DISTINCT cm.message_id), MAX(cm.received_at),
-                SUM(cm.list_message)
+                SUM(cm.list_message), SUM(cm.outbound_message)
             FROM candidate_messages cm
             WHERE NOT EXISTS (
                     SELECT 1 FROM contact_addresses ca
@@ -117,14 +117,47 @@ impl Onboarding {
             let message_count = row.get::<i64>(2)?.max(0) as u64;
             let latest_received_at = row.get(3)?;
             let list_messages = row.get::<i64>(4)?.max(0) as u64;
+            let outbound_messages = row.get::<i64>(5)?.max(0) as u64;
             let automated = looks_automated(&address);
             let list_like = list_messages.saturating_mul(2) >= message_count;
-            let (kind, route, obligations) = if list_like {
-                (RelationshipKind::Newsletter, WarmRoute::Fyi, false)
+            let (kind, route, obligations, reasons) = if list_like {
+                (
+                    RelationshipKind::Newsletter,
+                    WarmRoute::Fyi,
+                    false,
+                    vec![format!(
+                        "{list_messages} of {message_count} recent messages identify themselves as mailing-list traffic"
+                    )],
+                )
+            } else if outbound_messages > 0 {
+                (
+                    RelationshipKind::Person,
+                    WarmRoute::Action,
+                    true,
+                    vec![format!(
+                        "you wrote to this address in {outbound_messages} recent conversation(s)"
+                    )],
+                )
             } else if automated {
-                (RelationshipKind::AutomatedService, WarmRoute::Fyi, false)
+                (
+                    RelationshipKind::AutomatedService,
+                    WarmRoute::Fyi,
+                    false,
+                    vec![
+                        "the address looks automated and no recent outgoing correspondence was found"
+                            .into(),
+                    ],
+                )
             } else {
-                (RelationshipKind::Person, WarmRoute::Action, true)
+                (
+                    RelationshipKind::Person,
+                    WarmRoute::Action,
+                    true,
+                    vec![
+                        "no strong mailing-list or automated-sender signal was found; uncertain correspondents stay actionable"
+                            .into(),
+                    ],
+                )
             };
             suggestions.push(ContactSuggestion {
                 account_id,
@@ -135,6 +168,7 @@ impl Onboarding {
                 suggested_kind: kind,
                 suggested_warm_route: route,
                 suggested_may_create_obligations: obligations,
+                suggestion_reasons: reasons,
             });
         }
         Ok(suggestions)

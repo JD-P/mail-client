@@ -14,6 +14,7 @@ use ratatui::Frame;
 use unicode_width::UnicodeWidthChar;
 
 const WARM: Color = Color::Rgb(198, 48, 67);
+const FYI_HINT: Color = Color::Rgb(222, 143, 43);
 const COLD: Color = Color::Rgb(57, 132, 219);
 const SPAM: Color = Color::Rgb(212, 169, 50);
 const DANGER: Color = Color::Rgb(235, 65, 83);
@@ -34,6 +35,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &MailApp) {
         Screen::AccountDeleteConfirm => draw_account_delete_confirm(frame, app, areas[1]),
         Screen::Onboarding => draw_onboarding(frame, app, areas[1]),
         Screen::OnboardingEdit => draw_onboarding_edit(frame, app, areas[1]),
+        Screen::SimilarityPreview => draw_similarity_preview(frame, app, areas[1]),
         Screen::Queue(_) => draw_queue(frame, app, areas[1]),
         Screen::Reader => draw_reader(frame, app, areas[1]),
         Screen::Contacts => draw_contacts(frame, app, areas[1]),
@@ -45,14 +47,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &MailApp) {
 fn draw_header(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
     let accent = accent(app);
     let title = format!(" LIZARD MAIL · {} ", screen_title(app));
-    let navigation = Line::from(vec![
-        Span::styled("1", Style::default().fg(WARM).add_modifier(Modifier::BOLD)),
-        Span::raw(" Warm  "),
-        Span::styled("2", Style::default().fg(COLD).add_modifier(Modifier::BOLD)),
-        Span::raw(" Cold  "),
-        Span::styled("3", Style::default().fg(SPAM).add_modifier(Modifier::BOLD)),
-        Span::raw(" Spam  F FYI  L Later  C Contacts  A Accounts  ? Help"),
-    ]);
+    let navigation = header_navigation();
     frame.render_widget(
         Paragraph::new(navigation).block(
             Block::default()
@@ -62,6 +57,22 @@ fn draw_header(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
         ),
         area,
     );
+}
+
+fn header_navigation() -> Line<'static> {
+    Line::from(vec![
+        Span::styled("1", Style::default().fg(WARM).add_modifier(Modifier::BOLD)),
+        Span::raw(" Warm  "),
+        Span::styled(
+            "F FYI",
+            Style::default().fg(FYI_HINT).add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("  "),
+        Span::styled("2", Style::default().fg(COLD).add_modifier(Modifier::BOLD)),
+        Span::raw(" Cold  "),
+        Span::styled("3", Style::default().fg(SPAM).add_modifier(Modifier::BOLD)),
+        Span::raw(" Spam  L Later  C Contacts  A Accounts  ? Help"),
+    ])
 }
 
 fn draw_accounts(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
@@ -892,13 +903,24 @@ fn draw_onboarding(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
                 .claimed_name
                 .as_deref()
                 .unwrap_or("no claimed name");
-            ListItem::new(format!(
-                "{} claims to be {}  · {} messages · {:?}",
-                safe_single_line_text(&suggestion.address),
-                safe_single_line_text(name),
-                suggestion.message_count,
-                suggestion.suggested_warm_route
-            ))
+            let reason = suggestion
+                .suggestion_reasons
+                .first()
+                .map(|value| safe_single_line_text(value))
+                .unwrap_or_else(|| "no classification explanation available".into());
+            ListItem::new(Text::from(vec![
+                Line::raw(format!(
+                    "{} claims to be {}  · {} messages · {:?}",
+                    safe_single_line_text(&suggestion.address),
+                    safe_single_line_text(name),
+                    suggestion.message_count,
+                    suggestion.suggested_warm_route
+                )),
+                Line::styled(
+                    format!("  Why: {reason}"),
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ]))
         })
         .collect::<Vec<_>>();
     let mut state = ListState::default().with_selected(Some(app.selected));
@@ -910,6 +932,93 @@ fn draw_onboarding(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
                     .borders(Borders::ALL),
             )
             .highlight_style(Style::default().bg(COLD).fg(Color::Black))
+            .highlight_symbol("› "),
+        chunks[1],
+        &mut state,
+    );
+}
+
+fn draw_similarity_preview(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
+    let Some(preview) = &app.similarity_preview else {
+        frame.render_widget(Paragraph::new("No similarity preview is available"), area);
+        return;
+    };
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(7), Constraint::Min(4)])
+        .split(area);
+    let cutoff = f32::from(preview.cutoff_millis) / 1_000.0;
+    let bounded = if preview.truncated {
+        " The safety limit was reached; choose a stricter cutoff before saving."
+    } else {
+        ""
+    };
+    let matching_messages = if preview.truncated {
+        format!("{}+", preview.matching_messages)
+    } else {
+        preview.matching_messages.to_string()
+    };
+    frame.render_widget(
+        Paragraph::new(format!(
+            "Sender: {}\nProposed route: FYI\nRelative BM25 cutoff: {cutoff:.2} (a ranking strength, not a probability)\n{} messages match; {} conversations would change. Each row below shows its actual effect.{bounded}",
+            safe_single_line_text(&preview.sender_address),
+            matching_messages,
+            preview.affected_threads,
+        ))
+        .block(
+            Block::default()
+                .title("Confirm sender-scoped similar-mail rule")
+                .borders(Borders::ALL),
+        )
+        .wrap(Wrap { trim: false }),
+        chunks[0],
+    );
+    let visible_items = usize::from(chunks[1].height.saturating_sub(2) / 2).max(1);
+    let start = app
+        .similarity_selected
+        .saturating_sub(visible_items.saturating_sub(1));
+    let end = start
+        .saturating_add(visible_items)
+        .min(preview.matches.len());
+    let items = preview.matches[start..end]
+        .iter()
+        .map(|matched| {
+            let score = f32::from(matched.relative_score_millis) / 1_000.0;
+            let effect = if matched.would_move {
+                "MOVE"
+            } else {
+                "already FYI/protected"
+            };
+            ListItem::new(Text::from(vec![
+                Line::raw(format!(
+                    "{score:.2}  {effect:>21}  {}  {}",
+                    display_timestamp(matched.message.received_at),
+                    safe_single_line_text(
+                        matched.message.subject.as_deref().unwrap_or("(no subject)")
+                    )
+                )),
+                Line::styled(
+                    format!("      {}", safe_single_line_text(&matched.message.preview)),
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ]))
+        })
+        .collect::<Vec<_>>();
+    let mut state = ListState::default()
+        .with_selected((start < end).then_some(app.similarity_selected.saturating_sub(start)));
+    frame.render_stateful_widget(
+        List::new(items)
+            .block(
+                Block::default()
+                    .title(format!(
+                        "Ranked preview ({}–{} of {})",
+                        start.saturating_add(1).min(end),
+                        end,
+                        matching_messages,
+                    ))
+                    .borders(Borders::ALL),
+            )
+            .highlight_style(Style::default().bg(Color::Gray).fg(Color::Black))
             .highlight_symbol("› "),
         chunks[1],
         &mut state,
@@ -1020,6 +1129,9 @@ fn draw_help(frame: &mut Frame<'_>, area: Rect) {
         Line::raw(
             "a Make Cold conversation actionable once · O Read through security warning with restrictions",
         ),
+        Line::raw(
+            "< Move conversation to FYI · > Move conversation to Action · M Preview this-and-similar → FYI",
+        ),
         Line::raw(""),
         Line::styled(
             "Onboarding",
@@ -1058,14 +1170,24 @@ fn draw_footer(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
             "↑/↓ or Tab fields · type value · Space toggle · Ctrl-S save · Esc cancel"
         }
         Screen::AccountDeleteConfirm => "y remove account · n/Esc cancel",
+        Screen::SimilarityPreview => {
+            "j/k inspect matches · y/Enter save rule · + stricter · - broader · n/Esc cancel"
+        }
         Screen::Queue(WorkflowView::ColdReview) => {
             "j/k move · Enter inspect · a actionable once · d done · s snooze · ? help"
         }
-        Screen::Queue(_) => "j/k move · Enter open · d done · w waiting · s snooze · ? help",
+        Screen::Queue(WorkflowView::SpamQuarantine) => {
+            "j/k move · Enter inspect safely · d done · ? help"
+        }
+        Screen::Queue(_) => {
+            "j/k move · </> FYI/Action · M similar→FYI · d done · w waiting · s snooze"
+        }
         Screen::Reader if app.reader_is_blocked() => {
             "Esc back · O read restricted · ? evidence/help"
         }
-        Screen::Reader => "d done · w waiting · s snooze · a actionable once (Cold) · Esc back",
+        Screen::Reader => {
+            "</> FYI/Action · M similar→FYI · d done · w waiting · s snooze · Esc back"
+        }
         Screen::Onboarding => "j/k move · y accept · n reject · e edit · Enter inspect/edit",
         Screen::OnboardingEdit => {
             "type name · Ctrl-R route · Ctrl-K kind · Enter save · Esc cancel"
@@ -1086,11 +1208,8 @@ fn draw_footer(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
 
 fn accent(app: &MailApp) -> Color {
     match app.screen {
-        Screen::Queue(WorkflowView::WarmAction | WorkflowView::WarmFyi) => WARM,
-        Screen::Queue(WorkflowView::ColdReview) | Screen::Onboarding | Screen::OnboardingEdit => {
-            COLD
-        }
-        Screen::Queue(WorkflowView::SpamQuarantine) => SPAM,
+        Screen::Queue(workflow) => accent_for_workflow(workflow),
+        Screen::Onboarding | Screen::OnboardingEdit => COLD,
         Screen::Reader => app
             .current_thread
             .as_ref()
@@ -1103,7 +1222,17 @@ fn accent(app: &MailApp) -> Color {
             .unwrap_or(Color::Gray),
         Screen::AccountEdit => COLD,
         Screen::AccountDeleteConfirm => DANGER,
+        Screen::SimilarityPreview => WARM,
         _ => Color::Gray,
+    }
+}
+
+fn accent_for_workflow(workflow: WorkflowView) -> Color {
+    match workflow {
+        WorkflowView::WarmAction | WorkflowView::WarmFyi => WARM,
+        WorkflowView::ColdReview => COLD,
+        WorkflowView::SpamQuarantine => SPAM,
+        WorkflowView::Waiting | WorkflowView::Snoozed | WorkflowView::Done => Color::Gray,
     }
 }
 
@@ -1114,6 +1243,7 @@ fn screen_title(app: &MailApp) -> &'static str {
         Screen::AccountDeleteConfirm => "ACCOUNT / CONFIRM REMOVAL",
         Screen::Onboarding => "ONBOARDING / CONTACT SUGGESTIONS",
         Screen::OnboardingEdit => "ONBOARDING / EDIT RELATIONSHIP",
+        Screen::SimilarityPreview => "WARM / SIMILAR-MAIL PREVIEW",
         Screen::Queue(WorkflowView::WarmAction) => "WARM / ACTION",
         Screen::Queue(WorkflowView::WarmFyi) => "WARM / FYI",
         Screen::Queue(WorkflowView::ColdReview) => "COLD / REVIEW",
@@ -1191,6 +1321,28 @@ mod tests {
                     '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
                 )
         }));
+    }
+
+    #[test]
+    fn navigation_places_amber_fyi_between_warm_and_cold() {
+        let navigation = header_navigation();
+        let text = navigation
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        let warm = text.find("1 Warm").unwrap();
+        let fyi = text.find("F FYI").unwrap();
+        let cold = text.find("2 Cold").unwrap();
+        assert!(warm < fyi && fyi < cold);
+
+        let fyi = navigation
+            .spans
+            .iter()
+            .find(|span| span.content == "F FYI")
+            .unwrap();
+        assert_eq!(fyi.style.fg, Some(FYI_HINT));
+        assert_eq!(accent_for_workflow(WorkflowView::WarmFyi), WARM);
     }
 
     #[test]

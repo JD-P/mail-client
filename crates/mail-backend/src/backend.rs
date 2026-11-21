@@ -853,6 +853,10 @@ impl Backend {
         crate::SavedSearches::new(self.clone())
     }
 
+    pub fn similarity_rules(&self) -> crate::SimilarityRules {
+        crate::SimilarityRules::new(self.clone())
+    }
+
     pub fn events(&self) -> Events {
         Events(self.clone())
     }
@@ -1083,7 +1087,8 @@ impl Backend {
     async fn evaluate_automation(&self, message_ids: &[MessageId]) -> Result<()> {
         let run_filters = self.filter_rules().has_enabled().await?;
         let run_heuristics = self.heuristics().has_enabled().await?;
-        if !run_filters && !run_heuristics {
+        let run_similarity = self.similarity_rules().has_enabled().await?;
+        if !run_filters && !run_heuristics && !run_similarity {
             return Ok(());
         }
         let mut evaluated = HashSet::new();
@@ -1092,6 +1097,12 @@ impl Backend {
             .copied()
             .filter(|message_id| evaluated.insert(*message_id))
             .collect::<Vec<_>>();
+        if run_similarity {
+            self.similarity_rules().evaluate_messages(&ids).await?;
+        }
+        if !run_filters && !run_heuristics {
+            return Ok(());
+        }
         let messages = self.messages().get_many(&ids).await?;
         if run_filters {
             self.filter_rules()
@@ -3573,6 +3584,26 @@ impl Messages {
             messages.extend(load_messages_on(&connection, chunk).await?);
         }
         Ok(messages)
+    }
+
+    /// Load summaries in caller order without hydrating MIME, attachment,
+    /// authentication or body state. This is used by bounded corpus previews.
+    pub(crate) async fn summaries_many(&self, ids: &[MessageId]) -> Result<Vec<MessageSummary>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let connection = self.0.inner.connection.lock().await;
+        let mut summaries = Vec::with_capacity(ids.len());
+        for chunk in ids.chunks(MAX_MESSAGE_LOAD_BATCH) {
+            summaries.extend(
+                summaries_by_ids_on(
+                    &connection,
+                    &chunk.iter().map(ToString::to_string).collect::<Vec<_>>(),
+                )
+                .await?,
+            );
+        }
+        Ok(summaries)
     }
 
     pub async fn raw(&self, id: MessageId) -> Result<Vec<u8>> {

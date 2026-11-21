@@ -4,8 +4,9 @@ use lizard_mail_backend::{
     ContactSuggestion, FindingPresentation, FindingSeverity, ImapAccountEngineConfig,
     ImapAccountSyncReport, ImapAccountSyncState, ImapCredential, ImapSecurity,
     MessageContentAvailability, MessageId, NewAccount, NewContact, NewContactRelationship,
-    RelationshipKind, RemoteContentPolicy, Result, SecretValue, Thread, ThreadFilter,
-    ThreadSummary, ThreadWorkStatus, WarmRoute, WorkflowView,
+    RelationshipKind, RemoteContentPolicy, Result, SecretValue, SimilarityPreview, Thread,
+    ThreadFilter, ThreadSummary, ThreadWorkStatus, WarmRoute, WorkflowView,
+    DEFAULT_SIMILARITY_CUTOFF_MILLIS,
 };
 use std::{
     collections::{HashMap, VecDeque},
@@ -19,6 +20,7 @@ use crate::{IsolatedHtmlRenderer, RenderedPage};
 
 /// Default interval between automatic background synchronizations.
 const DEFAULT_AUTO_SYNC_INTERVAL: StdDuration = StdDuration::from_secs(5 * 60);
+const SIMILARITY_PREVIEW_LIMIT: usize = 5_000;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Screen {
@@ -27,6 +29,7 @@ pub enum Screen {
     AccountDeleteConfirm,
     Onboarding,
     OnboardingEdit,
+    SimilarityPreview,
     Queue(WorkflowView),
     Reader,
     Contacts,
@@ -185,6 +188,13 @@ pub enum AppCommand {
     MarkWaiting,
     SnoozeOneDay,
     MakeActionableOnce,
+    MoveToAction,
+    MoveToFyi,
+    PreviewSimilarFyi,
+    SimilarityBroader,
+    SimilarityStricter,
+    SimilarityConfirm,
+    SimilarityCancel,
     RestrictedOpen,
     OnboardingAccept,
     OnboardingDismiss,
@@ -222,6 +232,9 @@ pub struct MailApp {
     pub onboarding_account: Option<AccountId>,
     pub suggestions: Vec<ContactSuggestion>,
     pub onboarding_edit: Option<OnboardingEdit>,
+    pub similarity_preview: Option<SimilarityPreview>,
+    pub similarity_selected: usize,
+    similarity_return_screen: Option<Screen>,
     pub contacts: Vec<Contact>,
     pub contact_names: HashMap<String, String>,
     pub status: Option<String>,
@@ -280,6 +293,9 @@ impl MailApp {
             onboarding_account,
             suggestions,
             onboarding_edit: None,
+            similarity_preview: None,
+            similarity_selected: 0,
+            similarity_return_screen: None,
             contacts,
             contact_names: HashMap::new(),
             status: None,
@@ -331,6 +347,7 @@ impl MailApp {
             | Screen::AccountDeleteConfirm
             | Screen::Onboarding
             | Screen::OnboardingEdit
+            | Screen::SimilarityPreview
             | Screen::Help => {}
         }
         Ok(())
@@ -369,6 +386,13 @@ impl MailApp {
             }
             AppCommand::SnoozeOneDay => self.snooze_selected().await?,
             AppCommand::MakeActionableOnce => self.make_actionable_once().await?,
+            AppCommand::MoveToAction => self.move_selected_route(WarmRoute::Action).await?,
+            AppCommand::MoveToFyi => self.move_selected_route(WarmRoute::Fyi).await?,
+            AppCommand::PreviewSimilarFyi => self.begin_similarity_preview().await?,
+            AppCommand::SimilarityBroader => self.adjust_similarity_cutoff(-50).await?,
+            AppCommand::SimilarityStricter => self.adjust_similarity_cutoff(50).await?,
+            AppCommand::SimilarityConfirm => self.confirm_similarity_rule().await?,
+            AppCommand::SimilarityCancel => self.cancel_similarity_preview(),
             AppCommand::RestrictedOpen => {
                 if self.screen == Screen::Reader {
                     self.security_override = true;
@@ -1099,6 +1123,7 @@ impl MailApp {
 
     async fn go_back(&mut self) -> Result<()> {
         match self.screen {
+            Screen::SimilarityPreview => self.cancel_similarity_preview(),
             Screen::Reader | Screen::Contacts | Screen::Help | Screen::Accounts => {
                 self.screen = self.previous_screen;
                 self.current_thread = None;
@@ -1184,6 +1209,156 @@ impl MailApp {
             self.switch_queue(WorkflowView::WarmAction).await?;
         }
         Ok(())
+    }
+
+    async fn move_selected_route(&mut self, route: WarmRoute) -> Result<()> {
+        if self.screen == Screen::Queue(WorkflowView::SpamQuarantine)
+            || (self.screen == Screen::Reader
+                && self.previous_screen == Screen::Queue(WorkflowView::SpamQuarantine))
+        {
+            self.status =
+                Some("Spam must be rescued before assigning an Action/FYI workflow".into());
+            return Ok(());
+        }
+        let id = match self.screen {
+            Screen::Reader => self.current_thread.as_ref().map(|thread| thread.summary.id),
+            Screen::Queue(_) => self.selected_thread().map(|thread| thread.id),
+            _ => None,
+        };
+        if let Some(id) = id {
+            self.backend
+                .threads()
+                .set_route_override(id, Some(route))
+                .await?;
+            self.status = Some(match route {
+                WarmRoute::Action => "Conversation moved to Action".into(),
+                WarmRoute::Fyi => "Conversation moved to FYI".into(),
+            });
+            self.switch_queue(match route {
+                WarmRoute::Action => WorkflowView::WarmAction,
+                WarmRoute::Fyi => WorkflowView::WarmFyi,
+            })
+            .await?;
+        }
+        Ok(())
+    }
+
+    async fn begin_similarity_preview(&mut self) -> Result<()> {
+        if self.screen == Screen::Queue(WorkflowView::SpamQuarantine)
+            || (self.screen == Screen::Reader
+                && self.previous_screen == Screen::Queue(WorkflowView::SpamQuarantine))
+        {
+            self.status = Some("Spam must be rescued before creating a routing rule".into());
+            return Ok(());
+        }
+        let thread = match self.screen {
+            Screen::Reader => self.current_thread.clone(),
+            Screen::Queue(_) => {
+                if let Some(id) = self.selected_thread().map(|thread| thread.id) {
+                    Some(self.backend.threads().get(id).await?)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+        let seed_message_id = thread.as_ref().and_then(|thread| {
+            thread.messages.iter().rev().find_map(|message| {
+                let address = message.summary.from_address.as_deref()?.to_lowercase();
+                self.contact_names
+                    .contains_key(&address)
+                    .then_some(message.summary.id)
+            })
+        });
+        let Some(seed_message_id) = seed_message_id else {
+            self.status = Some(
+                "Similar-mail routing needs a message from a known contact in this conversation"
+                    .into(),
+            );
+            return Ok(());
+        };
+        let preview = self
+            .backend
+            .similarity_rules()
+            .preview(
+                seed_message_id,
+                WarmRoute::Fyi,
+                DEFAULT_SIMILARITY_CUTOFF_MILLIS,
+                SIMILARITY_PREVIEW_LIMIT,
+            )
+            .await?;
+        self.similarity_return_screen = Some(self.screen);
+        self.similarity_preview = Some(preview);
+        self.similarity_selected = 0;
+        self.screen = Screen::SimilarityPreview;
+        Ok(())
+    }
+
+    async fn adjust_similarity_cutoff(&mut self, delta: i16) -> Result<()> {
+        let Some(current) = self.similarity_preview.as_ref() else {
+            return Ok(());
+        };
+        let seed = current.seed_message_id;
+        let cutoff = i32::from(current.cutoff_millis)
+            .saturating_add(i32::from(delta))
+            .clamp(100, 1_000) as u16;
+        self.similarity_preview = Some(
+            self.backend
+                .similarity_rules()
+                .preview(seed, WarmRoute::Fyi, cutoff, SIMILARITY_PREVIEW_LIMIT)
+                .await?,
+        );
+        self.similarity_selected = self.similarity_selected.min(
+            self.similarity_preview
+                .as_ref()
+                .map_or(0, |preview| preview.matches.len().saturating_sub(1)),
+        );
+        Ok(())
+    }
+
+    async fn confirm_similarity_rule(&mut self) -> Result<()> {
+        let Some(preview) = self.similarity_preview.clone() else {
+            return Ok(());
+        };
+        let refreshed = self
+            .backend
+            .similarity_rules()
+            .preview(
+                preview.seed_message_id,
+                preview.route,
+                preview.cutoff_millis,
+                SIMILARITY_PREVIEW_LIMIT,
+            )
+            .await?;
+        if refreshed.match_set_digest != preview.match_set_digest {
+            self.similarity_preview = Some(refreshed);
+            self.similarity_selected = 0;
+            self.status = Some(
+                "New matching mail arrived; review the refreshed list, then confirm again".into(),
+            );
+            return Ok(());
+        }
+        self.similarity_preview = Some(refreshed.clone());
+        let application = self
+            .backend
+            .similarity_rules()
+            .create_from_preview(&refreshed)
+            .await?;
+        self.similarity_preview = None;
+        self.similarity_return_screen = None;
+        self.status = Some(format!(
+            "FYI rule saved: {} messages across {} conversations",
+            application.matching_messages, application.affected_threads
+        ));
+        self.switch_queue(WorkflowView::WarmFyi).await
+    }
+
+    fn cancel_similarity_preview(&mut self) {
+        self.similarity_preview = None;
+        self.screen = self
+            .similarity_return_screen
+            .take()
+            .unwrap_or(Screen::Queue(WorkflowView::WarmAction));
     }
 
     fn begin_suggestion_edit(&mut self) {
@@ -1296,6 +1471,21 @@ impl MailApp {
     }
 
     fn move_selection(&mut self, delta: isize) {
+        if self.screen == Screen::SimilarityPreview {
+            let length = self
+                .similarity_preview
+                .as_ref()
+                .map_or(0, |preview| preview.matches.len());
+            if length == 0 {
+                self.similarity_selected = 0;
+            } else {
+                self.similarity_selected = self
+                    .similarity_selected
+                    .saturating_add_signed(delta)
+                    .min(length.saturating_sub(1));
+            }
+            return;
+        }
         let length = match self.screen {
             Screen::Accounts => self.accounts.len(),
             Screen::Onboarding => self.suggestions.len(),

@@ -1003,10 +1003,25 @@ implementations are required to run disposable sandbox workers.
 - a Cold conversation can be made actionable once without promoting its sender;
 - contact identity is independent from Action/FYI routing, obligation
   permission, notifications and remote-content policy;
+- one-conversation Action/FYI corrections are symmetric and take precedence
+  over both relationship defaults and learned routing;
 - Warm — FYI includes marketing and other known low-obligation mail rather
   than encoding Marketing as a fourth trust workflow; and
 - first-account onboarding can propose a bounded set of frequent recent
   correspondents while preserving address-first identity and explicit consent.
+
+Known-sender recurring mail may be routed through an exact-sender lexical rule
+whose profile is derived from a seed message's bounded subject and text body.
+The backend uses Tantivy's BM25 term statistics for ranking, but exposes the
+threshold only as relative ranking strength, never as a probability. Preview is
+read-only and returns ranked message summaries, per-result move/protection
+state, total match count, affected-conversation count and truncation state.
+Creating a rule replays precisely that bounded match set and evaluates future
+mail from the same exact sender. A manual conversation route always wins, and
+removing a rule clears only overrides still owned by that rule. Preview carries
+an opaque commitment to the complete match set; if background synchronization
+changes that set before confirmation, creation refuses and requires a fresh
+preview rather than moving mail the user did not review.
 
 ### Data lifecycle and recovery
 

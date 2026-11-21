@@ -49,6 +49,10 @@ it.
 Marketing is simply one common kind of Warm — FYI mail. It is not a separate
 built-in workflow, view, folder, or default split. Users may add their own tags
 or rules when useful, but the durable product distinction is Action versus FYI.
+Warm — FYI appears immediately after Warm — Action and before Cold in primary
+navigation. Its terminal surface retains the Warm red palette because it is a
+sub-workflow of known-sender mail; only its compact navigation hint may use
+amber to make the secondary route discoverable.
 
 ## Message and security screens
 
@@ -74,6 +78,7 @@ These are short transitions rather than permanent navigation destinations.
 | **Snooze** | Selects when the conversation becomes active again. |
 | **Delete** | Moves mail to Trash and removes it from the active workflow without claiming the obligation was completed. |
 | **Make Actionable Once** | Moves one Cold conversation into Warm — Action without creating a contact or granting the sender future obligation permission. The permission is scoped to the conversation. |
+| **Move to Action / Move to FYI** | Corrects the route of one known-sender conversation in either direction. This explicit correction outranks relationship defaults and learned routing rules. Unknown-sender mail cannot be placed in FYI without first establishing a contact; it may instead use Make Actionable Once. |
 | **Reopen** | Returns a Done conversation to Warm — Action. |
 
 Explicit compound commands such as Reply and Done or Create Event and Done may
@@ -122,8 +127,8 @@ import contacts via vCard/CardDAV when available.
 
 | Screen | Functions | What it implies the user wants |
 |---|---|---|
-| **Create Similar-Mail Rule** | Starts from a message, scopes by sender/domain, builds a lexical/template profile, previews historical matches, and proposes an FYI tag/folder action. | “Make this recurring kind of boring mail disappear without hiding unlike mail from the same sender.” |
-| **Similarity Preview** | Shows positive, borderline, and excluded matches while adjusting strictness; highlights terms and structure driving the match. | “Show me what this automation catches before I trust it.” |
+| **Create Similar-Mail Rule** | Starts from a known sender's message, keeps exact-sender scope, builds a bounded lexical/template profile, previews historical matches, and proposes Action/FYI routing. The first terminal shortcut creates an FYI rule; the backend model is symmetric. | “Make this recurring kind of boring mail disappear without hiding unlike mail from the same sender.” |
+| **Similarity Preview** | Before any rule is saved or mail is moved, lists the matched messages in score order, labels which conversations would actually change, shows the exact sender scope and affected counts, and lets the user adjust strictness or cancel. Existing manual corrections are visibly protected. | “Show me exactly what this automation catches before I trust it.” |
 | **Filter Rule Editor** | Creates Boolean conditions followed by restricted message actions such as move, trash/delete, mute, priority, or local categorization. | “Automate deterministic organization without arbitrary code.” |
 | **Heuristic Editor** | Defines security or presentation findings in the restricted Python-like language, with sample execution and explanation traces. | “Extend warnings without allowing scripts to mutate unrelated state.” |
 | **Rules Overview** | Lists rules with versions, match counts, preview, replay history, and undo. | “Understand and safely maintain the automation governing my mail.” |
@@ -134,7 +139,8 @@ import contacts via vCard/CardDAV when available.
 
 BM25 scores are not percentages or stable probabilities. Similar-mail UI should
 offer understandable strictness and an affected-message preview; raw score
-thresholds belong in expert details.
+thresholds belong in expert details. A rule applies to future messages using
+the same stored profile, but never overwrites a later manual Action/FYI choice.
 
 ## Account and system screens
 

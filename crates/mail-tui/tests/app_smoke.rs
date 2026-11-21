@@ -1,7 +1,8 @@
 use chrono::Utc;
 use lizard_mail_backend::{
-    AccountKind, Backend, BackendConfig, FolderKind, ImapSecurity, ImapSettings, IngestMessage,
-    NewAccount, NewFolder, RemoteMessageIdentity, WorkflowView,
+    AccountKind, Backend, BackendConfig, ContactAddress, FolderKind, ImapSecurity, ImapSettings,
+    IngestMessage, NewAccount, NewContact, NewFolder, RemoteMessageIdentity, WarmRoute,
+    WorkflowView,
 };
 use lizard_mail_tui::app::{AppCommand, MailApp, Screen};
 use lizard_mail_tui::{HtmlRenderIsolationConfig, IsolatedHtmlRenderer, Limits};
@@ -234,6 +235,104 @@ async fn first_account_opens_address_first_contact_onboarding() {
     app.dispatch(AppCommand::OnboardingAccept).await.unwrap();
     assert_eq!(app.screen, Screen::Queue(WorkflowView::WarmAction));
     assert_eq!(app.threads.len(), 1);
+}
+
+#[tokio::test]
+async fn similar_fyi_rule_requires_a_visible_preview_before_moving_mail() {
+    let profile = tempfile::tempdir().unwrap();
+    let backend = Backend::open(BackendConfig::new(profile.path()))
+        .await
+        .unwrap();
+    backend
+        .accounts()
+        .add(NewAccount {
+            name: "Local".into(),
+            kind: AccountKind::Local,
+            credential_ref: None,
+            imap: None,
+        })
+        .await
+        .unwrap();
+    backend
+        .contacts()
+        .add(NewContact {
+            display_name: "Northwind News".into(),
+            addresses: vec![ContactAddress {
+                address: "news@northwind.example".into(),
+                accepted_name: Some("Northwind News".into()),
+            }],
+        })
+        .await
+        .unwrap();
+    let seed = backend
+        .ingest(IngestMessage::local(
+            b"From: Northwind News <news@northwind.example>\r\nTo: reader@example.test\r\nMessage-ID: <news-one@example.test>\r\nSubject: January blue widget offers\r\n\r\nWeekly product newsletter. Save twenty percent on blue widgets. Browse featured products and seasonal offers.\r\n"
+                .to_vec(),
+        ))
+        .await
+        .unwrap();
+    backend
+        .ingest(IngestMessage::local(
+            b"From: Northwind News <news@northwind.example>\r\nTo: reader@example.test\r\nMessage-ID: <news-two@example.test>\r\nSubject: January blue widget offers\r\n\r\nWeekly product newsletter. Save twenty percent on blue widgets. Browse featured products and seasonal offers.\r\n"
+                .to_vec(),
+        ))
+        .await
+        .unwrap();
+    let seed_thread = backend
+        .messages()
+        .get(seed)
+        .await
+        .unwrap()
+        .summary
+        .thread_id;
+    let mut app = MailApp::open(backend.clone()).await.unwrap();
+    assert_eq!(app.screen, Screen::Queue(WorkflowView::WarmAction));
+
+    app.dispatch(AppCommand::PreviewSimilarFyi).await.unwrap();
+    assert_eq!(app.screen, Screen::SimilarityPreview);
+    assert!(app
+        .similarity_preview
+        .as_ref()
+        .is_some_and(|preview| preview.matches.len() >= 2));
+    assert_eq!(
+        backend
+            .threads()
+            .work_state(seed_thread)
+            .await
+            .unwrap()
+            .route_override,
+        None,
+        "opening the preview must not move mail"
+    );
+
+    let terminal_backend = TestBackend::new(120, 34);
+    let mut terminal = Terminal::new(terminal_backend).unwrap();
+    terminal
+        .draw(|frame| lizard_mail_tui::ui::draw(frame, &app))
+        .unwrap();
+    let text = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(text.contains("Confirm sender-scoped similar-mail rule"));
+    assert!(text.contains("January blue widget offers"));
+    assert!(text.contains("Weekly product newsletter"));
+
+    app.dispatch(AppCommand::SimilarityConfirm).await.unwrap();
+    assert_eq!(app.screen, Screen::Queue(WorkflowView::WarmFyi));
+    assert_eq!(backend.similarity_rules().list().await.unwrap().len(), 1);
+    assert_eq!(
+        backend
+            .threads()
+            .work_state(seed_thread)
+            .await
+            .unwrap()
+            .route_override,
+        Some(WarmRoute::Fyi)
+    );
 }
 
 #[cfg(target_os = "linux")]

@@ -1,7 +1,7 @@
 use crate::{
     AccountId, AccountIdentityId, CalendarAccountId, CalendarEventId, CalendarId, ContactId,
     DraftAttachmentId, DraftId, FilterRuleId, FindingId, FolderId, HeuristicId,
-    ImapMutationConflictId, ImapMutationId, MessageId, SubmissionId, ThreadId,
+    ImapMutationConflictId, ImapMutationId, MessageId, SimilarityRuleId, SubmissionId, ThreadId,
 };
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -463,6 +463,14 @@ pub struct ThreadWorkState {
     /// creating a durable relationship with its sender. The grant is scoped
     /// to this conversation and survives replies within it.
     pub actionable_once: bool,
+    /// An explicit conversation-scoped route wins over relationship defaults
+    /// and learned similarity rules. `None` means derive the route normally.
+    #[serde(default)]
+    pub route_override: Option<WarmRoute>,
+    #[serde(default)]
+    pub route_override_source: Option<RouteOverrideSource>,
+    #[serde(default)]
+    pub route_override_rule_id: Option<SimilarityRuleId>,
     pub updated_at: i64,
 }
 
@@ -472,9 +480,19 @@ impl Default for ThreadWorkState {
             status: ThreadWorkStatus::Active,
             snoozed_until: None,
             actionable_once: false,
+            route_override: None,
+            route_override_source: None,
+            route_override_rule_id: None,
             updated_at: 0,
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RouteOverrideSource {
+    Manual,
+    SimilarityRule,
 }
 
 /// The provider-side fact from which a spam verdict was obtained.
@@ -1913,6 +1931,58 @@ pub struct ContactSuggestion {
     pub suggested_kind: RelationshipKind,
     pub suggested_warm_route: WarmRoute,
     pub suggested_may_create_obligations: bool,
+    /// Human-readable, local evidence supporting the proposed preset. These
+    /// are explanations, never identity or security assertions.
+    #[serde(default)]
+    pub suggestion_reasons: Vec<String>,
+}
+
+pub const DEFAULT_SIMILARITY_CUTOFF_MILLIS: u16 = 550;
+
+/// A durable sender-scoped lexical routing rule. The cutoff is a relative
+/// BM25 score in thousandths of the strongest same-sender match, not a
+/// probability or percentage.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SimilarityRule {
+    pub id: SimilarityRuleId,
+    pub name: String,
+    pub sender_address: String,
+    pub seed_message_id: Option<MessageId>,
+    pub route: WarmRoute,
+    pub cutoff_millis: u16,
+    pub enabled: bool,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SimilarityMatch {
+    pub message: MessageSummary,
+    /// Relative score in thousandths of the strongest result in this preview.
+    pub relative_score_millis: u16,
+    pub would_move: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SimilarityPreview {
+    pub seed_message_id: MessageId,
+    pub sender_address: String,
+    pub route: WarmRoute,
+    pub cutoff_millis: u16,
+    pub matches: Vec<SimilarityMatch>,
+    pub matching_messages: u64,
+    pub affected_threads: u64,
+    pub truncated: bool,
+    /// Opaque commitment to the complete ranked match set, including results
+    /// omitted from the bounded UI sample. Confirmation fails if it changes.
+    pub match_set_digest: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SimilarityRuleApplication {
+    pub rule: SimilarityRule,
+    pub matching_messages: u64,
+    pub affected_threads: u64,
 }
 
 /// One pure check in a filter rule. A rule's checks are an implicit AND (with

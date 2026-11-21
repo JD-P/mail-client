@@ -35,6 +35,7 @@ mod schema;
 mod search_index;
 mod security;
 mod sending;
+mod similarity;
 mod smtp;
 mod spam;
 mod storage;
@@ -53,7 +54,8 @@ pub use heuristic::compile_heuristic;
 pub use id::{
     AccountId, AccountIdentityId, CalendarAccountId, CalendarEventId, CalendarId, ContactId,
     DraftAttachmentId, DraftId, FilterRuleId, FindingId, FolderId, HeuristicId,
-    ImapMutationConflictId, ImapMutationId, MessageId, SavedSearchId, SubmissionId, ThreadId,
+    ImapMutationConflictId, ImapMutationId, MessageId, SavedSearchId, SimilarityRuleId,
+    SubmissionId, ThreadId,
 };
 pub use identity::AccountIdentities;
 pub use imap::imap_fetch_message;
@@ -71,6 +73,7 @@ pub use openpgp::OpenPgp;
 pub use organization::SavedSearches;
 pub use query::{parse_query, QueryExpr, QueryParseError, QueryTerm};
 pub use sending::{Drafts, Outbox, Sending};
+pub use similarity::SimilarityRules;
 pub use smtp::{SmtpEngine, SmtpEngineConfig};
 pub use spam::SpamClassifier;
 pub use storage::{

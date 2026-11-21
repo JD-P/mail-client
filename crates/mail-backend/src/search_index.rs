@@ -7,13 +7,15 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tantivy::collector::sort_key::{SortByStaticFastValue, SortByString};
 use tantivy::collector::TopDocs;
-use tantivy::query::{AllQuery, BooleanQuery, Occur, Query, QueryParser, RangeQuery, TermQuery};
+use tantivy::query::{
+    AllQuery, BooleanQuery, MoreLikeThisQuery, Occur, Query, QueryParser, RangeQuery, TermQuery,
+};
 use tantivy::schema::{
-    Field, IndexRecordOption, Schema, Value, FAST, INDEXED, STORED, STRING, TEXT,
+    Field, IndexRecordOption, OwnedValue, Schema, Value, FAST, INDEXED, STORED, STRING, TEXT,
 };
 use tantivy::{Index, IndexReader, IndexWriter, Order, ReloadPolicy, TantivyDocument, Term};
 
-const INDEX_FORMAT_VERSION: u32 = 1;
+const INDEX_FORMAT_VERSION: u32 = 2;
 const INDEX_WRITER_THREADS: usize = 4;
 const INDEX_WRITER_MEMORY_BYTES: usize = 256 * 1024 * 1024;
 const INDEX_DIRECTORY: &str = "search-index";
@@ -59,6 +61,7 @@ struct Fields {
     subject: Field,
     body_text: Field,
     from_address: Field,
+    from_address_exact: Field,
     to_address: Field,
     cc_address: Field,
     bcc_address: Field,
@@ -309,6 +312,70 @@ impl SearchIndex {
         Ok(ids)
     }
 
+    /// Return BM25-ranked messages lexically similar to the supplied profile,
+    /// restricted to an exact sender address. Scores are deliberately exposed
+    /// only to the workflow-rule layer; they are not probabilities.
+    pub(crate) fn similar_messages(
+        &self,
+        subject: Option<&str>,
+        body_text: &str,
+        sender_address: &str,
+        limit: usize,
+    ) -> Result<Vec<(String, f32)>> {
+        let mut fields = Vec::new();
+        if let Some(subject) = subject.filter(|value| !value.trim().is_empty()) {
+            fields.push((
+                self.fields.subject,
+                vec![OwnedValue::Str(subject.to_owned())],
+            ));
+        }
+        if !body_text.trim().is_empty() {
+            fields.push((
+                self.fields.body_text,
+                vec![OwnedValue::Str(body_text.to_owned())],
+            ));
+        }
+        if fields.is_empty() {
+            return Err(BackendError::InvalidInput(
+                "similar-mail rules require a subject or searchable message body".into(),
+            ));
+        }
+        let lexical = MoreLikeThisQuery::builder()
+            .with_min_doc_frequency(1)
+            .with_min_term_frequency(1)
+            .with_max_query_terms(48)
+            .with_min_word_length(3)
+            .with_document_fields(fields);
+        let sender = TermQuery::new(
+            Term::from_field_text(self.fields.from_address_exact, &normalize(sender_address)),
+            IndexRecordOption::Basic,
+        );
+        let query = BooleanQuery::intersection(vec![Box::new(lexical), Box::new(sender)]);
+        let searcher = self.reader.searcher();
+        let hits = searcher
+            .search(
+                &query,
+                &TopDocs::with_limit(limit.clamp(1, 5_001)).order_by_score(),
+            )
+            .map_err(search_error)?;
+        let mut matches = Vec::with_capacity(hits.len());
+        for (score, address) in hits {
+            let document = searcher
+                .doc::<TantivyDocument>(address)
+                .map_err(search_error)?;
+            let id = document
+                .get_first(self.fields.id)
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| {
+                    BackendError::SearchIndex(
+                        "similar-mail result is missing its stored message ID".into(),
+                    )
+                })?;
+            matches.push((id.to_owned(), score));
+        }
+        Ok(matches)
+    }
+
     fn tantivy_document(&self, source: SearchDocument) -> TantivyDocument {
         let mut document = TantivyDocument::default();
         document.add_text(self.fields.id, &source.id);
@@ -316,7 +383,11 @@ impl SearchIndex {
             document.add_text(self.fields.subject, value);
         }
         document.add_text(self.fields.body_text, source.body_text);
-        add_normalized(&mut document, self.fields.from_address, source.from_address);
+        if let Some(from_address) = source.from_address {
+            let from_address = normalize(&from_address);
+            document.add_text(self.fields.from_address, &from_address);
+            document.add_text(self.fields.from_address_exact, &from_address);
+        }
         add_normalized_many(&mut document, self.fields.to_address, source.to_addresses);
         add_normalized_many(&mut document, self.fields.cc_address, source.cc_addresses);
         add_normalized_many(&mut document, self.fields.bcc_address, source.bcc_addresses);
@@ -517,6 +588,7 @@ fn schema_and_fields() -> (Schema, Fields) {
     let subject = schema.add_text_field("subject", TEXT);
     let body_text = schema.add_text_field("body_text", TEXT);
     let from_address = schema.add_text_field("from_address", TEXT);
+    let from_address_exact = schema.add_text_field("from_address_exact", STRING);
     let to_address = schema.add_text_field("to_address", TEXT);
     let cc_address = schema.add_text_field("cc_address", TEXT);
     let bcc_address = schema.add_text_field("bcc_address", TEXT);
@@ -539,6 +611,7 @@ fn schema_and_fields() -> (Schema, Fields) {
             subject,
             body_text,
             from_address,
+            from_address_exact,
             to_address,
             cc_address,
             bcc_address,

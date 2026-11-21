@@ -11,7 +11,7 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 version INTEGER NOT NULL
             );
             INSERT INTO schema_meta(version)
-                SELECT 22 WHERE NOT EXISTS (SELECT 1 FROM schema_meta);
+                SELECT 23 WHERE NOT EXISTS (SELECT 1 FROM schema_meta);
 
             CREATE TABLE IF NOT EXISTS accounts (
                 id TEXT PRIMARY KEY,
@@ -135,6 +135,10 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                     CHECK(status IN ('active', 'waiting', 'snoozed', 'done')),
                 snoozed_until INTEGER,
                 actionable_once INTEGER NOT NULL DEFAULT 0,
+                route_override TEXT CHECK(route_override IN ('action', 'fyi')),
+                route_override_source TEXT
+                    CHECK(route_override_source IN ('manual', 'similarity_rule')),
+                route_override_rule_id TEXT,
                 updated_at INTEGER NOT NULL,
                 CHECK(status = 'snoozed' OR snoozed_until IS NULL)
             );
@@ -371,6 +375,21 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 decision TEXT NOT NULL CHECK(decision IN ('accepted', 'dismissed')),
                 decided_at INTEGER NOT NULL,
                 PRIMARY KEY(account_id, address)
+            );
+
+            CREATE TABLE IF NOT EXISTS workflow_similarity_rules (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                sender_address TEXT NOT NULL COLLATE NOCASE,
+                seed_message_id TEXT REFERENCES messages(id) ON DELETE SET NULL,
+                route TEXT NOT NULL CHECK(route IN ('action', 'fyi')),
+                profile_subject TEXT,
+                profile_body_text TEXT NOT NULL,
+                cutoff_millis INTEGER NOT NULL
+                    CHECK(cutoff_millis BETWEEN 100 AND 1000),
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS openpgp_settings (
@@ -760,6 +779,8 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 ON contact_relationships(warm_route, may_create_obligations, contact_id);
             CREATE INDEX IF NOT EXISTS onboarding_contact_decisions_account
                 ON onboarding_contact_decisions(account_id, decision, address);
+            CREATE INDEX IF NOT EXISTS workflow_similarity_rules_sender
+                ON workflow_similarity_rules(sender_address, enabled, id);
             "#,
         )
         .await?;
@@ -1406,7 +1427,52 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
             .await?;
         version = 22;
     }
-    if version != 22 {
+    if version == 22 {
+        let mut rows = connection
+            .query("PRAGMA table_info(thread_work_state)", ())
+            .await?;
+        let mut columns = HashSet::new();
+        while let Some(row) = rows.next().await? {
+            columns.insert(row.get::<String>(1)?);
+        }
+        drop(rows);
+        if !columns.contains("route_override") {
+            connection
+                .execute(
+                    "ALTER TABLE thread_work_state ADD COLUMN route_override TEXT",
+                    (),
+                )
+                .await?;
+        }
+        if !columns.contains("route_override_source") {
+            connection
+                .execute(
+                    "ALTER TABLE thread_work_state ADD COLUMN route_override_source TEXT",
+                    (),
+                )
+                .await?;
+        }
+        if !columns.contains("route_override_rule_id") {
+            connection
+                .execute(
+                    "ALTER TABLE thread_work_state ADD COLUMN route_override_rule_id TEXT",
+                    (),
+                )
+                .await?;
+        }
+        connection
+            .execute_batch(
+                r#"
+                UPDATE thread_work_state
+                SET route_override = 'action', route_override_source = 'manual'
+                WHERE actionable_once = 1 AND route_override IS NULL;
+                UPDATE schema_meta SET version = 23;
+                "#,
+            )
+            .await?;
+        version = 23;
+    }
+    if version != 23 {
         return Err(crate::BackendError::InvalidInput(format!(
             "unsupported database schema version {version}"
         )));
@@ -1669,7 +1735,7 @@ mod tests {
             .await
             .unwrap();
         let row = rows.next().await.unwrap().unwrap();
-        assert_eq!(row.get::<i64>(0).unwrap(), 22);
+        assert_eq!(row.get::<i64>(0).unwrap(), 23);
         assert_eq!(row.get::<String>(1).unwrap(), r#"{"received_at":123}"#);
         drop(rows);
 
@@ -1712,7 +1778,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap(),
-            22
+            23
         );
         drop(rows);
 
@@ -1849,9 +1915,71 @@ mod tests {
             .await
             .unwrap();
         let row = rows.next().await.unwrap().unwrap();
-        assert_eq!(row.get::<i64>(0).unwrap(), 22);
+        assert_eq!(row.get::<i64>(0).unwrap(), 23);
         assert_eq!(row.get::<String>(1).unwrap(), "CaseSensitive@example.test");
         assert!(row.get::<bool>(2).unwrap());
         assert!(row.get::<bool>(3).unwrap());
+    }
+
+    #[tokio::test]
+    async fn version_twenty_two_preserves_actionable_routes_and_adds_similarity_rules() {
+        let profile = tempfile::tempdir().unwrap();
+        let path = profile.path().join("mail.db");
+        let database = turso::Builder::new_local(path.to_str().unwrap())
+            .experimental_index_method(true)
+            .build()
+            .await
+            .unwrap();
+        let connection = database.connect().unwrap();
+        connection
+            .execute_batch(
+                r#"
+                CREATE TABLE schema_meta (version INTEGER NOT NULL);
+                INSERT INTO schema_meta VALUES (22);
+                CREATE TABLE thread_work_state (
+                    thread_id TEXT PRIMARY KEY,
+                    status TEXT NOT NULL,
+                    snoozed_until INTEGER,
+                    actionable_once INTEGER NOT NULL DEFAULT 0,
+                    updated_at INTEGER NOT NULL
+                );
+                INSERT INTO thread_work_state(
+                    thread_id, status, actionable_once, updated_at
+                ) VALUES ('thread-old-actionable', 'active', 1, 123);
+                "#,
+            )
+            .await
+            .unwrap();
+
+        migrate(&connection).await.unwrap();
+
+        let mut rows = connection
+            .query(
+                r#"SELECT schema_meta.version, route_override,
+                    route_override_source, route_override_rule_id
+                FROM schema_meta, thread_work_state
+                WHERE thread_id = 'thread-old-actionable'"#,
+                (),
+            )
+            .await
+            .unwrap();
+        let row = rows.next().await.unwrap().unwrap();
+        assert_eq!(row.get::<i64>(0).unwrap(), 23);
+        assert_eq!(row.get::<String>(1).unwrap(), "action");
+        assert_eq!(row.get::<String>(2).unwrap(), "manual");
+        assert_eq!(row.get::<Option<String>>(3).unwrap(), None);
+        drop(rows);
+
+        let mut rows = connection
+            .query(
+                "SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name = 'workflow_similarity_rules'",
+                (),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap(),
+            1
+        );
     }
 }

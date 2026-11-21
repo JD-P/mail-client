@@ -31,6 +31,12 @@ not implemented merely because it is described there.
   Action/FYI placement.
 - Terminal queue navigation, conversation reader, Contacts list, contextual
   help, Done, Waiting, one-day Snooze, and Make Actionable Once.
+- Symmetric one-conversation Action/FYI correction, with manual choices taking
+  precedence over learned routing.
+- Exact-sender similar-mail FYI rules backed by the Tantivy lexical index. The
+  terminal client presents a read-only ranked preview and affected counts,
+  supports stricter/broader adjustment, and requires explicit confirmation
+  before persisting and replaying the rule.
 - Address-first unknown identity presentation using “claims to be”.
 - Complete, hard-wrapped Cold sender addresses with no identity truncation;
   conversation rows use the newest actual From mailbox rather than an
@@ -70,7 +76,8 @@ not implemented merely because it is described there.
 - Composer, send review, Drafts, Outbox, and Sent screens.
 - Calendar proposal and CalDAV account screens.
 - Full relationship profile, address history, contact import/export, and merge.
-- Similar-mail rule creation and preview, filter/heuristic editors, and rules
-  overview.
+- Filter/heuristic editors and rules overview. Similar-mail rule creation and
+  preview are wired; listing, disabling, and deleting those rules still need a
+  management screen.
 - Search, search results, saved views, folders, and mailbox management.
 - Encryption/key, storage/offline, appearance, and keybinding screens.
