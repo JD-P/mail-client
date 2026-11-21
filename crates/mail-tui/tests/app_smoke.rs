@@ -11,6 +11,17 @@ use ratatui::Terminal;
 use std::{path::PathBuf, time::Duration};
 use zeroize::Zeroizing;
 
+async fn wait_for_reader_metadata(app: &mut MailApp) {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while app.current_thread.is_none() {
+            app.poll_background_tasks().await.unwrap();
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("reader metadata should load without blocking the UI");
+}
+
 #[tokio::test]
 async fn empty_profile_opens_account_connection_onboarding() {
     let profile = tempfile::tempdir().unwrap();
@@ -145,6 +156,9 @@ async fn cold_reader_keeps_identity_context_and_persistent_explanations() {
     app.dispatch(AppCommand::Cold).await.unwrap();
     app.dispatch(AppCommand::Open).await.unwrap();
     assert_eq!(app.screen, Screen::Reader);
+    assert!(app.current_thread.is_none());
+    assert_eq!(app.reader_load_status(), Some("Opening conversation…"));
+    wait_for_reader_metadata(&mut app).await;
     assert!(app.reader_is_blocked());
     app.dispatch(AppCommand::RestrictedOpen).await.unwrap();
 
@@ -386,6 +400,7 @@ async fn html_worker_failure_uses_safe_plain_text_in_the_reader() {
     app.dispatch(AppCommand::OnboardingAccept).await.unwrap();
     app.dispatch(AppCommand::Open).await.unwrap();
     assert_eq!(app.screen, Screen::Reader);
+    wait_for_reader_metadata(&mut app).await;
     if app.reader_is_blocked() {
         app.dispatch(AppCommand::RestrictedOpen).await.unwrap();
     }
@@ -398,7 +413,15 @@ async fn html_worker_failure_uses_safe_plain_text_in_the_reader() {
     ));
     app.prepare_reader_html(118).await;
     assert!(app.reader_html().is_none());
-    assert!(app.reader_html_error().is_some());
+    assert!(app.reader_html_error().is_none());
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while app.reader_html_error().is_none() {
+            app.prepare_reader_html(118).await;
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("HTML worker failure should be collected in the background");
 
     let backend = TestBackend::new(120, 28);
     let mut terminal = Terminal::new(backend).unwrap();

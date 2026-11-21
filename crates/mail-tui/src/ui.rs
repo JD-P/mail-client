@@ -3,8 +3,8 @@ use chrono::{DateTime, Utc};
 use lizard_mail_backend::{
     AuthenticationMethodKind, AuthenticationMethodResult, AuthenticationResultsTrust,
     DkimAuthenticationStatus, DkimSignatureStatus, FindingSeverity, HeuristicFinding, ImapSecurity,
-    InboxClass, Message, OpenPgpBindingState, OpenPgpEncryptionStatus, OpenPgpSignatureStatus,
-    ThreadWorkStatus, WorkflowView,
+    InboxClass, Message, MessageContentAvailability, OpenPgpBindingState, OpenPgpEncryptionStatus,
+    OpenPgpSignatureStatus, ThreadWorkStatus, WorkflowView,
 };
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -394,7 +394,15 @@ fn draw_queue(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
 
 fn draw_reader(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
     let Some(thread) = &app.current_thread else {
-        frame.render_widget(Paragraph::new("No conversation selected"), area);
+        let message = app
+            .reader_load_status()
+            .or(app.status.as_deref())
+            .unwrap_or("No conversation selected");
+        frame.render_widget(
+            Paragraph::new(message)
+                .block(Block::default().title("Conversation").borders(Borders::ALL)),
+            area,
+        );
         return;
     };
     let Some(message) = thread.messages.last() else {
@@ -493,6 +501,24 @@ fn draw_reader(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
         ),
         chunks[0],
     );
+
+    if message.summary.content_availability != MessageContentAvailability::Complete {
+        frame.render_widget(
+            Paragraph::new(
+                app.reader_load_status()
+                    .or(app.status.as_deref())
+                    .unwrap_or("Message content and identity evidence are unavailable"),
+            )
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("Message · not yet available"),
+            )
+            .wrap(Wrap { trim: false }),
+            chunks[1],
+        );
+        return;
+    }
 
     if let Some(page) = app.reader_html() {
         frame.render_widget(

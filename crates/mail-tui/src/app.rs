@@ -5,7 +5,7 @@ use lizard_mail_backend::{
     ImapAccountSyncReport, ImapAccountSyncState, ImapCredential, ImapSecurity,
     MessageContentAvailability, MessageId, NewAccount, NewContact, NewContactRelationship,
     RelationshipKind, RemoteContentPolicy, Result, SecretValue, SimilarityPreview, Thread,
-    ThreadFilter, ThreadSummary, ThreadWorkStatus, WarmRoute, WorkflowView,
+    ThreadFilter, ThreadId, ThreadSummary, ThreadWorkStatus, WarmRoute, WorkflowView,
     DEFAULT_SIMILARITY_CUTOFF_MILLIS,
 };
 use std::{
@@ -168,6 +168,21 @@ struct ReaderHtmlKey {
     width: u16,
 }
 
+struct ReaderLoadTask {
+    thread_id: ThreadId,
+    handle: JoinHandle<Result<Thread>>,
+}
+
+struct ReaderContentTask {
+    thread_id: ThreadId,
+    handle: JoinHandle<Result<Thread>>,
+}
+
+struct ReaderHtmlTask {
+    key: ReaderHtmlKey,
+    handle: JoinHandle<std::result::Result<RenderedPage, String>>,
+}
+
 pub enum AppCommand {
     Quit,
     Next,
@@ -242,6 +257,10 @@ pub struct MailApp {
     reader_html: Option<RenderedPage>,
     reader_html_error: Option<String>,
     reader_html_key: Option<ReaderHtmlKey>,
+    reader_html_task: Option<ReaderHtmlTask>,
+    reader_thread_id: Option<ThreadId>,
+    reader_load_task: Option<ReaderLoadTask>,
+    reader_content_task: Option<ReaderContentTask>,
     html_renderer: IsolatedHtmlRenderer,
     account_sync_task: Option<AccountSyncTask>,
     sync_queue: VecDeque<QueuedSync>,
@@ -303,6 +322,10 @@ impl MailApp {
             reader_html: None,
             reader_html_error: None,
             reader_html_key: None,
+            reader_html_task: None,
+            reader_thread_id: None,
+            reader_load_task: None,
+            reader_content_task: None,
             html_renderer: IsolatedHtmlRenderer::default(),
             account_sync_task: None,
             sync_queue: VecDeque::new(),
@@ -337,9 +360,11 @@ impl MailApp {
                 self.clamp_selection();
             }
             Screen::Reader => {
-                if let Some(thread) = &self.current_thread {
-                    self.current_thread =
-                        Some(self.backend.threads().get(thread.summary.id).await?);
+                if let Some(thread_id) = self
+                    .reader_thread_id
+                    .or_else(|| self.current_thread.as_ref().map(|thread| thread.summary.id))
+                {
+                    self.start_reader_load(thread_id);
                 }
             }
             Screen::Accounts => self.refresh_accounts().await?,
@@ -430,9 +455,114 @@ impl MailApp {
     /// Collect a finished synchronization, schedule the next automatic sync
     /// when its interval has elapsed, and start the next queued account.
     pub async fn poll_background_tasks(&mut self) -> Result<()> {
+        self.collect_finished_reader_tasks().await;
         self.collect_finished_sync().await?;
         self.schedule_auto_sync(Instant::now());
         self.start_next_queued_sync()
+    }
+
+    async fn collect_finished_reader_tasks(&mut self) {
+        if let Some(task) = self.reader_load_task.take() {
+            if task.handle.is_finished() {
+                let result = task.handle.await;
+                if self.screen == Screen::Reader && self.reader_thread_id == Some(task.thread_id) {
+                    match result {
+                        Ok(Ok(thread)) => self.install_loaded_thread(task.thread_id, thread),
+                        Ok(Err(error)) => {
+                            self.status = Some(format!("Could not open conversation: {error}"));
+                        }
+                        Err(error) if error.is_cancelled() => {}
+                        Err(error) => {
+                            self.status = Some(format!("Conversation loading failed: {error}"));
+                        }
+                    }
+                }
+            } else {
+                self.reader_load_task = Some(task);
+            }
+        }
+
+        if let Some(task) = self.reader_content_task.take() {
+            if task.handle.is_finished() {
+                let result = task.handle.await;
+                if self.screen == Screen::Reader && self.reader_thread_id == Some(task.thread_id) {
+                    match result {
+                        Ok(Ok(thread)) => {
+                            let complete = thread.messages.last().is_some_and(|message| {
+                                message.summary.content_availability
+                                    == MessageContentAvailability::Complete
+                            });
+                            self.current_thread = Some(thread);
+                            self.clear_reader_html();
+                            self.status = if complete {
+                                None
+                            } else {
+                                Some("Message content and identity evidence are incomplete".into())
+                            };
+                        }
+                        Ok(Err(error)) => {
+                            self.status = Some(format!(
+                                "Could not download and verify message content: {error}"
+                            ));
+                        }
+                        Err(error) if error.is_cancelled() => {}
+                        Err(error) => {
+                            self.status = Some(format!("Message download failed: {error}"));
+                        }
+                    }
+                }
+            } else {
+                self.reader_content_task = Some(task);
+            }
+        }
+    }
+
+    fn install_loaded_thread(&mut self, thread_id: ThreadId, thread: Thread) {
+        let message_id = thread.messages.last().map(|message| message.summary.id);
+        let needs_content = thread.messages.last().is_some_and(|message| {
+            message.summary.content_availability != MessageContentAvailability::Complete
+        });
+        self.current_thread = Some(thread);
+        self.clear_reader_html();
+        if needs_content {
+            let Some(message_id) = message_id else {
+                self.status = Some("Conversation contains no messages".into());
+                return;
+            };
+            self.start_reader_content_load(thread_id, message_id);
+        } else {
+            self.status = None;
+        }
+    }
+
+    fn start_reader_load(&mut self, thread_id: ThreadId) {
+        if let Some(task) = self.reader_load_task.take() {
+            task.handle.abort();
+        }
+        let backend = self.backend.clone();
+        self.reader_thread_id = Some(thread_id);
+        self.reader_load_task = Some(ReaderLoadTask {
+            thread_id,
+            handle: tokio::spawn(async move { backend.threads().get(thread_id).await }),
+        });
+    }
+
+    fn start_reader_content_load(&mut self, thread_id: ThreadId, message_id: MessageId) {
+        if let Some(task) = self.reader_content_task.take() {
+            task.handle.abort();
+        }
+        let backend = self.backend.clone();
+        self.status = Some("Downloading and verifying message content…".into());
+        self.reader_content_task = Some(ReaderContentTask {
+            thread_id,
+            handle: tokio::spawn(async move {
+                backend
+                    .managed_imap_account_engine(ImapAccountEngineConfig::default())?
+                    .fetch_message_content(message_id)
+                    .await?;
+                backend.threads().get(thread_id).await
+            }),
+        });
     }
 
     async fn collect_finished_sync(&mut self) -> Result<()> {
@@ -598,12 +728,25 @@ impl MailApp {
             })
     }
 
+    pub fn reader_load_status(&self) -> Option<&'static str> {
+        if self.reader_load_task.is_some() && self.current_thread.is_none() {
+            Some("Opening conversation…")
+        } else if self.reader_content_task.is_some() {
+            Some("Downloading and verifying message content…")
+        } else {
+            None
+        }
+    }
+
     /// Prepares the current HTML body outside the terminal drawing closure.
     ///
     /// The renderer is a disposable Linux worker. Failure is deliberately not
     /// fatal to the mail client: the UI falls back to the backend's bounded
     /// plain-text body and never retries the same failed content every frame.
+    /// Rendering is scheduled in the background so even a worker timeout can
+    /// never delay the reader's first frame or terminal input.
     pub async fn prepare_reader_html(&mut self, width: u16) {
+        self.collect_finished_html_render().await;
         if self.screen != Screen::Reader || self.reader_is_blocked() {
             self.clear_reader_html();
             return;
@@ -616,6 +759,10 @@ impl MailApp {
             self.clear_reader_html();
             return;
         };
+        if message.summary.content_availability != MessageContentAvailability::Complete {
+            self.clear_reader_html();
+            return;
+        }
         let Some(html) = message.body_html.as_deref() else {
             self.clear_reader_html();
             return;
@@ -631,12 +778,43 @@ impl MailApp {
             return;
         }
         let html = html.as_bytes().to_vec();
+        if let Some(task) = self.reader_html_task.take() {
+            task.handle.abort();
+        }
         self.reader_html = None;
         self.reader_html_error = None;
         self.reader_html_key = Some(key);
-        match self.html_renderer.render(&html, width).await {
-            Ok(page) => self.reader_html = Some(page),
-            Err(error) => self.reader_html_error = Some(error.to_string()),
+        let renderer = self.html_renderer.clone();
+        self.reader_html_task = Some(ReaderHtmlTask {
+            key,
+            handle: tokio::spawn(async move {
+                renderer
+                    .render(&html, width)
+                    .await
+                    .map_err(|error| error.to_string())
+            }),
+        });
+    }
+
+    async fn collect_finished_html_render(&mut self) {
+        let Some(task) = self.reader_html_task.take() else {
+            return;
+        };
+        if !task.handle.is_finished() {
+            self.reader_html_task = Some(task);
+            return;
+        }
+        let result = task.handle.await;
+        if self.reader_html_key != Some(task.key) {
+            return;
+        }
+        match result {
+            Ok(Ok(page)) => self.reader_html = Some(page),
+            Ok(Err(error)) => self.reader_html_error = Some(error),
+            Err(error) if error.is_cancelled() => {}
+            Err(error) => {
+                self.reader_html_error = Some(format!("HTML rendering task failed: {error}"));
+            }
         }
     }
 
@@ -1070,6 +1248,7 @@ impl MailApp {
     }
 
     async fn switch_queue(&mut self, workflow: WorkflowView) -> Result<()> {
+        self.cancel_reader_tasks();
         self.screen = Screen::Queue(workflow);
         self.previous_screen = self.screen;
         self.selected = 0;
@@ -1083,35 +1262,13 @@ impl MailApp {
         match self.screen {
             Screen::Queue(_) => {
                 if let Some(id) = self.selected_thread().map(|summary| summary.id) {
-                    let mut thread = self.backend.threads().get(id).await?;
-                    let message_id = thread
-                        .messages
-                        .last()
-                        .ok_or_else(|| BackendError::InvalidInput("conversation is empty".into()))?
-                        .summary
-                        .id;
-                    if thread.messages.last().is_some_and(|message| {
-                        message.summary.content_availability != MessageContentAvailability::Complete
-                    }) {
-                        self.status = Some("Fetching and verifying message content…".into());
-                        self.backend
-                            .managed_imap_account_engine(ImapAccountEngineConfig::default())?
-                            .fetch_message_content(message_id)
-                            .await?;
-                        thread = self.backend.threads().get(id).await?;
-                    }
-                    if thread.messages.last().is_some_and(|message| {
-                        message.summary.content_availability != MessageContentAvailability::Complete
-                    }) {
-                        return Err(BackendError::InvalidInput(
-                            "message content and identity evidence are not complete".into(),
-                        ));
-                    }
                     self.previous_screen = self.screen;
-                    self.current_thread = Some(thread);
                     self.screen = Screen::Reader;
+                    self.current_thread = None;
                     self.security_override = false;
                     self.clear_reader_html();
+                    self.status = Some("Opening conversation…".into());
+                    self.start_reader_load(id);
                 }
             }
             Screen::Onboarding => self.begin_suggestion_edit(),
@@ -1125,6 +1282,9 @@ impl MailApp {
         match self.screen {
             Screen::SimilarityPreview => self.cancel_similarity_preview(),
             Screen::Reader | Screen::Contacts | Screen::Help | Screen::Accounts => {
+                if self.screen == Screen::Reader {
+                    self.cancel_reader_tasks();
+                }
                 self.screen = self.previous_screen;
                 self.current_thread = None;
                 self.security_override = false;
@@ -1163,6 +1323,7 @@ impl MailApp {
                 _ => "Conversation work state changed".into(),
             });
             if self.screen == Screen::Reader {
+                self.cancel_reader_tasks();
                 self.screen = self.previous_screen;
                 self.current_thread = None;
                 self.clear_reader_html();
@@ -1186,6 +1347,7 @@ impl MailApp {
                 .await?;
             self.status = Some("Conversation snoozed for one day".into());
             if self.screen == Screen::Reader {
+                self.cancel_reader_tasks();
                 self.screen = self.previous_screen;
                 self.current_thread = None;
                 self.clear_reader_html();
@@ -1525,9 +1687,22 @@ impl MailApp {
     }
 
     fn clear_reader_html(&mut self) {
+        if let Some(task) = self.reader_html_task.take() {
+            task.handle.abort();
+        }
         self.reader_html = None;
         self.reader_html_error = None;
         self.reader_html_key = None;
+    }
+
+    fn cancel_reader_tasks(&mut self) {
+        if let Some(task) = self.reader_load_task.take() {
+            task.handle.abort();
+        }
+        if let Some(task) = self.reader_content_task.take() {
+            task.handle.abort();
+        }
+        self.reader_thread_id = None;
     }
 }
 
@@ -1538,6 +1713,8 @@ impl Drop for MailApp {
             // aborting the supervisor task cannot orphan a network worker.
             task.handle.abort();
         }
+        self.cancel_reader_tasks();
+        self.clear_reader_html();
     }
 }
 
