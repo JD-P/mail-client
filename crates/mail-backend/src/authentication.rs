@@ -7,22 +7,37 @@ use mail_auth::{
     dkim::{DkimError, DkimVerificationOptions},
     AuthenticatedMessage, AuthenticationLimits, DkimResult, Error, MessageAuthenticator,
 };
-use std::time::Duration;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
-const DKIM_TIMEOUT: Duration = Duration::from_secs(15);
+// A DNS resolver outage used to consume Hickory's default 5 seconds twice,
+// serially, for every message hydrated from IMAP.  A selector lookup should
+// normally finish in milliseconds; two seconds leaves ample room for a fresh
+// encrypted connection while keeping background ingestion moving.  The outer
+// deadline remains independent defense in depth around parsing, DNS and
+// cryptographic verification together.
+const DKIM_DNS_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(2);
+const DKIM_TIMEOUT: Duration = Duration::from_secs(3);
+const DKIM_DNS_FAILURE_BACKOFF: Duration = Duration::from_secs(30);
 
 pub(crate) struct DkimVerifier {
     authenticator: MessageAuthenticator,
+    dns_retry_at: Mutex<Option<Instant>>,
 }
 
 impl DkimVerifier {
     pub(crate) fn new(resolver: DkimDnsResolver) -> Result<Self, String> {
         let authenticator = match resolver {
-            DkimDnsResolver::Quad9Tls => MessageAuthenticator::new_quad9_tls(),
+            DkimDnsResolver::Quad9Tls => {
+                MessageAuthenticator::new_quad9_tls_bounded(DKIM_DNS_ATTEMPT_TIMEOUT, 1)
+            }
             DkimDnsResolver::System => MessageAuthenticator::new_system_conf(),
         }
         .map_err(|error| error.to_string())?;
-        Ok(Self { authenticator })
+        Ok(Self {
+            authenticator,
+            dns_retry_at: Mutex::new(None),
+        })
     }
 
     pub(crate) async fn verify(&self, raw: &[u8], evaluated_at: i64) -> DkimAuthentication {
@@ -41,6 +56,21 @@ impl DkimVerifier {
         let from_domain = (message.from_addresses().len() == 1)
             .then(|| address_domain(&message.from_addresses()[0]))
             .flatten();
+        if !message.dkim_signatures().is_empty() && self.dns_backoff_active() {
+            return DkimAuthentication {
+                status: DkimAuthenticationStatus::TemporaryFailure,
+                signatures: message
+                    .dkim_signatures()
+                    .iter()
+                    .take(16)
+                    .map(|header| temporary_signature_evidence(header, from_domain.as_deref()))
+                    .collect(),
+                evaluated_at,
+                detail: Some(
+                    "DKIM DNS verification deferred after a recent resolver failure".into(),
+                ),
+            };
+        }
         let verification = self.authenticator.verify_dkim_with_options(
             &message,
             DkimVerificationOptions {
@@ -53,6 +83,7 @@ impl DkimVerifier {
         let outputs = match tokio::time::timeout(DKIM_TIMEOUT, verification).await {
             Ok(outputs) => outputs,
             Err(_) => {
+                self.note_dns_failure();
                 return DkimAuthentication {
                     status: DkimAuthenticationStatus::TemporaryFailure,
                     signatures: Vec::new(),
@@ -128,12 +159,61 @@ impl DkimVerifier {
         } else {
             DkimAuthenticationStatus::Failed
         };
+        if status == DkimAuthenticationStatus::TemporaryFailure {
+            self.note_dns_failure();
+        } else {
+            self.clear_dns_failure();
+        }
         DkimAuthentication {
             status,
             signatures,
             evaluated_at,
             detail: None,
         }
+    }
+
+    fn dns_backoff_active(&self) -> bool {
+        self.dns_retry_at
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_some_and(|retry_at| retry_at > Instant::now())
+    }
+
+    fn note_dns_failure(&self) {
+        *self
+            .dns_retry_at
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+            Some(Instant::now() + DKIM_DNS_FAILURE_BACKOFF);
+    }
+
+    fn clear_dns_failure(&self) {
+        *self
+            .dns_retry_at
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+    }
+}
+
+fn temporary_signature_evidence(
+    header: &mail_auth::headers::Header<'_, mail_auth::dkim::Signature>,
+    from_domain: Option<&str>,
+) -> DkimSignatureEvidence {
+    let signature = &header.header;
+    DkimSignatureEvidence {
+        header_index: None,
+        status: DkimSignatureStatus::TemporaryError,
+        reason_code: Some("dns_backoff".into()),
+        reason: Some("DKIM DNS lookup deferred after a recent resolver failure".into()),
+        signing_domain: Some(signature.d.clone()),
+        selector: Some(signature.s.clone()),
+        identity: (!signature.i.is_empty()).then(|| signature.i.clone()),
+        algorithm: Some(algorithm_name(signature.a).into()),
+        signed_headers: signature.h.clone(),
+        from_domain_aligned: from_domain.map(|from| domains_align(from, &signature.d)),
+        key_bits: None,
+        key_testing: false,
+        raw_header_value: Some(String::from_utf8_lossy(header.value).into_owned()),
     }
 }
 
@@ -211,5 +291,45 @@ mod tests {
         assert!(domains_align("mail.example.com", "example.com"));
         assert!(!domains_align("example.com", "example.net"));
         assert!(!domains_align("example.co.uk", "attacker.co.uk"));
+    }
+
+    #[tokio::test]
+    async fn resolver_backoff_is_immediate_and_preserves_signature_identity() {
+        let verifier = DkimVerifier::new(DkimDnsResolver::System).unwrap();
+        verifier.note_dns_failure();
+        let raw = concat!(
+            "DKIM-Signature: v=1; a=rsa-sha256; d=example.test; s=mail;\r\n",
+            " h=from:subject; bh=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=; b=AA==\r\n",
+            "From: sender@example.test\r\n",
+            "Subject: bounded retry\r\n",
+            "\r\n",
+            "body\r\n",
+        );
+        let started = Instant::now();
+        let result = verifier.verify(raw.as_bytes(), 1).await;
+
+        assert!(started.elapsed() < Duration::from_millis(100));
+        assert_eq!(result.status, DkimAuthenticationStatus::TemporaryFailure);
+        assert_eq!(result.signatures.len(), 1);
+        assert_eq!(
+            result.signatures[0].signing_domain.as_deref(),
+            Some("example.test")
+        );
+        assert_eq!(
+            result.signatures[0].reason_code.as_deref(),
+            Some("dns_backoff")
+        );
+    }
+
+    #[tokio::test]
+    async fn resolver_backoff_does_not_misclassify_unsigned_mail() {
+        let verifier = DkimVerifier::new(DkimDnsResolver::System).unwrap();
+        verifier.note_dns_failure();
+        let result = verifier
+            .verify(b"From: sender@example.test\r\n\r\nbody\r\n", 1)
+            .await;
+
+        assert_eq!(result.status, DkimAuthenticationStatus::Unsigned);
+        assert!(result.signatures.is_empty());
     }
 }

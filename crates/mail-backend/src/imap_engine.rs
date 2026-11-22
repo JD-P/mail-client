@@ -690,6 +690,13 @@ impl ImapAccountEngine {
             .offline_download_candidates(account_id, 1)
             .await?
             .is_empty();
+        // A DNS outage marks messages as temporarily unverifiable instead of
+        // holding the local mirror hostage. Future syncs retry those durable
+        // messages newest-first; the verifier stops this pass after the first
+        // bounded transport failure.
+        self.backend
+            .retry_temporary_dkim_for_account(account_id)
+            .await?;
         let evicted_cached_bodies = if self.config.body_retention_batch_size == 0 {
             0
         } else {

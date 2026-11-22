@@ -41,6 +41,7 @@ const MAX_PREPARE_CONCURRENCY: usize = 16;
 const MAX_MESSAGE_LOAD_BATCH: usize = 100;
 const MAX_IMAP_METADATA_UIDS: usize = 100;
 const IMAP_BODY_CHUNK_BYTES: usize = 1024 * 1024;
+const MAX_TEMPORARY_DKIM_RETRIES: usize = 256;
 
 struct PreparedIngest {
     id: MessageId,
@@ -587,6 +588,78 @@ impl Backend {
             }
         }
         Ok(crate::delivery_auth::parse(raw, &sources))
+    }
+
+    /// Retry transient DKIM failures against already-durable message bytes.
+    /// Resolver transport failures stop the batch immediately, so an offline
+    /// resolver costs one bounded attempt per synchronization rather than one
+    /// attempt per cached message. A later automatic sync resumes newest-first.
+    pub(crate) async fn retry_temporary_dkim_for_account(
+        &self,
+        account_id: AccountId,
+    ) -> Result<usize> {
+        let candidates = {
+            let connection = self.inner.connection.lock().await;
+            let mut rows = connection
+                .query(
+                    r#"SELECT DISTINCT m.id, m.blob_hash, m.received_at
+                       FROM messages m
+                       JOIN message_instances mi ON mi.message_id = m.id
+                       WHERE mi.account_id = ?1
+                         AND m.content_availability = 'complete'
+                         AND json_extract(m.dkim_json, '$.status') = 'temporary_failure'
+                       ORDER BY m.received_at DESC
+                       LIMIT ?2"#,
+                    (
+                        account_id.to_string(),
+                        i64::try_from(MAX_TEMPORARY_DKIM_RETRIES).unwrap_or(i64::MAX),
+                    ),
+                )
+                .await?;
+            let mut candidates = Vec::new();
+            while let Some(row) = rows.next().await? {
+                candidates.push((
+                    parse_id::<MessageId>(row.get(0)?, "message")?,
+                    row.get::<String>(1)?,
+                ));
+            }
+            candidates
+        };
+        let mut verified = Vec::new();
+        for (message_id, blob_hash) in candidates {
+            let raw = self.inner.blobs.get(&blob_hash).await?;
+            let evidence = self
+                .inner
+                .dkim_verifier
+                .verify(&raw, Utc::now().timestamp())
+                .await;
+            if evidence.status == crate::DkimAuthenticationStatus::TemporaryFailure {
+                break;
+            }
+            verified.push((message_id, serde_json::to_string(&evidence)?));
+        }
+        if verified.is_empty() {
+            return Ok(0);
+        }
+        let mut changed_ids = Vec::with_capacity(verified.len());
+        let mut connection = self.inner.connection.lock().await;
+        let transaction = connection.transaction().await?;
+        for (message_id, evidence) in verified {
+            if transaction
+                .execute(
+                    "UPDATE messages SET dkim_json = ?1 WHERE id = ?2 AND json_extract(dkim_json, '$.status') = 'temporary_failure'",
+                    (evidence, message_id.to_string()),
+                )
+                .await?
+                > 0
+            {
+                changed_ids.push(message_id);
+            }
+        }
+        transaction.commit().await?;
+        drop(connection);
+        self.evaluate_automation(&changed_ids).await?;
+        Ok(changed_ids.len())
     }
 
     pub(crate) async fn blob_is_referenced(&self, hash: &str) -> Result<bool> {

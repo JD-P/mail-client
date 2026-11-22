@@ -86,6 +86,24 @@ impl MessageAuthenticator {
         Self::new(ResolverConfig::tls(&QUAD9), dnssec_resolver_options())
     }
 
+    /// Creates an authenticator that queries Quad9 over DNS-over-TLS with a
+    /// caller-selected per-attempt timeout and attempt count.
+    ///
+    /// Interactive applications should normally put a deadline around the
+    /// complete verification operation as well.  This constructor exists so
+    /// a resolver outage cannot silently multiply Hickory's five-second
+    /// default by its two default attempts for every message being ingested.
+    #[cfg(any(feature = "aws-lc-rs", feature = "dns-tls-ring"))]
+    pub fn new_quad9_tls_bounded(
+        timeout: std::time::Duration,
+        attempts: usize,
+    ) -> Result<Self, NetError> {
+        let mut options = dnssec_resolver_options();
+        options.timeout = timeout;
+        options.attempts = attempts.max(1);
+        Self::new(ResolverConfig::tls(&QUAD9), options)
+    }
+
     /// Creates an authenticator that uses the system resolver configuration
     /// (`/etc/resolv.conf` on Unix, the registry on Windows).
     ///

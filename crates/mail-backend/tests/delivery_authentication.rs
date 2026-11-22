@@ -1,9 +1,9 @@
 use lizard_mail_backend::{
     AccountKind, AuthenticationMethodKind, AuthenticationMethodResult,
     AuthenticationResultsHeaderKind, AuthenticationResultsTrust, Backend, BackendConfig,
-    BackendError, DkimAuthenticationStatus, FolderKind, HeuristicSourceKind, ImapFetchedHeaders,
-    ImapSecurity, ImapSettings, IngestMessage, MessageContentAvailability, NewAccount, NewFolder,
-    NewHeuristic, RemoteMessageIdentity,
+    BackendError, DkimAuthenticationStatus, FindingPresentation, FolderKind, HeuristicSourceKind,
+    ImapFetchedHeaders, ImapSecurity, ImapSettings, IngestMessage, MessageContentAvailability,
+    NewAccount, NewFolder, NewHeuristic, RemoteMessageIdentity,
 };
 
 fn authentication_headers() -> &'static str {
@@ -120,6 +120,22 @@ async fn provider_results_are_account_scoped_and_never_replace_independent_dkim(
 
     let message = backend.messages().get(id).await.unwrap();
     assert_eq!(message.dkim.status, DkimAuthenticationStatus::Unsigned);
+    let unsigned = message
+        .findings
+        .iter()
+        .find(|finding| finding.code == "unsigned_dkim_provider_verified")
+        .expect("trusted aligned SPF should make unsigned mail non-blocking");
+    assert_eq!(
+        unsigned.presentation,
+        FindingPresentation::PersistentWarningFooter
+    );
+    assert!(
+        message
+            .findings
+            .iter()
+            .all(|finding| finding.code != "missing_aligned_dkim"),
+        "provider-verified unsigned mail must not show the spoof interstitial"
+    );
     let headers = &message.delivery_authentication.observations[0].headers;
     assert_eq!(headers.len(), 4);
     assert_eq!(headers[0].trust, AuthenticationResultsTrust::Trusted);
@@ -220,6 +236,14 @@ def detect(message):
         .findings
         .iter()
         .all(|finding| finding.code != "trusted_dmarc_pass"));
+    assert!(message
+        .findings
+        .iter()
+        .all(|finding| finding.code != "unsigned_dkim_provider_verified"));
+    assert!(message.findings.iter().any(|finding| {
+        finding.code == "missing_aligned_dkim"
+            && finding.presentation == FindingPresentation::OpenInterstitial
+    }));
     let after_revision = backend
         .heuristics()
         .evaluations(id)

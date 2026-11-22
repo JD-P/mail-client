@@ -1,6 +1,7 @@
 use crate::heuristic::ProducedFinding;
 use crate::{
-    ArchiveInspectionState, ArchiveLimits, Backend, DkimAuthenticationStatus, DkimSignatureStatus,
+    ArchiveInspectionState, ArchiveLimits, AuthenticationMethodKind, AuthenticationMethodResult,
+    AuthenticationResultsTrust, Backend, DkimAuthenticationStatus, DkimSignatureStatus,
     FindingPresentation, FindingSeverity, FindingTargetKind, Heuristic, HeuristicEvaluationStatus,
     HeuristicId, HeuristicSourceKind, Message, MessageContentAvailability, OpenPgpSignatureStatus,
     Result, ThreadSenderTrust,
@@ -22,7 +23,7 @@ use url::{Host, Url};
 use uuid::Uuid;
 
 const BUILTIN_ID: Uuid = Uuid::from_u128(0x5f01da21_0f79_5f3e_b210_0d96438890ac);
-const BUILTIN_VERSION: u32 = 2;
+const BUILTIN_VERSION: u32 = 3;
 const BUILTIN_SOURCE: &str = "native:security-evidence";
 const MAX_FINDINGS: usize = 256;
 const MAX_HTML_TOKENS: usize = 100_000;
@@ -583,6 +584,21 @@ fn dkim_findings(message: &Message, collector: &mut FindingCollector) {
         .as_deref()
         .and_then(address_domain)
         .and_then(|domain| registrable(&domain));
+    if message.dkim.status == DkimAuthenticationStatus::Unsigned
+        && trusted_aligned_spf_delivery(message)
+    {
+        collector.push(message_finding(
+            "unsigned_dkim_provider_verified",
+            FindingPresentation::PersistentWarningFooter,
+            FindingSeverity::Warning,
+            json!({
+                "from_domain": from_domain,
+                "status": message.dkim.status,
+                "delivery_evidence": "trusted_dmarc_and_aligned_spf_pass",
+            }),
+        ));
+        return;
+    }
     let unaligned = message
         .dkim
         .signatures
@@ -602,6 +618,66 @@ fn dkim_findings(message: &Message, collector: &mut FindingCollector) {
             "valid_unaligned_signature": unaligned,
         }),
     ));
+}
+
+/// A trusted DMARC pass establishes that the receiver accepted an aligned
+/// authentication path.  Requiring an SPF pass whose RFC5321.MailFrom domain
+/// independently aligns with the visible From domain lets the UI make the
+/// narrower statement that the delivery path was authorized without calling
+/// the message signed.  Both results must come from the same trusted physical
+/// Authentication-Results field.
+fn trusted_aligned_spf_delivery(message: &Message) -> bool {
+    let Some(from_domain) = message
+        .summary
+        .from_address
+        .as_deref()
+        .and_then(address_domain)
+    else {
+        return false;
+    };
+    message
+        .delivery_authentication
+        .observations
+        .iter()
+        .flat_map(|observation| &observation.headers)
+        .filter(|header| header.trust == AuthenticationResultsTrust::Trusted)
+        .any(|header| {
+            let dmarc_pass = header.methods.iter().any(|method| {
+                method.kind == AuthenticationMethodKind::Dmarc
+                    && method.result == AuthenticationMethodResult::Pass
+            });
+            let aligned_spf_pass = header.methods.iter().any(|method| {
+                method.kind == AuthenticationMethodKind::Spf
+                    && method.result == AuthenticationMethodResult::Pass
+                    && method.properties.iter().any(|property| {
+                        property.namespace.as_deref() == Some("smtp")
+                            && property.name == "mailfrom"
+                            && authentication_domain(&property.value)
+                                .is_some_and(|domain| domains_align(&from_domain, &domain))
+                    })
+            });
+            dmarc_pass && aligned_spf_pass
+        })
+}
+
+fn authentication_domain(value: &str) -> Option<String> {
+    let value = value.trim().trim_matches(['<', '>']);
+    let domain = value
+        .rsplit_once('@')
+        .map_or(value, |(_, domain)| domain)
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+    (!domain.is_empty()).then_some(domain)
+}
+
+fn domains_align(left: &str, right: &str) -> bool {
+    let left = left.trim_end_matches('.');
+    let right = right.trim_end_matches('.');
+    left.eq_ignore_ascii_case(right)
+        || matches!(
+            (psl::domain_str(left), psl::domain_str(right)),
+            (Some(left), Some(right)) if left.eq_ignore_ascii_case(right)
+        )
 }
 
 fn navigation_findings(
@@ -1618,5 +1694,15 @@ mod tests {
     fn uts39_skeleton_matches_unicode_and_ascii_lookalikes() {
         assert_eq!(skeleton_string("раypal.com"), skeleton_string("paypal.com"));
         assert_eq!(skeleton_string("paypaI.com"), skeleton_string("paypal.com"));
+    }
+
+    #[test]
+    fn spf_mailfrom_alignment_uses_the_organizational_domain() {
+        assert_eq!(
+            authentication_domain("<bounce@mailer.example.com>"),
+            Some("mailer.example.com".into())
+        );
+        assert!(domains_align("notices.example.com", "mailer.example.com"));
+        assert!(!domains_align("example.com", "example.net"));
     }
 }

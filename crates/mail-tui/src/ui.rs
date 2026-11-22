@@ -216,6 +216,14 @@ fn draw_account_editor(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
             },
             editor.secret_label().into(),
         ),
+        (
+            "Trusted authserv-ids (advanced)",
+            if editor.trusted_authserv_ids.trim().is_empty() {
+                "None — provider Authentication-Results are not trusted".into()
+            } else {
+                safe_single_line_text(&editor.trusted_authserv_ids)
+            },
+        ),
     ];
     let items = fields
         .into_iter()
@@ -237,6 +245,7 @@ fn draw_account_editor(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
         AccountField::Security => 4,
         AccountField::Authentication => 5,
         AccountField::Secret => 6,
+        AccountField::AuthservIds => 7,
     };
     let mut state = ListState::default().with_selected(Some(selected));
     frame.render_stateful_widget(
@@ -662,8 +671,8 @@ fn dkim_summary(message: &Message) -> String {
             |domain| format!("No valid aligned signature from {domain}"),
         ),
         DkimAuthenticationStatus::Unsigned => claimed.map_or_else(
-            || "No DKIM signature".into(),
-            |domain| format!("No valid signature from {domain}"),
+            || "Unsigned — no DKIM signature".into(),
+            |domain| format!("Unsigned — {domain} did not attach a DKIM signature"),
         ),
         DkimAuthenticationStatus::Failed => "DKIM verification failed".into(),
         DkimAuthenticationStatus::TemporaryFailure => {
@@ -896,8 +905,24 @@ fn finding_summary(finding: &HeuristicFinding) -> String {
             "An unknown sender claims to belong to an established conversation".into(),
         "unaligned_dkim" =>
             "A DKIM signature passed, but it does not establish the visible From domain".into(),
-        "missing_aligned_dkim" => format!(
-            "There is no valid signature from {}",
+        "missing_aligned_dkim" => match string("status").as_deref() {
+            Some("unsigned") => format!(
+                "{} did not attach a DKIM signature",
+                string("from_domain").unwrap_or_else(|| "The visible From domain".into()),
+            ),
+            Some("failed") => format!(
+                "A DKIM signature was present but failed verification for {}",
+                string("from_domain").unwrap_or_else(|| "the visible From domain".into()),
+            ),
+            Some("temporary_failure") =>
+                "DKIM verification is temporarily unavailable".into(),
+            _ => format!(
+                "There is no valid signature from {}",
+                string("from_domain").unwrap_or_else(|| "the visible From domain".into()),
+            ),
+        },
+        "unsigned_dkim_provider_verified" => format!(
+            "Unsigned: your mail provider verified delivery through servers authorized by {}, but the domain did not sign this message",
             string("from_domain").unwrap_or_else(|| "the visible From domain".into()),
         ),
         "openpgp_protected_header_mismatch" =>

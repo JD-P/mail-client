@@ -64,10 +64,11 @@ pub enum AccountField {
     Security,
     Authentication,
     Secret,
+    AuthservIds,
 }
 
 impl AccountField {
-    const ALL: [Self; 7] = [
+    const ALL: [Self; 8] = [
         Self::Name,
         Self::Username,
         Self::Host,
@@ -75,6 +76,7 @@ impl AccountField {
         Self::Security,
         Self::Authentication,
         Self::Secret,
+        Self::AuthservIds,
     ];
 }
 
@@ -86,6 +88,7 @@ pub struct AccountEditor {
     pub port: String,
     pub security: ImapSecurity,
     pub authentication: AccountAuthentication,
+    pub trusted_authserv_ids: String,
     pub selected_field: AccountField,
     pub secret_entered: bool,
     secret: Zeroizing<String>,
@@ -103,6 +106,7 @@ impl AccountEditor {
             port: "993".into(),
             security: ImapSecurity::ImplicitTls,
             authentication: AccountAuthentication::Password,
+            trusted_authserv_ids: String::new(),
             selected_field: AccountField::Username,
             secret_entered: false,
             secret: Zeroizing::new(String::new()),
@@ -124,6 +128,7 @@ impl AccountEditor {
             port: settings.port.to_string(),
             security: settings.security,
             authentication,
+            trusted_authserv_ids: account.trusted_authserv_ids.join(", "),
             selected_field: AccountField::Name,
             secret_entered: false,
             secret: Zeroizing::new(String::new()),
@@ -1152,6 +1157,14 @@ impl MailApp {
             self.account_editor = Some(editor);
             return Ok(());
         }
+        let trusted_authserv_ids = match parse_trusted_authserv_ids(&editor.trusted_authserv_ids) {
+            Ok(values) => values,
+            Err(detail) => {
+                self.status = Some(detail);
+                self.account_editor = Some(editor);
+                return Ok(());
+            }
+        };
         let authentication_changed = editor
             .original_authentication
             .is_some_and(|original| original != editor.authentication);
@@ -1220,7 +1233,24 @@ impl MailApp {
         }
         .await;
         let saved = match save_result {
-            Ok(saved) => saved,
+            Ok(saved) => match self
+                .backend
+                .accounts()
+                .set_trusted_authserv_ids(saved.id, trusted_authserv_ids)
+                .await
+            {
+                Ok(saved) => saved,
+                Err(error) => {
+                    // The account and credential have already committed. Keep
+                    // editing that exact account rather than letting a retry
+                    // create a duplicate.
+                    editor.account_id = Some(saved.id);
+                    editor.credential_ref = saved.credential_ref;
+                    editor.secret_entered = false;
+                    self.account_editor = Some(editor);
+                    return Err(error);
+                }
+            },
             Err(error) => {
                 // A failed credential write has consumed and zeroized the
                 // attempted secret. Keep the non-secret fields for correction,
@@ -1473,6 +1503,9 @@ impl MailApp {
             AccountField::Port => {
                 editor.port.pop();
             }
+            AccountField::AuthservIds => {
+                editor.trusted_authserv_ids.pop();
+            }
             AccountField::Secret => {
                 editor.secret.pop();
                 editor.secret_entered = !editor.secret.is_empty();
@@ -1524,6 +1557,12 @@ impl MailApp {
             AccountField::Port if editor.port.len() < 5 && character.is_ascii_digit() => {
                 editor.port.push(character)
             }
+            AccountField::AuthservIds
+                if editor.trusted_authserv_ids.len() < 8 * 1024
+                    && !matches!(character, '\r' | '\n' | '\t') =>
+            {
+                editor.trusted_authserv_ids.push(character)
+            }
             AccountField::Secret if editor.secret.len() < 16 * 1024 => {
                 editor.secret.push(character);
                 editor.secret_entered = true;
@@ -1534,6 +1573,7 @@ impl MailApp {
             | AccountField::Port
             | AccountField::Security
             | AccountField::Authentication
+            | AccountField::AuthservIds
             | AccountField::Secret => {}
         }
     }
@@ -2027,6 +2067,34 @@ impl Drop for MailApp {
     }
 }
 
+fn parse_trusted_authserv_ids(value: &str) -> std::result::Result<Vec<String>, String> {
+    let mut values = Vec::new();
+    for raw in value.split(',') {
+        let normalized = raw.trim().trim_end_matches('.').to_ascii_lowercase();
+        if normalized.is_empty() {
+            continue;
+        }
+        if normalized.len() > 255
+            || !normalized.is_ascii()
+            || normalized
+                .bytes()
+                .any(|byte| !byte.is_ascii_alphanumeric() && !matches!(byte, b'.' | b'-' | b'_'))
+        {
+            return Err(format!(
+                "Trusted authentication service ID {raw:?} is invalid"
+            ));
+        }
+        if !values.contains(&normalized) {
+            values.push(normalized);
+        }
+    }
+    if values.len() > 32 {
+        return Err("At most 32 trusted authentication service IDs may be configured".into());
+    }
+    values.sort_unstable();
+    Ok(values)
+}
+
 fn sync_background_status(state: &ImapAccountSyncState) -> String {
     match state.status {
         lizard_mail_backend::ImapAccountSyncStatus::Connecting => {
@@ -2175,5 +2243,14 @@ mod tests {
             sync_background_status(&state),
             "(17/2345) Downloading/verifying newest mail first"
         );
+    }
+
+    #[test]
+    fn trusted_authserv_editor_normalizes_without_learning_from_mail() {
+        assert_eq!(
+            parse_trusted_authserv_ids(" MX.Provider.Example., mx.provider.example ").unwrap(),
+            ["mx.provider.example"]
+        );
+        assert!(parse_trusted_authserv_ids("mx.example; dkim=pass").is_err());
     }
 }
