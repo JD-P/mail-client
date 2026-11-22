@@ -16,7 +16,7 @@ use ratatui::widgets::{
     ScrollbarState, Wrap,
 };
 use ratatui::Frame;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use unicode_width::UnicodeWidthChar;
 use url::Url;
 
@@ -25,6 +25,8 @@ const FYI_HINT: Color = Color::Rgb(222, 143, 43);
 const COLD: Color = Color::Rgb(57, 132, 219);
 const SPAM: Color = Color::Rgb(212, 169, 50);
 const DANGER: Color = Color::Rgb(235, 65, 83);
+const LINK_CONTEXT_WORD_RADIUS: usize = 6;
+const LINK_CONTEXT_MAX_CHARS: usize = 240;
 
 pub fn draw(frame: &mut Frame<'_>, app: &MailApp) {
     let areas = Layout::default()
@@ -465,6 +467,19 @@ fn draw_workflow_banner(frame: &mut Frame<'_>, workflow: WorkflowView, area: Rec
 }
 
 fn draw_reader(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
+    let area = if app.security_override {
+        draw_restricted_caution_frame(frame, area);
+        if area.width > 2 && area.height > 2 {
+            area.inner(Margin {
+                horizontal: 1,
+                vertical: 1,
+            })
+        } else {
+            area
+        }
+    } else {
+        area
+    };
     let Some(thread) = &app.current_thread else {
         let message = app
             .reader_load_status()
@@ -627,15 +642,15 @@ fn draw_reader(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
         return;
     }
 
-    let (title, body_lines) = if let Some(page) = app.reader_html() {
+    let (title, mut body_lines) = if let Some(page) = app.reader_html() {
         let title = if app.security_override {
-            "Message · RESTRICTED VIEW · links disabled"
+            "Message · RESTRICTED VIEW · links made non-clickable"
         } else {
             "Message"
         };
         (
             title,
-            annotated_rendered_message_lines(page, message, inner_width),
+            annotated_rendered_message_lines(page, message, inner_width, app.security_override),
         )
     } else {
         let title = if app.security_override && message.body_html.is_some() {
@@ -649,11 +664,74 @@ fn draw_reader(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
         };
         let width = usize::from(chunks[1].width.saturating_sub(2).max(1));
         let mut lines = wrap_message_body(&message.body_text, width);
-        append_backend_link_section(&mut lines, message, width);
+        append_backend_link_section(&mut lines, message, width, app.security_override);
         (title, lines)
     };
+    if app.security_override {
+        defang_restricted_lines(&mut body_lines);
+    }
     let border_color = accent(app);
     draw_scrolling_panel(frame, app, chunks[1], title, body_lines, border_color);
+}
+
+fn draw_restricted_caution_frame(frame: &mut Frame<'_>, area: Rect) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let caution_style = |index: usize| {
+        if (index / 2).is_multiple_of(2) {
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+                .fg(Color::Yellow)
+                .bg(Color::Black)
+                .add_modifier(Modifier::BOLD)
+        }
+    };
+    let horizontal = |width: u16| {
+        Line::from(
+            (0..usize::from(width))
+                .map(|index| Span::styled("╱", caution_style(index)))
+                .collect::<Vec<_>>(),
+        )
+    };
+    frame.render_widget(
+        Paragraph::new(horizontal(area.width)),
+        Rect::new(area.x, area.y, area.width, 1),
+    );
+    if area.height > 1 {
+        frame.render_widget(
+            Paragraph::new(horizontal(area.width)),
+            Rect::new(
+                area.x,
+                area.y.saturating_add(area.height - 1),
+                area.width,
+                1,
+            ),
+        );
+    }
+    if area.height > 2 {
+        let vertical = |offset: usize, character: &'static str| {
+            Text::from(
+                (0..usize::from(area.height - 2))
+                    .map(|row| Line::styled(character, caution_style(row + offset)))
+                    .collect::<Vec<_>>(),
+            )
+        };
+        frame.render_widget(
+            Paragraph::new(vertical(0, "▌")),
+            Rect::new(area.x, area.y + 1, 1, area.height - 2),
+        );
+        if area.width > 1 {
+            frame.render_widget(
+                Paragraph::new(vertical(1, "▐")),
+                Rect::new(area.x + area.width - 1, area.y + 1, 1, area.height - 2),
+            );
+        }
+    }
 }
 
 fn sender_identity_lines(app: &MailApp, message: &Message, width: usize) -> Vec<Line<'static>> {
@@ -1226,6 +1304,7 @@ fn annotated_rendered_message_lines(
     page: &RenderedPage,
     message: &Message,
     width: usize,
+    restricted: bool,
 ) -> Vec<Line<'static>> {
     if page.links.is_empty() {
         return page.lines.clone();
@@ -1245,6 +1324,10 @@ fn annotated_rendered_message_lines(
         "Links and safety",
         Style::default().add_modifier(Modifier::BOLD),
     ));
+    if restricted {
+        append_restricted_link_explanation(&mut lines, message, width);
+    }
+    let link_contexts = rendered_link_contexts(page);
     for link in &page.links {
         let targets = message
             .links
@@ -1253,6 +1336,9 @@ fn annotated_rendered_message_lines(
             .map(|message_link| message_link.id.clone())
             .collect::<BTreeSet<_>>();
         append_targeted_link_findings(&mut lines, message, &targets, width);
+        if let Some(context) = link_contexts.get(&link.number) {
+            append_link_context(&mut lines, &context, width);
+        }
         append_wrapped_styled(
             &mut lines,
             &format!("{}. {}", link.number, rendered_link_destination(link)),
@@ -1263,7 +1349,12 @@ fn annotated_rendered_message_lines(
     lines
 }
 
-fn append_backend_link_section(lines: &mut Vec<Line<'static>>, message: &Message, width: usize) {
+fn append_backend_link_section(
+    lines: &mut Vec<Line<'static>>,
+    message: &Message,
+    width: usize,
+    restricted: bool,
+) {
     if message.links.is_empty() {
         return;
     }
@@ -1272,9 +1363,16 @@ fn append_backend_link_section(lines: &mut Vec<Line<'static>>, message: &Message
         "Links and safety",
         Style::default().add_modifier(Modifier::BOLD),
     ));
+    if restricted {
+        append_restricted_link_explanation(lines, message, width);
+    }
+    let link_contexts = backend_link_contexts(message);
     for link in &message.links {
         let targets = BTreeSet::from([link.id.clone()]);
         append_targeted_link_findings(lines, message, &targets, width);
+        if let Some(context) = link_contexts.get(&link.id) {
+            append_link_context(lines, &context, width);
+        }
         let destination = if matches!(link.scheme.as_str(), "http" | "https" | "mailto" | "cid") {
             safe_single_line_text(&link.destination)
         } else {
@@ -1287,6 +1385,236 @@ fn append_backend_link_section(lines: &mut Vec<Line<'static>>, message: &Message
             Style::default().fg(Color::Cyan),
         );
     }
+}
+
+fn append_restricted_link_explanation(
+    lines: &mut Vec<Line<'static>>,
+    message: &Message,
+    width: usize,
+) {
+    let identity_warning = if aligned_dkim_domain(&message.dkim.signatures).is_none() {
+        message
+            .summary
+            .from_address
+            .as_deref()
+            .and_then(address_domain)
+            .map_or_else(
+                || "The sender's site did not sign this email.".into(),
+                |domain| format!("This email was not signed by {domain}."),
+            )
+    } else {
+        "This email triggered a high-risk security warning.".into()
+    };
+    let explanation = format!(
+        "{identity_warning} You are strongly advised to avoid using the links below. For your protection, spaces have been added to every address so your terminal cannot make it clickable. Remove those spaces manually only if you deliberately choose to use one."
+    );
+    append_wrapped_styled(
+        lines,
+        &explanation,
+        width,
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+    );
+}
+
+fn defang_restricted_lines(lines: &mut [Line<'static>]) {
+    for line in lines {
+        for span in &mut line.spans {
+            let defanged = defang_clickable_runs(span.content.as_ref());
+            if defanged != span.content {
+                span.content = defanged.into();
+            }
+        }
+    }
+}
+
+fn defang_clickable_runs(value: &str) -> String {
+    let mut output = String::with_capacity(value.len());
+    let mut token = String::new();
+    let flush = |output: &mut String, token: &mut String| {
+        if token_looks_clickable(token) {
+            output.push_str(&defang_destination(token));
+        } else {
+            output.push_str(token);
+        }
+        token.clear();
+    };
+    for character in value.chars() {
+        if character.is_whitespace() {
+            flush(&mut output, &mut token);
+            output.push(character);
+        } else {
+            token.push(character);
+        }
+    }
+    flush(&mut output, &mut token);
+    output
+}
+
+fn token_looks_clickable(value: &str) -> bool {
+    let value = value.trim_matches(|character: char| {
+        matches!(
+            character,
+            ',' | ';' | '!' | '.' | '(' | ')' | '[' | ']' | '{' | '}' | '<' | '>' | '"' | '\''
+        )
+    });
+    if value.contains("://") || value.to_ascii_lowercase().starts_with("www.") {
+        return true;
+    }
+    if value.contains('@') && value.contains('.') {
+        return true;
+    }
+    let authority = value
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or_default()
+        .rsplit('@')
+        .next()
+        .unwrap_or_default()
+        .split(':')
+        .next()
+        .unwrap_or_default();
+    let Some(final_label) = authority
+        .rsplit('.')
+        .next()
+        .filter(|_| authority.contains('.'))
+    else {
+        return false;
+    };
+    (2..=63).contains(&final_label.len())
+        && final_label
+            .chars()
+            .all(|character| character.is_ascii_alphabetic())
+}
+
+fn defang_destination(value: &str) -> String {
+    let mut output = String::with_capacity(value.len().saturating_add(8));
+    for character in value.chars() {
+        output.push(character);
+        if matches!(
+            character,
+            ':' | '/' | '.' | '@' | '?' | '#' | '&' | '=' | '%'
+        ) {
+            output.push(' ');
+        }
+    }
+    output
+}
+
+fn append_link_context(lines: &mut Vec<Line<'static>>, context: &str, width: usize) {
+    append_wrapped_styled(
+        lines,
+        &format!("Context: {context}"),
+        width,
+        Style::default().fg(Color::White),
+    );
+}
+
+fn rendered_link_contexts(page: &RenderedPage) -> HashMap<usize, String> {
+    let body_end = page.link_targets_start.unwrap_or(page.lines.len());
+    let mut body = String::new();
+    let mut marker_ranges = HashMap::new();
+    for line in page.lines.iter().take(body_end) {
+        for span in &line.spans {
+            let start = body.len();
+            body.push_str(span.content.as_ref());
+            if span.style.add_modifier.contains(Modifier::UNDERLINED) {
+                let value = span.content.as_ref();
+                let mut searched = 0;
+                while let Some(open) = value[searched..].find('[') {
+                    let open = searched + open;
+                    let Some(close) = value[open + 1..].find(']') else {
+                        break;
+                    };
+                    let close = open + 1 + close;
+                    if let Ok(number) = value[open + 1..close].parse::<usize>() {
+                        marker_ranges
+                            .entry(number)
+                            .or_insert(start + open..start + close + 1);
+                    }
+                    searched = close + 1;
+                }
+            }
+        }
+        body.push(' ');
+    }
+    marker_ranges
+        .into_iter()
+        .filter_map(|(number, marker)| {
+            bounded_surrounding_words(&body, marker.start, marker.end)
+                .map(|context| (number, context))
+        })
+        .collect()
+}
+
+fn backend_link_contexts(message: &Message) -> HashMap<String, String> {
+    let mut contexts = HashMap::new();
+    let mut cursor = 0;
+    for link in &message.links {
+        let relative = message.body_text[cursor..]
+            .find(&link.destination)
+            .map(|offset| cursor + offset);
+        let Some(start) = relative.or_else(|| message.body_text.find(&link.destination)) else {
+            continue;
+        };
+        let end = start.saturating_add(link.destination.len());
+        cursor = end;
+        if let Some(context) = bounded_surrounding_words(&message.body_text, start, end) {
+            contexts.insert(link.id.clone(), context);
+        }
+    }
+    contexts
+}
+
+fn bounded_surrounding_words(text: &str, start: usize, end: usize) -> Option<String> {
+    if start > end
+        || end > text.len()
+        || !text.is_char_boundary(start)
+        || !text.is_char_boundary(end)
+    {
+        return None;
+    }
+    let mut left = text[..start]
+        .split_whitespace()
+        .rev()
+        .take(LINK_CONTEXT_WORD_RADIUS + 1)
+        .collect::<Vec<_>>();
+    let left_truncated = left.len() > LINK_CONTEXT_WORD_RADIUS;
+    left.truncate(LINK_CONTEXT_WORD_RADIUS);
+    left.reverse();
+    let mut right = text[end..]
+        .split_whitespace()
+        .take(LINK_CONTEXT_WORD_RADIUS + 1)
+        .collect::<Vec<_>>();
+    let right_truncated = right.len() > LINK_CONTEXT_WORD_RADIUS;
+    right.truncate(LINK_CONTEXT_WORD_RADIUS);
+    if left.is_empty() && right.is_empty() {
+        return None;
+    }
+
+    let mut context = String::new();
+    if left_truncated {
+        context.push_str("… ");
+    }
+    context.push_str(&left.join(" "));
+    if !context.is_empty() && !right.is_empty() {
+        context.push(' ');
+    }
+    context.push_str(&right.join(" "));
+    if right_truncated {
+        context.push_str(" …");
+    }
+    let context = safe_single_line_text(&context);
+    let mut bounded = context
+        .chars()
+        .take(LINK_CONTEXT_MAX_CHARS)
+        .collect::<String>();
+    if context.chars().count() > LINK_CONTEXT_MAX_CHARS {
+        bounded.push('…');
+    }
+    (!bounded.trim().is_empty()).then_some(bounded)
 }
 
 fn append_targeted_link_findings(
@@ -2190,8 +2518,9 @@ mod tests {
         .await
         .unwrap();
         let html = concat!(
-            "<p>Reset your password.</p>",
-            "<a href='https://evil.example.net/login'>https://login.example.com</a>"
+            "<p>Reset your password using ",
+            "<a href='https://evil.example.net/login'>https://login.example.com</a>",
+            " before noon to retain access.</p>"
         );
         let raw = format!(
             concat!(
@@ -2222,7 +2551,8 @@ mod tests {
         assert!(top.contains("Misleading or disguised links"));
         assert!(!top.contains("link text says"));
 
-        let annotated = annotated_rendered_message_lines(&page, &message, 100)
+        let annotated_lines = annotated_rendered_message_lines(&page, &message, 100, false);
+        let annotated = annotated_lines
             .iter()
             .map(rendered_line_text)
             .collect::<Vec<_>>();
@@ -2238,6 +2568,53 @@ mod tests {
             .iter()
             .position(|line| line.contains("1. https://evil.example.net/login"))
             .expect("the numbered destination should remain visible");
-        assert!(warning < destination);
+        let context = annotated
+            .iter()
+            .position(|line| {
+                line.contains(
+                    "Context: Reset your password using https://login.example.com before noon to retain access.",
+                )
+            })
+            .expect("the surrounding link text should be repeated beside the destination");
+        assert!(warning < context && context < destination);
+        assert_eq!(annotated_lines[context].style.fg, Some(Color::White));
+
+        let mut restricted = annotated_rendered_message_lines(&page, &message, 100, true);
+        defang_restricted_lines(&mut restricted);
+        let restricted = restricted
+            .iter()
+            .map(rendered_line_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(restricted.contains("This email was not signed by example. com."));
+        assert!(restricted.contains("spaces have been added to every address"));
+        assert!(restricted.contains("https: / / evil. example. net/ login"));
+        assert!(!restricted.contains("https://"));
+        assert!(!restricted.contains("evil.example.net"));
+    }
+
+    #[test]
+    fn link_context_is_bounded_to_neighboring_words() {
+        let text = "zero one two three four five six https://example.test seven eight nine ten eleven twelve thirteen";
+        let start = text.find("https://example.test").unwrap();
+        let context =
+            bounded_surrounding_words(text, start, start + "https://example.test".len()).unwrap();
+
+        assert_eq!(
+            context,
+            "… one two three four five six seven eight nine ten eleven twelve …"
+        );
+    }
+
+    #[test]
+    fn restricted_destinations_are_inert_and_exactly_recoverable() {
+        let original =
+            "https://user@example.com/reset?next=https%3A%2F%2Faccounts.example.com&id=7";
+        let defanged = defang_destination(original);
+
+        assert_eq!(defanged.replace(' ', ""), original);
+        assert!(!defanged.contains("://"));
+        assert!(!defanged.contains("example.com"));
+        assert!(!defanged.contains("user@example"));
     }
 }

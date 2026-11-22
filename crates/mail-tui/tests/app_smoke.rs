@@ -7,6 +7,7 @@ use lizard_mail_backend::{
 use lizard_mail_tui::app::{AppCommand, MailApp, Screen};
 use lizard_mail_tui::{HtmlRenderIsolationConfig, IsolatedHtmlRenderer, Limits};
 use ratatui::backend::TestBackend;
+use ratatui::style::Color;
 use ratatui::Terminal;
 use std::{path::PathBuf, time::Duration};
 use zeroize::Zeroizing;
@@ -380,6 +381,23 @@ async fn cold_reader_keeps_identity_context_and_persistent_explanations() {
     assert!(text.contains("Received:"));
     assert!(text.contains("Message claims sent:"));
     assert!(text.contains("RESTRICTED VIEW"));
+    assert!(text.contains('╱'));
+    let caution_cells = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .filter(|cell| {
+            matches!(
+                (cell.fg, cell.bg),
+                (Color::Black, Color::Yellow) | (Color::Yellow, Color::Black)
+            )
+        })
+        .count();
+    assert!(
+        caution_cells >= 120,
+        "restricted mode should have a conspicuous yellow/black perimeter"
+    );
 }
 
 #[tokio::test]
