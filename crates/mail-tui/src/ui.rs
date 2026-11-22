@@ -1,11 +1,12 @@
 use crate::app::{AccountAuthentication, AccountField, ContactField, MailApp, Screen};
+use crate::{LinkKind, LinkReference, RenderedPage};
 use chrono::{DateTime, Datelike, Local, Utc};
 use lizard_mail_backend::{
     AuthenticationMethodKind, AuthenticationMethodResult, AuthenticationResultsTrust,
-    DkimAuthenticationStatus, DkimSignatureStatus, FindingSeverity, HeuristicFinding, ImapSecurity,
-    InboxClass, Message, MessageContentAvailability, OpenPgpBindingState, OpenPgpEncryptionStatus,
-    OpenPgpSignatureStatus, RelationshipKind, RemoteContentPolicy, ThreadWorkStatus, WarmRoute,
-    WorkflowView,
+    DkimAuthenticationStatus, DkimSignatureStatus, FindingSeverity, FindingTargetKind,
+    HeuristicFinding, ImapSecurity, InboxClass, Message, MessageContentAvailability, MessageLink,
+    OpenPgpBindingState, OpenPgpEncryptionStatus, OpenPgpSignatureStatus, RelationshipKind,
+    RemoteContentPolicy, ThreadWorkStatus, WarmRoute, WorkflowView,
 };
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -15,7 +16,9 @@ use ratatui::widgets::{
     ScrollbarState, Wrap,
 };
 use ratatui::Frame;
+use std::collections::{BTreeMap, BTreeSet};
 use unicode_width::UnicodeWidthChar;
+use url::Url;
 
 const WARM: Color = Color::Rgb(198, 48, 67);
 const FYI_HINT: Color = Color::Rgb(222, 143, 43);
@@ -510,27 +513,36 @@ fn draw_reader(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
             message,
             12,
             usize::from(area.width.saturating_sub(4).max(1)),
+            "in the restricted message",
         );
-        lines.extend([
-            Line::raw(""),
-            Line::raw("Go back unless you have a specific reason to inspect this message."),
-            Line::styled(
-                "If you continue, links and remote content remain disabled.",
-                warning_style,
-            ),
-            Line::raw(
-                "Use a bookmark, official app, or an address you already know; do not copy a site address from this email.",
-            ),
-            Line::raw(""),
-            Line::raw("[Esc] Back   [O] Read restricted"),
-        ]);
+        let sections = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(3), Constraint::Length(5)])
+            .split(area);
         draw_scrolling_panel(
             frame,
             app,
-            area,
+            sections[0],
             "Intrusive security interruption",
             lines,
             security_color(severity),
+        );
+        frame.render_widget(
+            Paragraph::new(Text::from(vec![
+                Line::styled(
+                    "[Esc] Go back (recommended)    [O] Read restricted",
+                    warning_style,
+                ),
+                Line::raw("Restricted view keeps links and remote content disabled."),
+                Line::raw("Exact link warnings appear immediately above each affected link."),
+            ]))
+            .block(
+                Block::default()
+                    .title("Choose how to continue")
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(security_color(severity))),
+            ),
+            sections[1],
         );
         return;
     }
@@ -578,7 +590,7 @@ fn draw_reader(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
         Span::styled("Work: ", Style::default().add_modifier(Modifier::BOLD)),
         Span::raw(format!("{:?}", thread.summary.work_state.status)),
     ]));
-    append_finding_lines(&mut header_lines, message, 8, inner_width);
+    append_finding_lines(&mut header_lines, message, 8, inner_width, "below");
 
     let header_height = u16::try_from(header_lines.len().saturating_add(2))
         .unwrap_or(u16::MAX)
@@ -616,7 +628,15 @@ fn draw_reader(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
     }
 
     let (title, body_lines) = if let Some(page) = app.reader_html() {
-        ("Message", page.lines.clone())
+        let title = if app.security_override {
+            "Message · RESTRICTED VIEW · links disabled"
+        } else {
+            "Message"
+        };
+        (
+            title,
+            annotated_rendered_message_lines(page, message, inner_width),
+        )
     } else {
         let title = if app.security_override && message.body_html.is_some() {
             "Message · RESTRICTED VIEW · safe plain-text fallback"
@@ -627,13 +647,10 @@ fn draw_reader(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
         } else {
             "Message"
         };
-        (
-            title,
-            wrap_message_body(
-                &message.body_text,
-                usize::from(chunks[1].width.saturating_sub(2).max(1)),
-            ),
-        )
+        let width = usize::from(chunks[1].width.saturating_sub(2).max(1));
+        let mut lines = wrap_message_body(&message.body_text, width);
+        append_backend_link_section(&mut lines, message, width);
+        (title, lines)
     };
     let border_color = accent(app);
     draw_scrolling_panel(frame, app, chunks[1], title, body_lines, border_color);
@@ -861,6 +878,7 @@ fn append_finding_lines(
     message: &Message,
     limit: usize,
     width: usize,
+    link_detail_location: &str,
 ) {
     let active = message
         .findings
@@ -869,26 +887,81 @@ fn append_finding_lines(
             finding.dismissed_at.is_none() && finding.severity >= FindingSeverity::Warning
         })
         .collect::<Vec<_>>();
-    for finding in active.iter().take(limit) {
-        let (level, style) = finding_visual_style(finding.severity);
-        for line in
-            wrap_untrusted_identity(&format!("{level} — {}", finding_summary(finding)), width)
-        {
+    let mut summaries = active
+        .iter()
+        .filter(|finding| finding.target_kind != FindingTargetKind::Link)
+        .map(|finding| (finding.severity, finding_summary(finding)))
+        .collect::<Vec<_>>();
+    let mut link_categories =
+        BTreeMap::<&'static str, (FindingSeverity, BTreeSet<String>, usize)>::new();
+    for finding in active
+        .iter()
+        .filter(|finding| finding.target_kind == FindingTargetKind::Link)
+    {
+        let entry = link_categories
+            .entry(link_finding_category(&finding.code))
+            .or_insert((finding.severity, BTreeSet::new(), 0));
+        entry.0 = entry.0.max(finding.severity);
+        if let Some(target) = &finding.target_id {
+            entry.1.insert(target.clone());
+        }
+        entry.2 = entry.2.saturating_add(1);
+    }
+    for (category, (severity, targets, evidence_count)) in link_categories {
+        let affected = if targets.is_empty() {
+            format!("{evidence_count} warning(s)")
+        } else if targets.len() == 1 {
+            "1 link affected".into()
+        } else {
+            format!("{} links affected", targets.len())
+        };
+        summaries.push((
+            severity,
+            format!(
+                "{category} ({affected}). Exact explanations appear above the affected links {link_detail_location}"
+            ),
+        ));
+    }
+    summaries.sort_by(|left, right| right.0.cmp(&left.0));
+    for (severity, summary) in summaries.iter().take(limit) {
+        let (level, style) = finding_visual_style(*severity);
+        for line in wrap_untrusted_identity(&format!("{level} — {summary}"), width) {
             lines.push(Line::styled(line, style));
         }
     }
-    if active.len() > limit {
-        let hidden_severity = active
+    if summaries.len() > limit {
+        let hidden_severity = summaries
             .iter()
             .skip(limit)
-            .map(|finding| finding.severity)
+            .map(|finding| finding.0)
             .max()
             .unwrap_or(FindingSeverity::Warning);
         let (level, style) = finding_visual_style(hidden_severity);
         lines.push(Line::styled(
-            format!("{level} — {} additional findings", active.len() - limit),
+            format!(
+                "{level} — {} additional finding categories",
+                summaries.len() - limit
+            ),
             style,
         ));
+    }
+}
+
+fn link_finding_category(code: &str) -> &'static str {
+    match code {
+        "misleading_link_text"
+        | "misleading_userinfo"
+        | "embedded_popular_link_domain"
+        | "confusable_popular_link_domain"
+        | "ascii_confusable_domain"
+        | "unicode_confusable_domain"
+        | "invisible_or_bidi_domain" => "Misleading or disguised links",
+        "dangerous_scheme" => "Blocked link types",
+        "raw_ip_destination"
+        | "unusual_port"
+        | "nested_redirect"
+        | "cross_domain_account_action" => "Unexpected link destinations",
+        _ => "Suspicious links",
     }
 }
 
@@ -935,6 +1008,16 @@ fn finding_summary(finding: &HeuristicFinding) -> String {
             .and_then(|value| value.as_str())
             .map(safe_single_line_text)
     };
+    let number = |key: &str| finding.evidence.get(key).and_then(|value| value.as_u64());
+    let destination_host = || {
+        string("destination_host").or_else(|| {
+            string("destination").and_then(|destination| {
+                Url::parse(&destination)
+                    .ok()
+                    .and_then(|url| url.host_str().map(safe_single_line_text))
+            })
+        })
+    };
     match finding.code.as_str() {
         "ambiguous_sender_header" =>
             "The message does not contain exactly one unambiguous From mailbox; no sender identity was accepted".into(),
@@ -970,6 +1053,45 @@ fn finding_summary(finding: &HeuristicFinding) -> String {
         "confusable_popular_link_domain" => format!(
             "A link domain resembles the popular domain {} but is not the same domain",
             string("confusable_with").unwrap_or_else(|| "it appears to name".into()),
+        ),
+        "misleading_link_text" => format!(
+            "The link text says {}, but the link actually opens {}",
+            string("displayed_host").unwrap_or_else(|| "one site".into()),
+            destination_host().unwrap_or_else(|| "another site".into()),
+        ),
+        "misleading_userinfo" => format!(
+            "The address puts {} before an @ sign, but the link actually opens {}",
+            string("username").unwrap_or_else(|| "a site name".into()),
+            destination_host().unwrap_or_else(|| "another site".into()),
+        ),
+        "raw_ip_destination" => format!(
+            "This link opens the numeric network address {} instead of a named site",
+            string("host").unwrap_or_else(|| "shown below".into()),
+        ),
+        "unusual_port" => format!(
+            "This link connects to {} on unusual network port {}",
+            destination_host().unwrap_or_else(|| "the site below".into()),
+            number("port").map_or_else(|| "unknown".into(), |port| port.to_string()),
+        ),
+        "dangerous_scheme" => format!(
+            "This is not a normal web link: it uses the blocked {} link type",
+            string("scheme").unwrap_or_else(|| "unknown".into()),
+        ),
+        "nested_redirect" => format!(
+            "This link first opens {}, then contains a redirect toward {}",
+            destination_host().unwrap_or_else(|| "the site below".into()),
+            string("nested_destination")
+                .and_then(|destination| Url::parse(&destination).ok().and_then(|url| url.host_str().map(safe_single_line_text)))
+                .unwrap_or_else(|| "another site".into()),
+        ),
+        "ascii_confusable_domain" | "unicode_confusable_domain" => format!(
+            "The link opens {}, whose spelling resembles {} but is a different domain",
+            string("raw_host").or_else(destination_host).unwrap_or_else(|| "the domain below".into()),
+            string("confusable_with").unwrap_or_else(|| "a familiar domain".into()),
+        ),
+        "invisible_or_bidi_domain" => format!(
+            "The link address contains invisible or direction-changing characters; its parsed host is {}",
+            string("raw_host").or_else(destination_host).unwrap_or_else(|| "shown below".into()),
         ),
         "invisible_or_bidi_sender_identity" =>
             "The sender identity contains invisible or bidirectional characters".into(),
@@ -1010,7 +1132,7 @@ fn finding_summary(finding: &HeuristicFinding) -> String {
             string("from_domain").unwrap_or_else(|| "the visible From domain".into()),
         ),
         "cross_domain_account_action" => format!(
-            "An account-action link leaves the sender's site. Sender domain: {}. Link opens: {}. Notice that these domains differ. Do not use this link; use a bookmark, the official app, or type an address you already know",
+            "This account-action link is in mail from {}, but it opens {}. Do not use it; use a bookmark, the official app, or type an address you already know",
             string("from_domain").unwrap_or_else(|| "unknown".into()),
             string("destination_domain").unwrap_or_else(|| "another site".into()),
         ),
@@ -1080,6 +1202,157 @@ fn wrap_message_body(value: &str, width: usize) -> Vec<Line<'static>> {
         lines.push(Line::raw(""));
     }
     lines
+}
+
+fn annotated_rendered_message_lines(
+    page: &RenderedPage,
+    message: &Message,
+    width: usize,
+) -> Vec<Line<'static>> {
+    if page.links.is_empty() {
+        return page.lines.clone();
+    }
+    let generated_link_start = page.link_targets_start.or_else(|| {
+        if page.truncated {
+            None
+        } else {
+            page.lines
+                .iter()
+                .rposition(|line| rendered_line_text(line) == "Links")
+        }
+    });
+    let mut lines = page.lines[..generated_link_start.unwrap_or(page.lines.len())].to_vec();
+    append_section_break(&mut lines);
+    lines.push(Line::styled(
+        "Links and safety",
+        Style::default().add_modifier(Modifier::BOLD),
+    ));
+    for link in &page.links {
+        let targets = message
+            .links
+            .iter()
+            .filter(|message_link| message_link_matches_reference(message_link, link))
+            .map(|message_link| message_link.id.clone())
+            .collect::<BTreeSet<_>>();
+        append_targeted_link_findings(&mut lines, message, &targets, width);
+        append_wrapped_styled(
+            &mut lines,
+            &format!("{}. {}", link.number, rendered_link_destination(link)),
+            width,
+            Style::default().fg(Color::Cyan),
+        );
+    }
+    lines
+}
+
+fn append_backend_link_section(lines: &mut Vec<Line<'static>>, message: &Message, width: usize) {
+    if message.links.is_empty() {
+        return;
+    }
+    append_section_break(lines);
+    lines.push(Line::styled(
+        "Links and safety",
+        Style::default().add_modifier(Modifier::BOLD),
+    ));
+    for link in &message.links {
+        let targets = BTreeSet::from([link.id.clone()]);
+        append_targeted_link_findings(lines, message, &targets, width);
+        let destination = if matches!(link.scheme.as_str(), "http" | "https" | "mailto" | "cid") {
+            safe_single_line_text(&link.destination)
+        } else {
+            format!("[blocked {} link]", safe_single_line_text(&link.scheme))
+        };
+        append_wrapped_styled(
+            lines,
+            &format!("{}. {destination}", link.ordinal.saturating_add(1)),
+            width,
+            Style::default().fg(Color::Cyan),
+        );
+    }
+}
+
+fn append_targeted_link_findings(
+    lines: &mut Vec<Line<'static>>,
+    message: &Message,
+    target_ids: &BTreeSet<String>,
+    width: usize,
+) {
+    let mut findings = message
+        .findings
+        .iter()
+        .filter(|finding| {
+            finding.dismissed_at.is_none()
+                && finding.target_kind == FindingTargetKind::Link
+                && finding.severity >= FindingSeverity::Warning
+                && finding
+                    .target_id
+                    .as_ref()
+                    .is_some_and(|target| target_ids.contains(target))
+        })
+        .map(|finding| (finding.severity, finding_summary(finding)))
+        .collect::<Vec<_>>();
+    findings.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(&right.1)));
+    findings.dedup();
+    for (severity, summary) in findings {
+        let (level, style) = finding_visual_style(severity);
+        append_wrapped_styled(lines, &format!("{level} — {summary}"), width, style);
+    }
+}
+
+fn append_wrapped_styled(lines: &mut Vec<Line<'static>>, value: &str, width: usize, style: Style) {
+    for segment in wrap_untrusted_identity(value, width) {
+        lines.push(Line::styled(segment, style));
+    }
+}
+
+fn append_section_break(lines: &mut Vec<Line<'static>>) {
+    if lines
+        .last()
+        .is_some_and(|line| !rendered_line_text(line).is_empty())
+    {
+        lines.push(Line::default());
+    }
+}
+
+fn rendered_line_text(line: &Line<'_>) -> String {
+    line.spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect()
+}
+
+fn message_link_matches_reference(message_link: &MessageLink, reference: &LinkReference) -> bool {
+    if reference.kind == LinkKind::Blocked {
+        return reference.blocked_scheme.as_deref() == Some(message_link.scheme.as_str());
+    }
+    let Some(reference_destination) = reference.destination.as_deref() else {
+        return false;
+    };
+    Url::parse(&message_link.destination)
+        .ok()
+        .is_some_and(|destination| destination.as_str() == reference_destination)
+}
+
+fn rendered_link_destination(link: &LinkReference) -> String {
+    match link.kind {
+        LinkKind::Blocked => link
+            .blocked_scheme
+            .as_deref()
+            .map(|scheme| format!("[blocked {} link]", safe_single_line_text(scheme)))
+            .unwrap_or_else(|| "[blocked link]".into()),
+        LinkKind::Relative => format!(
+            "[relative link] {}",
+            link.destination
+                .as_deref()
+                .map(safe_single_line_text)
+                .unwrap_or_default()
+        ),
+        _ => link
+            .destination
+            .as_deref()
+            .map(safe_single_line_text)
+            .unwrap_or_else(|| "[unavailable]".into()),
+    }
 }
 
 fn draw_scrolling_panel(
@@ -1851,5 +2124,65 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(lines, ["abc", "def", "xy"]);
+    }
+
+    #[tokio::test]
+    async fn link_findings_are_summarized_at_top_and_explained_at_the_target() {
+        let profile = tempfile::tempdir().unwrap();
+        let backend = lizard_mail_backend::Backend::open(lizard_mail_backend::BackendConfig::new(
+            profile.path(),
+        ))
+        .await
+        .unwrap();
+        let html = concat!(
+            "<p>Reset your password.</p>",
+            "<a href='https://evil.example.net/login'>https://login.example.com</a>"
+        );
+        let raw = format!(
+            concat!(
+                "From: Accounts <notice@example.com>\r\n",
+                "To: reader@example.test\r\n",
+                "Subject: Reset your password\r\n",
+                "Content-Type: text/html; charset=utf-8\r\n\r\n",
+                "{}"
+            ),
+            html
+        );
+        let id = backend
+            .ingest(lizard_mail_backend::IngestMessage::local(raw.into_bytes()))
+            .await
+            .unwrap();
+        let message = backend.messages().get(id).await.unwrap();
+        let page = crate::HtmlRenderer::default()
+            .render(html.as_bytes(), 80, &crate::RenderOptions::default())
+            .unwrap();
+
+        let mut top = Vec::new();
+        append_finding_lines(&mut top, &message, 12, 100, "in the restricted message");
+        let top = top
+            .iter()
+            .map(rendered_line_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(top.contains("Misleading or disguised links"));
+        assert!(!top.contains("link text says"));
+
+        let annotated = annotated_rendered_message_lines(&page, &message, 100)
+            .iter()
+            .map(rendered_line_text)
+            .collect::<Vec<_>>();
+        let warning = annotated
+            .iter()
+            .position(|line| {
+                line.contains(
+                    "The link text says login.example.com, but the link actually opens evil.example.net",
+                )
+            })
+            .expect("the exact mismatch should be stated");
+        let destination = annotated
+            .iter()
+            .position(|line| line.contains("1. https://evil.example.net/login"))
+            .expect("the numbered destination should remain visible");
+        assert!(warning < destination);
     }
 }

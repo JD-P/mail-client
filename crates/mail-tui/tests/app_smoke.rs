@@ -225,6 +225,22 @@ async fn cold_reader_keeps_identity_context_and_persistent_explanations() {
     assert_eq!(app.reader_load_status(), Some("Opening conversation…"));
     wait_for_reader_metadata(&mut app).await;
     assert!(app.reader_is_blocked());
+
+    let compact_backend = TestBackend::new(100, 12);
+    let mut compact_terminal = Terminal::new(compact_backend).unwrap();
+    compact_terminal
+        .draw(|frame| lizard_mail_tui::ui::draw(frame, &app))
+        .unwrap();
+    let compact_text = compact_terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(compact_text.contains("O] Read restricted"));
+    assert!(compact_text.contains("Choose how to continue"));
+
     app.dispatch(AppCommand::RestrictedOpen).await.unwrap();
 
     let backend = TestBackend::new(120, 40);

@@ -320,6 +320,8 @@ struct WirePage {
     images: Vec<WireImage>,
     warnings: Vec<String>,
     truncated: bool,
+    #[serde(default)]
+    link_targets_start: Option<usize>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -412,6 +414,7 @@ impl WirePage {
             images: page.images.into_iter().map(WireImage::from).collect(),
             warnings: page.warnings,
             truncated: page.truncated,
+            link_targets_start: page.link_targets_start,
         })
     }
 
@@ -420,6 +423,17 @@ impl WirePage {
         width: u16,
         limits: &Limits,
     ) -> Result<RenderedPage, IsolatedRenderError> {
+        let link_targets_start = self.link_targets_start;
+        if link_targets_start.is_some_and(|start| start >= self.lines.len()) {
+            return Err(protocol_error(
+                "renderer link-list boundary is outside its rendered lines",
+            ));
+        }
+        if link_targets_start.is_some() && self.links.is_empty() {
+            return Err(protocol_error(
+                "renderer reported a link-list boundary without link metadata",
+            ));
+        }
         if self.lines.len() > limits.max_output_lines
             || self.links.len() > limits.max_links
             || self.images.len() > limits.max_images
@@ -454,6 +468,18 @@ impl WirePage {
             rendered.alignment = line.alignment.map(WireAlignment::into_alignment);
             lines.push(rendered);
         }
+        if link_targets_start.is_some_and(|start| {
+            lines[start]
+                .spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+                != "Links"
+        }) {
+            return Err(protocol_error(
+                "renderer link-list boundary does not point to its Links heading",
+            ));
+        }
         let links = self
             .links
             .into_iter()
@@ -478,6 +504,7 @@ impl WirePage {
             images,
             warnings: self.warnings,
             truncated: self.truncated,
+            link_targets_start,
         })
     }
 }
@@ -1189,6 +1216,32 @@ mod tests {
         let wire = WirePage::from_page(page).unwrap();
         let page = wire.validate_and_convert(40, &Limits::default()).unwrap();
         assert!(page.lines.iter().all(|line| line.width() <= 40));
+        assert!(page.link_targets_start.is_some());
+
+        let page = HtmlRenderer::default()
+            .render(
+                b"<a href='https://example.com'>world</a>",
+                40,
+                &RenderOptions::default(),
+            )
+            .unwrap();
+        let mut forged_boundary = WirePage::from_page(page).unwrap();
+        forged_boundary.link_targets_start = Some(usize::MAX);
+        assert!(forged_boundary
+            .validate_and_convert(40, &Limits::default())
+            .is_err());
+        let page = HtmlRenderer::default()
+            .render(
+                b"<p>body</p><a href='https://example.com'>world</a>",
+                40,
+                &RenderOptions::default(),
+            )
+            .unwrap();
+        let mut forged_boundary = WirePage::from_page(page).unwrap();
+        forged_boundary.link_targets_start = Some(0);
+        assert!(forged_boundary
+            .validate_and_convert(40, &Limits::default())
+            .is_err());
 
         let wire = WirePage {
             lines: vec![WireLine {
@@ -1209,6 +1262,7 @@ mod tests {
             images: Vec::new(),
             warnings: Vec::new(),
             truncated: false,
+            link_targets_start: None,
         };
         assert!(wire.validate_and_convert(40, &Limits::default()).is_err());
     }

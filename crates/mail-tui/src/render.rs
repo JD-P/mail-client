@@ -114,6 +114,10 @@ pub struct RenderedPage {
     pub images: Vec<ImageReference>,
     pub warnings: Vec<String>,
     pub truncated: bool,
+    /// First rendered row of the generated numbered link-destination list.
+    /// Frontends may replace that section with an annotated version while
+    /// retaining the inert, isolated rendering of the message body itself.
+    pub link_targets_start: Option<usize>,
 }
 
 impl RenderedPage {
@@ -656,14 +660,22 @@ pub(crate) fn render_document(
     let context = Context::default();
     render_nodes(&document.children, &context, &mut composer);
     composer.finish(false);
-    if options.show_link_targets && !composer.links.is_empty() {
+    let link_target_flow_start = if options.show_link_targets && !composer.links.is_empty() {
+        let start = composer.flows.len();
         append_link_targets(&mut composer, &context);
-    }
+        Some(start)
+    } else {
+        None
+    };
 
     let mut truncated = false;
     let mut lines = Vec::new();
     let mut cells = 0usize;
+    let mut link_targets_start = None;
     for (index, flow) in composer.flows.iter().enumerate() {
+        if link_target_flow_start == Some(index) {
+            link_targets_start = Some(lines.len());
+        }
         for line in wrap_flow(flow, composer.width, &options.theme) {
             let line_cells = line.width();
             if lines.len() >= document.limits.max_output_lines
@@ -704,12 +716,14 @@ pub(crate) fn render_document(
             .push("Message rendering was truncated at a resource limit.".to_owned());
     }
 
+    let link_targets_start = link_targets_start.filter(|start| *start < lines.len());
     Ok(RenderedPage {
         lines,
         links: composer.links,
         images: composer.images,
         warnings: composer.warnings,
         truncated,
+        link_targets_start,
     })
 }
 
@@ -1896,6 +1910,29 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    #[test]
+    fn rendered_page_exposes_the_generated_link_list_boundary() {
+        let rendered = page(
+            "<p>Body <a href='https://example.com/path'>example</a></p>",
+            80,
+        );
+        let start = rendered
+            .link_targets_start
+            .expect("numbered links should have a stable section boundary");
+
+        assert_eq!(rendered_line_text_for_test(&rendered.lines[start]), "Links");
+        assert!(!rendered.lines[..start]
+            .iter()
+            .any(|line| rendered_line_text_for_test(line) == "Links"));
+    }
+
+    fn rendered_line_text_for_test(line: &Line<'_>) -> String {
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect()
     }
 
     #[test]
