@@ -1594,7 +1594,7 @@ impl Backend {
         let transaction = connection.transaction().await?;
         let mut rows = transaction
             .query(
-                "SELECT downloaded_bytes FROM messages WHERE id = ?1",
+                "SELECT size_bytes FROM messages WHERE id = ?1",
                 (message_id.to_string(),),
             )
             .await?;
@@ -1603,28 +1603,10 @@ impl Backend {
             transaction.rollback().await?;
             return Err(not_found("message", message_id));
         };
-        let previous_bytes = u64::try_from(row.get::<i64>(0)?).map_err(|_| {
-            BackendError::InvalidInput("database contains invalid downloaded byte count".into())
+        let expected_bytes = u64::try_from(row.get::<i64>(0)?).map_err(|_| {
+            BackendError::InvalidInput("database contains invalid message size".into())
         })?;
         drop(rows);
-        let growth = downloaded_bytes.saturating_sub(previous_bytes);
-        if growth > 0 {
-            let mut rows = transaction
-                .query(
-                    "SELECT DISTINCT account_id FROM message_instances WHERE message_id = ?1",
-                    (message_id.to_string(),),
-                )
-                .await?;
-            let mut account_ids = Vec::new();
-            while let Some(row) = rows.next().await? {
-                account_ids.push(parse_id::<AccountId>(row.get(0)?, "account")?);
-            }
-            drop(rows);
-            for account_id in account_ids {
-                crate::storage::ensure_account_capacity_on(&transaction, account_id, growth)
-                    .await?;
-            }
-        }
         let changed = transaction
             .execute(
                 "UPDATE messages SET content_availability = 'downloading', downloaded_bytes = ?1, download_error = NULL, download_updated_at = ?2 WHERE id = ?3 AND content_availability != 'complete'",
@@ -1637,14 +1619,32 @@ impl Backend {
             .await?;
         if changed == 0 {
             let status = load_content_status_on(&transaction, message_id).await?;
-            transaction.rollback().await?;
             if status.availability != MessageContentAvailability::Complete {
+                transaction.rollback().await?;
                 return Err(BackendError::Conflict(
                     "message content state changed before download started".into(),
                 ));
             }
+            transaction
+                .execute(
+                    "DELETE FROM account_storage_reservations WHERE message_id = ?1",
+                    (message_id.to_string(),),
+                )
+                .await?;
+            transaction.commit().await?;
             return Ok(());
         }
+        let remaining_bytes = expected_bytes.saturating_sub(downloaded_bytes);
+        transaction
+            .execute(
+                "UPDATE account_storage_reservations SET reserved_bytes = ?1, updated_at = ?2 WHERE message_id = ?3",
+                (
+                    i64::try_from(remaining_bytes).unwrap_or(i64::MAX),
+                    now,
+                    message_id.to_string(),
+                ),
+            )
+            .await?;
         transaction.commit().await?;
         Ok(())
     }
@@ -1680,9 +1680,22 @@ impl Backend {
                 transaction.rollback().await?;
                 return Err(not_found("message", message_id));
             }
-            transaction.rollback().await?;
+            drop(rows);
+            transaction
+                .execute(
+                    "DELETE FROM account_storage_reservations WHERE message_id = ?1",
+                    (message_id.to_string(),),
+                )
+                .await?;
+            transaction.commit().await?;
             return Ok(());
         }
+        transaction
+            .execute(
+                "DELETE FROM account_storage_reservations WHERE message_id = ?1",
+                (message_id.to_string(),),
+            )
+            .await?;
         let event = insert_event(
             &transaction,
             now,
@@ -1825,14 +1838,27 @@ impl Backend {
             .await?;
         if changed == 0 {
             let status = load_content_status_on(&transaction, message_id).await?;
-            transaction.rollback().await?;
             if status.availability == MessageContentAvailability::Complete {
+                transaction
+                    .execute(
+                        "DELETE FROM account_storage_reservations WHERE message_id = ?1",
+                        (message_id.to_string(),),
+                    )
+                    .await?;
+                transaction.commit().await?;
                 return Ok(status);
             }
+            transaction.rollback().await?;
             return Err(BackendError::Conflict(
                 "message changed while downloaded content was being materialized".into(),
             ));
         }
+        transaction
+            .execute(
+                "DELETE FROM account_storage_reservations WHERE message_id = ?1",
+                (message_id.to_string(),),
+            )
+            .await?;
         transaction
             .execute(
                 "DELETE FROM attachments WHERE message_id = ?1",
@@ -4928,12 +4954,12 @@ impl Sync {
             return Err(error);
         }
         let remaining_bytes = target.expected_bytes.saturating_sub(downloaded);
-        self.0
-            .storage()
-            .ensure_account_capacity(account_id, remaining_bytes)
-            .await?;
         let mut storage_reservation = self.0.inner.storage.start_reservation().await?;
         storage_reservation.grow(remaining_bytes)?;
+        self.0
+            .storage()
+            .reserve_message_capacity(message_id, target.expected_bytes)
+            .await?;
         let mailbox = match session.examine(&target.remote_name).await {
             Ok(mailbox) => mailbox,
             Err(source) => {

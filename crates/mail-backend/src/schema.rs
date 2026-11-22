@@ -11,7 +11,7 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 version INTEGER NOT NULL
             );
             INSERT INTO schema_meta(version)
-                SELECT 24 WHERE NOT EXISTS (SELECT 1 FROM schema_meta);
+                SELECT 25 WHERE NOT EXISTS (SELECT 1 FROM schema_meta);
 
             CREATE TABLE IF NOT EXISTS accounts (
                 id TEXT PRIMARY KEY,
@@ -84,6 +84,19 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 account_id TEXT PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
                 max_bytes INTEGER NOT NULL CHECK(max_bytes >= 0),
                 updated_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS account_storage_usage (
+                account_id TEXT PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+                used_bytes INTEGER NOT NULL DEFAULT 0 CHECK(used_bytes >= 0)
+            );
+
+            CREATE TABLE IF NOT EXISTS account_storage_reservations (
+                account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+                message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+                reserved_bytes INTEGER NOT NULL CHECK(reserved_bytes >= 0),
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY(account_id, message_id)
             );
 
             CREATE TABLE IF NOT EXISTS account_identities (
@@ -1504,7 +1517,33 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
             .await?;
         version = 24;
     }
-    if version != 24 {
+    if version == 24 {
+        // Account usage used to be recomputed by scanning every message for
+        // every download chunk. Materialize the current totals once; triggers
+        // installed below keep this ledger exact after the migration.
+        connection
+            .execute_batch(
+                r#"
+                INSERT OR REPLACE INTO account_storage_usage(account_id, used_bytes)
+                SELECT a.id, COALESCE(t.used_bytes, 0)
+                FROM accounts a
+                LEFT JOIN (
+                    SELECT instances.account_id,
+                        SUM(m.downloaded_bytes) AS used_bytes
+                    FROM (
+                        SELECT DISTINCT account_id, message_id
+                        FROM message_instances
+                    ) instances
+                    JOIN messages m ON m.id = instances.message_id
+                    GROUP BY instances.account_id
+                ) t ON t.account_id = a.id;
+                UPDATE schema_meta SET version = 25;
+                "#,
+            )
+            .await?;
+        version = 25;
+    }
+    if version != 25 {
         return Err(crate::BackendError::InvalidInput(format!(
             "unsupported database schema version {version}"
         )));
@@ -1524,6 +1563,10 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 ON thread_participants(thread_id, address);
             CREATE INDEX IF NOT EXISTS messages_content_availability
                 ON messages(content_availability);
+            CREATE INDEX IF NOT EXISTS instances_account_message
+                ON message_instances(account_id, message_id);
+            CREATE INDEX IF NOT EXISTS account_storage_reservations_message
+                ON account_storage_reservations(message_id, account_id);
             CREATE INDEX IF NOT EXISTS openpgp_bindings_address
                 ON openpgp_certificate_bindings(address COLLATE NOCASE, state, fingerprint);
             CREATE INDEX IF NOT EXISTS openpgp_providers_account
@@ -1534,6 +1577,92 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 ON filter_rule_evaluations(message_id, rule_id);
             CREATE UNIQUE INDEX IF NOT EXISTS account_identities_one_default
                 ON account_identities(account_id) WHERE is_default = 1;
+
+            CREATE TRIGGER IF NOT EXISTS account_storage_usage_account_insert
+            AFTER INSERT ON accounts
+            BEGIN
+                INSERT OR IGNORE INTO account_storage_usage(account_id, used_bytes)
+                VALUES (NEW.id, 0);
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS account_storage_usage_instance_insert
+            AFTER INSERT ON message_instances
+            WHEN (
+                SELECT count(*) FROM message_instances
+                WHERE account_id = NEW.account_id AND message_id = NEW.message_id
+            ) = 1
+            BEGIN
+                UPDATE account_storage_usage
+                SET used_bytes = used_bytes + COALESCE((
+                    SELECT downloaded_bytes FROM messages WHERE id = NEW.message_id
+                ), 0)
+                WHERE account_id = NEW.account_id;
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS account_storage_usage_instance_delete
+            BEFORE DELETE ON message_instances
+            WHEN (
+                SELECT count(*) FROM message_instances
+                WHERE account_id = OLD.account_id AND message_id = OLD.message_id
+            ) = 1
+            BEGIN
+                UPDATE account_storage_usage
+                SET used_bytes = used_bytes - COALESCE((
+                    SELECT downloaded_bytes FROM messages WHERE id = OLD.message_id
+                ), 0)
+                WHERE account_id = OLD.account_id;
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS account_storage_usage_instance_update_before
+            BEFORE UPDATE OF account_id, message_id ON message_instances
+            WHEN (
+                SELECT count(*) FROM message_instances
+                WHERE account_id = OLD.account_id AND message_id = OLD.message_id
+            ) = 1
+            BEGIN
+                UPDATE account_storage_usage
+                SET used_bytes = used_bytes - COALESCE((
+                    SELECT downloaded_bytes FROM messages WHERE id = OLD.message_id
+                ), 0)
+                WHERE account_id = OLD.account_id;
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS account_storage_usage_instance_update_after
+            AFTER UPDATE OF account_id, message_id ON message_instances
+            WHEN (
+                SELECT count(*) FROM message_instances
+                WHERE account_id = NEW.account_id AND message_id = NEW.message_id
+            ) = 1
+            BEGIN
+                UPDATE account_storage_usage
+                SET used_bytes = used_bytes + COALESCE((
+                    SELECT downloaded_bytes FROM messages WHERE id = NEW.message_id
+                ), 0)
+                WHERE account_id = NEW.account_id;
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS account_storage_usage_message_update
+            AFTER UPDATE OF downloaded_bytes ON messages
+            WHEN NEW.downloaded_bytes != OLD.downloaded_bytes
+            BEGIN
+                UPDATE account_storage_usage
+                SET used_bytes = used_bytes + NEW.downloaded_bytes - OLD.downloaded_bytes
+                WHERE account_id IN (
+                    SELECT DISTINCT account_id FROM message_instances
+                    WHERE message_id = NEW.id
+                );
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS account_storage_usage_message_delete
+            BEFORE DELETE ON messages
+            BEGIN
+                UPDATE account_storage_usage
+                SET used_bytes = used_bytes - OLD.downloaded_bytes
+                WHERE account_id IN (
+                    SELECT DISTINCT account_id FROM message_instances
+                    WHERE message_id = OLD.id
+                );
+            END;
             "#,
         )
         .await?;
@@ -1767,7 +1896,7 @@ mod tests {
             .await
             .unwrap();
         let row = rows.next().await.unwrap().unwrap();
-        assert_eq!(row.get::<i64>(0).unwrap(), 24);
+        assert_eq!(row.get::<i64>(0).unwrap(), 25);
         assert_eq!(row.get::<String>(1).unwrap(), r#"{"received_at":123}"#);
         drop(rows);
 
@@ -1810,7 +1939,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap(),
-            24
+            25
         );
         drop(rows);
 
@@ -1947,7 +2076,7 @@ mod tests {
             .await
             .unwrap();
         let row = rows.next().await.unwrap().unwrap();
-        assert_eq!(row.get::<i64>(0).unwrap(), 24);
+        assert_eq!(row.get::<i64>(0).unwrap(), 25);
         assert_eq!(row.get::<String>(1).unwrap(), "CaseSensitive@example.test");
         assert!(row.get::<bool>(2).unwrap());
         assert!(row.get::<bool>(3).unwrap());
@@ -1996,7 +2125,7 @@ mod tests {
             .await
             .unwrap();
         let row = rows.next().await.unwrap().unwrap();
-        assert_eq!(row.get::<i64>(0).unwrap(), 24);
+        assert_eq!(row.get::<i64>(0).unwrap(), 25);
         assert_eq!(row.get::<String>(1).unwrap(), "action");
         assert_eq!(row.get::<String>(2).unwrap(), "manual");
         assert_eq!(row.get::<Option<String>>(3).unwrap(), None);
@@ -2052,7 +2181,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap(),
-            24
+            25
         );
         drop(rows);
         let mut rows = connection
@@ -2065,5 +2194,99 @@ mod tests {
         }
         assert!(columns.contains("hydration_completed_messages"));
         assert!(columns.contains("hydration_total_messages"));
+    }
+
+    #[tokio::test]
+    async fn version_twenty_four_backfills_incremental_account_usage() {
+        let profile = tempfile::tempdir().unwrap();
+        let backend = crate::Backend::open(crate::BackendConfig::new(profile.path()))
+            .await
+            .unwrap();
+        let account = backend
+            .accounts()
+            .add(crate::NewAccount {
+                name: "Migration storage".into(),
+                kind: crate::AccountKind::Imap,
+                credential_ref: Some("test:migration-storage".into()),
+                imap: Some(crate::ImapSettings {
+                    host: "imap.example.test".into(),
+                    port: 993,
+                    username: "reader@example.test".into(),
+                    security: crate::ImapSecurity::ImplicitTls,
+                }),
+            })
+            .await
+            .unwrap();
+        let folder = backend
+            .folders()
+            .add(crate::NewFolder {
+                account_id: Some(account.id),
+                name: "Inbox".into(),
+                kind: crate::FolderKind::Remote,
+                remote_name: Some("INBOX".into()),
+            })
+            .await
+            .unwrap();
+        let raw = b"From: sender@example.test\r\nSubject: migration usage\r\n\r\nbody\r\n".to_vec();
+        backend
+            .messages()
+            .ingest(crate::IngestMessage {
+                raw: raw.clone(),
+                remote: Some(crate::RemoteMessageIdentity {
+                    account_id: account.id,
+                    folder_id: folder.id,
+                    uid_validity: 1,
+                    uid: 1,
+                    mod_sequence: None,
+                    flags: Vec::new(),
+                }),
+                received_at: None,
+                user_classification: None,
+            })
+            .await
+            .unwrap();
+        drop(backend);
+
+        let path = profile.path().join("mail.db");
+        let database = turso::Builder::new_local(path.to_str().unwrap())
+            .experimental_index_method(true)
+            .build()
+            .await
+            .unwrap();
+        let connection = database.connect().unwrap();
+        connection
+            .execute_batch(
+                r#"
+                DROP TRIGGER account_storage_usage_account_insert;
+                DROP TRIGGER account_storage_usage_instance_insert;
+                DROP TRIGGER account_storage_usage_instance_delete;
+                DROP TRIGGER account_storage_usage_instance_update_before;
+                DROP TRIGGER account_storage_usage_instance_update_after;
+                DROP TRIGGER account_storage_usage_message_update;
+                DROP TRIGGER account_storage_usage_message_delete;
+                DROP TABLE account_storage_reservations;
+                DROP TABLE account_storage_usage;
+                UPDATE schema_meta SET version = 24;
+                "#,
+            )
+            .await
+            .unwrap();
+        drop(connection);
+        drop(database);
+
+        let reopened = crate::Backend::open(crate::BackendConfig::new(profile.path()))
+            .await
+            .unwrap();
+        let quota = reopened.storage().account_quota(account.id).await.unwrap();
+        assert_eq!(quota.used_bytes, raw.len() as u64);
+        let connection = reopened.inner.connection.lock().await;
+        let mut rows = connection
+            .query("SELECT version FROM schema_meta", ())
+            .await
+            .unwrap();
+        assert_eq!(
+            rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap(),
+            25
+        );
     }
 }

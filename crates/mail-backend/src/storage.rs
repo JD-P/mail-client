@@ -1,4 +1,4 @@
-use crate::{AccountId, Backend, BackendError, Result};
+use crate::{AccountId, Backend, BackendError, MessageId, Result};
 use chrono::Utc;
 use lizard_verified_kernel::{charge_u64, materialize_bytes, reservation_commit_allowed};
 use serde::{Deserialize, Serialize};
@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 use tokio::sync::{OwnedRwLockReadGuard, RwLock};
+use turso::transaction::TransactionBehavior;
 use turso::Connection;
 
 const DEFAULT_MINIMUM_FREE_BYTES: u64 = 64 * 1024 * 1024;
@@ -327,13 +328,130 @@ impl Storage {
         })
     }
 
-    pub(crate) async fn ensure_account_capacity(
+    /// Atomically reserve the as-yet-unmaterialized portion of a remote
+    /// message for every account which references it. Reservations are
+    /// durable so a crashed synchronization worker cannot let another
+    /// download oversubscribe an account quota before the partial is retried.
+    pub(crate) async fn reserve_message_capacity(
         &self,
-        account_id: AccountId,
-        requested_bytes: u64,
+        message_id: MessageId,
+        expected_bytes: u64,
     ) -> Result<()> {
-        let connection = self.0.inner.connection.lock().await;
-        ensure_account_capacity_on(&connection, account_id, requested_bytes).await
+        let now = Utc::now().timestamp();
+        let mut connection = self.0.inner.connection.lock().await;
+        // Reserve the writer before reading counters so concurrent worker
+        // processes cannot both validate against the same quota snapshot.
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .await?;
+        let mut rows = transaction
+            .query(
+                "SELECT size_bytes, downloaded_bytes FROM messages WHERE id = ?1",
+                (message_id.to_string(),),
+            )
+            .await?;
+        let Some(row) = rows.next().await? else {
+            drop(rows);
+            transaction.rollback().await?;
+            return Err(BackendError::NotFound {
+                entity: "message",
+                id: message_id.to_string(),
+            });
+        };
+        let stored_size =
+            u64::try_from(row.get::<i64>(0)?).map_err(|_| invalid_storage_value("message size"))?;
+        let downloaded_bytes = u64::try_from(row.get::<i64>(1)?)
+            .map_err(|_| invalid_storage_value("downloaded byte count"))?;
+        drop(rows);
+        if stored_size != expected_bytes || downloaded_bytes > expected_bytes {
+            transaction.rollback().await?;
+            return Err(BackendError::Conflict(
+                "message size changed before storage could be reserved".into(),
+            ));
+        }
+        let desired_bytes = expected_bytes - downloaded_bytes;
+        let mut rows = transaction
+            .query(
+                "SELECT DISTINCT account_id FROM message_instances WHERE message_id = ?1 ORDER BY account_id",
+                (message_id.to_string(),),
+            )
+            .await?;
+        let mut account_ids = Vec::new();
+        while let Some(row) = rows.next().await? {
+            account_ids.push(crate::backend::parse_id::<AccountId>(
+                row.get(0)?,
+                "account",
+            )?);
+        }
+        drop(rows);
+        if account_ids.is_empty() {
+            transaction.rollback().await?;
+            return Err(BackendError::Conflict(
+                "message has no account storage owner".into(),
+            ));
+        }
+
+        let mut previous = Vec::with_capacity(account_ids.len());
+        for account_id in &account_ids {
+            let mut rows = transaction
+                .query(
+                    "SELECT reserved_bytes FROM account_storage_reservations WHERE account_id = ?1 AND message_id = ?2",
+                    (account_id.to_string(), message_id.to_string()),
+                )
+                .await?;
+            let old_bytes = rows
+                .next()
+                .await?
+                .map(|row| row.get::<i64>(0))
+                .transpose()?
+                .map(|value| {
+                    u64::try_from(value).map_err(|_| invalid_storage_value("account reservation"))
+                })
+                .transpose()?
+                .unwrap_or(0);
+            drop(rows);
+            transaction
+                .execute(
+                    r#"INSERT INTO account_storage_reservations(
+                        account_id, message_id, reserved_bytes, updated_at
+                    ) VALUES (?1, ?2, ?3, ?4)
+                    ON CONFLICT(account_id, message_id) DO UPDATE SET
+                        reserved_bytes = excluded.reserved_bytes,
+                        updated_at = excluded.updated_at"#,
+                    (
+                        account_id.to_string(),
+                        message_id.to_string(),
+                        i64::try_from(desired_bytes).unwrap_or(i64::MAX),
+                        now,
+                    ),
+                )
+                .await?;
+            previous.push(old_bytes);
+        }
+
+        for (account_id, old_bytes) in account_ids.iter().zip(previous) {
+            let capacity = account_capacity_on(&transaction, *account_id).await?;
+            let added_reservation = desired_bytes.saturating_sub(old_bytes);
+            if let Some(limit) = capacity.quota.max_bytes {
+                let occupied = capacity
+                    .quota
+                    .used_bytes
+                    .saturating_add(capacity.reserved_bytes);
+                if added_reservation > 0 && occupied > limit {
+                    let used = occupied.saturating_sub(added_reservation);
+                    let error = BackendError::StorageQuotaExceeded {
+                        scope: format!("account:{account_id}"),
+                        used,
+                        requested: added_reservation,
+                        limit,
+                    };
+                    transaction.rollback().await?;
+                    return Err(error);
+                }
+            }
+        }
+        transaction.commit().await?;
+        Ok(())
     }
 }
 
@@ -342,12 +460,16 @@ pub(crate) async fn ensure_account_capacity_on(
     account_id: AccountId,
     requested_bytes: u64,
 ) -> Result<()> {
-    let quota = account_quota_on(connection, account_id).await?;
-    if let Some(limit) = quota.max_bytes {
-        if quota.used_bytes.saturating_add(requested_bytes) > limit {
+    let capacity = account_capacity_on(connection, account_id).await?;
+    if let Some(limit) = capacity.quota.max_bytes {
+        let used = capacity
+            .quota
+            .used_bytes
+            .saturating_add(capacity.reserved_bytes);
+        if requested_bytes > 0 && used.saturating_add(requested_bytes) > limit {
             return Err(BackendError::StorageQuotaExceeded {
                 scope: format!("account:{account_id}"),
-                used: quota.used_bytes,
+                used,
                 requested: requested_bytes,
                 limit,
             });
@@ -360,9 +482,30 @@ async fn account_quota_on(
     connection: &Connection,
     account_id: AccountId,
 ) -> Result<AccountStorageQuota> {
+    Ok(account_capacity_on(connection, account_id).await?.quota)
+}
+
+struct AccountCapacity {
+    quota: AccountStorageQuota,
+    reserved_bytes: u64,
+}
+
+async fn account_capacity_on(
+    connection: &Connection,
+    account_id: AccountId,
+) -> Result<AccountCapacity> {
     let mut rows = connection
         .query(
-            "SELECT a.id, q.max_bytes, COALESCE((SELECT SUM(m.downloaded_bytes) FROM messages m WHERE EXISTS (SELECT 1 FROM message_instances mi WHERE mi.message_id = m.id AND mi.account_id = a.id)), 0) FROM accounts a LEFT JOIN account_storage_quotas q ON q.account_id = a.id WHERE a.id = ?1",
+            r#"SELECT a.id, q.max_bytes, COALESCE(u.used_bytes, 0),
+                COALESCE((
+                    SELECT SUM(r.reserved_bytes)
+                    FROM account_storage_reservations r
+                    WHERE r.account_id = a.id
+                ), 0)
+            FROM accounts a
+            LEFT JOIN account_storage_quotas q ON q.account_id = a.id
+            LEFT JOIN account_storage_usage u ON u.account_id = a.id
+            WHERE a.id = ?1"#,
             (account_id.to_string(),),
         )
         .await?;
@@ -378,10 +521,15 @@ async fn account_quota_on(
         .transpose()?;
     let used_bytes =
         u64::try_from(row.get::<i64>(2)?).map_err(|_| invalid_storage_value("account usage"))?;
-    Ok(AccountStorageQuota {
-        account_id,
-        used_bytes,
-        max_bytes,
+    let reserved_bytes = u64::try_from(row.get::<i64>(3)?)
+        .map_err(|_| invalid_storage_value("account reservations"))?;
+    Ok(AccountCapacity {
+        quota: AccountStorageQuota {
+            account_id,
+            used_bytes,
+            max_bytes,
+        },
+        reserved_bytes,
     })
 }
 
@@ -1238,6 +1386,35 @@ fn tree_size(path: &Path) -> Result<u64> {
 mod tests {
     use super::*;
 
+    async fn remote_target(backend: &Backend) -> (crate::Account, crate::Folder) {
+        let account = backend
+            .accounts()
+            .add(crate::NewAccount {
+                name: "Storage ledger test".into(),
+                kind: crate::AccountKind::Imap,
+                credential_ref: Some("test:storage-ledger".into()),
+                imap: Some(crate::ImapSettings {
+                    host: "imap.example.test".into(),
+                    port: 993,
+                    username: "reader@example.test".into(),
+                    security: crate::ImapSecurity::ImplicitTls,
+                }),
+            })
+            .await
+            .unwrap();
+        let folder = backend
+            .folders()
+            .add(crate::NewFolder {
+                account_id: Some(account.id),
+                name: "Inbox".into(),
+                kind: crate::FolderKind::Remote,
+                remote_name: Some("INBOX".into()),
+            })
+            .await
+            .unwrap();
+        (account, folder)
+    }
+
     #[tokio::test]
     async fn opening_a_budget_does_not_walk_the_existing_blob_tree() {
         let profile = tempfile::tempdir().unwrap();
@@ -1253,5 +1430,305 @@ mod tests {
         let measured = budget.measure().await.unwrap();
         assert!(measured.blob_bytes >= 16 * 1024);
         assert!(budget.cached_usage().unwrap().blob_bytes >= 16 * 1024);
+    }
+
+    #[tokio::test]
+    async fn account_usage_ledger_counts_a_message_once_per_account() {
+        let profile = tempfile::tempdir().unwrap();
+        let backend = Backend::open(crate::BackendConfig::new(profile.path()))
+            .await
+            .unwrap();
+        let (account, first_folder) = remote_target(&backend).await;
+        let second_folder = backend
+            .folders()
+            .add(crate::NewFolder {
+                account_id: Some(account.id),
+                name: "Archive".into(),
+                kind: crate::FolderKind::Remote,
+                remote_name: Some("Archive".into()),
+            })
+            .await
+            .unwrap();
+        let raw = b"From: sender@example.test\r\nSubject: ledger\r\n\r\nbody\r\n".to_vec();
+        let message_id = backend
+            .messages()
+            .ingest(crate::IngestMessage {
+                raw: raw.clone(),
+                remote: Some(crate::RemoteMessageIdentity {
+                    account_id: account.id,
+                    folder_id: first_folder.id,
+                    uid_validity: 1,
+                    uid: 1,
+                    mod_sequence: None,
+                    flags: Vec::new(),
+                }),
+                received_at: None,
+                user_classification: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            backend
+                .storage()
+                .account_quota(account.id)
+                .await
+                .unwrap()
+                .used_bytes,
+            raw.len() as u64
+        );
+
+        let connection = backend.inner.connection.lock().await;
+        connection
+            .execute(
+                "INSERT INTO message_instances(message_id, account_id, folder_id, uid_validity, imap_uid, mod_sequence, flags_json) VALUES (?1, ?2, ?3, 1, 2, NULL, '[]')",
+                (
+                    message_id.to_string(),
+                    account.id.to_string(),
+                    second_folder.id.to_string(),
+                ),
+            )
+            .await
+            .unwrap();
+        drop(connection);
+        assert_eq!(
+            backend
+                .storage()
+                .account_quota(account.id)
+                .await
+                .unwrap()
+                .used_bytes,
+            raw.len() as u64
+        );
+
+        let connection = backend.inner.connection.lock().await;
+        connection
+            .execute(
+                "DELETE FROM message_instances WHERE folder_id = ?1",
+                (first_folder.id.to_string(),),
+            )
+            .await
+            .unwrap();
+        drop(connection);
+        assert_eq!(
+            backend
+                .storage()
+                .account_quota(account.id)
+                .await
+                .unwrap()
+                .used_bytes,
+            raw.len() as u64
+        );
+
+        let connection = backend.inner.connection.lock().await;
+        connection
+            .execute(
+                "DELETE FROM message_instances WHERE folder_id = ?1",
+                (second_folder.id.to_string(),),
+            )
+            .await
+            .unwrap();
+        drop(connection);
+        assert_eq!(
+            backend
+                .storage()
+                .account_quota(account.id)
+                .await
+                .unwrap()
+                .used_bytes,
+            0
+        );
+
+        let connection = backend.inner.connection.lock().await;
+        connection
+            .execute(
+                "INSERT INTO message_instances(message_id, account_id, folder_id, uid_validity, imap_uid, mod_sequence, flags_json) VALUES (?1, ?2, ?3, 1, 3, NULL, '[]')",
+                (
+                    message_id.to_string(),
+                    account.id.to_string(),
+                    second_folder.id.to_string(),
+                ),
+            )
+            .await
+            .unwrap();
+        connection
+            .execute(
+                "DELETE FROM messages WHERE id = ?1",
+                (message_id.to_string(),),
+            )
+            .await
+            .unwrap();
+        drop(connection);
+        assert_eq!(
+            backend
+                .storage()
+                .account_quota(account.id)
+                .await
+                .unwrap()
+                .used_bytes,
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn download_reservations_are_atomic_and_release_on_failure() {
+        let profile = tempfile::tempdir().unwrap();
+        let backend = Backend::open(crate::BackendConfig::new(profile.path()))
+            .await
+            .unwrap();
+        let (account, folder) = remote_target(&backend).await;
+        let message_id = backend
+            .sync()
+            .ingest_imap_header_batch(
+                account.id,
+                folder.id,
+                7,
+                vec![crate::ImapFetchedHeaders {
+                    uid: 1,
+                    mod_sequence: None,
+                    flags: Vec::new(),
+                    internal_date: None,
+                    size_bytes: 1_000,
+                    has_attachment: false,
+                    headers: b"From: sender@example.test\r\nSubject: reservation\r\n\r\n".to_vec(),
+                }],
+            )
+            .await
+            .unwrap()
+            .message_ids[0];
+
+        backend
+            .storage()
+            .set_account_quota(account.id, Some(999))
+            .await
+            .unwrap();
+        let error = backend
+            .storage()
+            .reserve_message_capacity(message_id, 1_000)
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), crate::ErrorCode::StorageQuotaExceeded);
+
+        backend
+            .storage()
+            .set_account_quota(account.id, Some(1_000))
+            .await
+            .unwrap();
+        backend
+            .storage()
+            .reserve_message_capacity(message_id, 1_000)
+            .await
+            .unwrap();
+        let connection = backend.inner.connection.lock().await;
+        let mut rows = connection
+            .query(
+                "SELECT reserved_bytes FROM account_storage_reservations WHERE account_id = ?1 AND message_id = ?2",
+                (account.id.to_string(), message_id.to_string()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap(),
+            1_000
+        );
+        drop(rows);
+        drop(connection);
+
+        backend
+            .store_download_failure(message_id, 250, "test interruption")
+            .await
+            .unwrap();
+        assert_eq!(
+            backend
+                .storage()
+                .account_quota(account.id)
+                .await
+                .unwrap()
+                .used_bytes,
+            250
+        );
+        let connection = backend.inner.connection.lock().await;
+        let mut rows = connection
+            .query(
+                "SELECT count(*) FROM account_storage_reservations WHERE message_id = ?1",
+                (message_id.to_string(),),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_workers_cannot_oversubscribe_an_account_quota() {
+        let profile = tempfile::tempdir().unwrap();
+        let backend = Backend::open(crate::BackendConfig::new(profile.path()))
+            .await
+            .unwrap();
+        let (account, folder) = remote_target(&backend).await;
+        let result = backend
+            .sync()
+            .ingest_imap_header_batch(
+                account.id,
+                folder.id,
+                7,
+                vec![
+                    crate::ImapFetchedHeaders {
+                        uid: 1,
+                        mod_sequence: None,
+                        flags: Vec::new(),
+                        internal_date: None,
+                        size_bytes: 600,
+                        has_attachment: false,
+                        headers: b"From: one@example.test\r\nSubject: one\r\n\r\n".to_vec(),
+                    },
+                    crate::ImapFetchedHeaders {
+                        uid: 2,
+                        mod_sequence: None,
+                        flags: Vec::new(),
+                        internal_date: None,
+                        size_bytes: 600,
+                        has_attachment: false,
+                        headers: b"From: two@example.test\r\nSubject: two\r\n\r\n".to_vec(),
+                    },
+                ],
+            )
+            .await
+            .unwrap();
+        backend
+            .storage()
+            .set_account_quota(account.id, Some(1_000))
+            .await
+            .unwrap();
+        let observed = backend.storage().usage().await.unwrap();
+        let worker = Backend::open_sync_worker(crate::BackendConfig::new(profile.path()), observed)
+            .await
+            .unwrap();
+        let first = backend.storage();
+        let second = worker.storage();
+        let (first_result, second_result) = tokio::join!(
+            first.reserve_message_capacity(result.message_ids[0], 600),
+            second.reserve_message_capacity(result.message_ids[1], 600),
+        );
+        let results = [first_result, second_result];
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        let error = results
+            .into_iter()
+            .find_map(std::result::Result::err)
+            .expect("one reservation must exceed the quota");
+        assert_eq!(error.code(), crate::ErrorCode::StorageQuotaExceeded);
+
+        let connection = backend.inner.connection.lock().await;
+        let mut rows = connection
+            .query(
+                "SELECT count(*), COALESCE(SUM(reserved_bytes), 0) FROM account_storage_reservations WHERE account_id = ?1",
+                (account.id.to_string(),),
+            )
+            .await
+            .unwrap();
+        let row = rows.next().await.unwrap().unwrap();
+        assert_eq!(row.get::<i64>(0).unwrap(), 1);
+        assert_eq!(row.get::<i64>(1).unwrap(), 600);
     }
 }
