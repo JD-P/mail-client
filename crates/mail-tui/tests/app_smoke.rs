@@ -1,8 +1,8 @@
 use chrono::Utc;
 use lizard_mail_backend::{
     AccountKind, Backend, BackendConfig, ContactAddress, FolderKind, ImapSecurity, ImapSettings,
-    IngestMessage, NewAccount, NewContact, NewFolder, RemoteMessageIdentity, WarmRoute,
-    WorkflowView,
+    IngestMessage, NewAccount, NewContact, NewFolder, RemoteMessageIdentity, ThreadWorkStatus,
+    WarmRoute, WorkflowView,
 };
 use lizard_mail_tui::app::{AppCommand, MailApp, Screen};
 use lizard_mail_tui::{HtmlRenderIsolationConfig, IsolatedHtmlRenderer, Limits};
@@ -196,6 +196,122 @@ async fn contacts_list_edits_identity_addresses_and_obligation_policy() {
 }
 
 #[tokio::test]
+async fn done_and_manual_routing_advance_without_leaving_the_source_inbox() {
+    let profile = tempfile::tempdir().unwrap();
+    let backend = Backend::open(BackendConfig::new(profile.path()))
+        .await
+        .unwrap();
+    backend
+        .accounts()
+        .add(NewAccount {
+            name: "Local".into(),
+            kind: AccountKind::Local,
+            credential_ref: None,
+            imap: None,
+        })
+        .await
+        .unwrap();
+    backend
+        .contacts()
+        .add(NewContact {
+            display_name: "Northwind".into(),
+            addresses: vec![ContactAddress {
+                address: "hello@northwind.example".into(),
+                accepted_name: Some("Northwind".into()),
+            }],
+        })
+        .await
+        .unwrap();
+    for index in 0..3 {
+        let mut message = IngestMessage::local(
+            format!(
+                "From: Northwind <hello@northwind.example>\r\nTo: reader@example.test\r\nMessage-ID: <workflow-{index}@example.test>\r\nSubject: Separate task {index}\r\n\r\nTask number {index}.\r\n"
+            )
+            .into_bytes(),
+        );
+        message.received_at = Some(1_700_000_000 + index);
+        backend.ingest(message).await.unwrap();
+    }
+
+    let mut app = MailApp::open(backend.clone()).await.unwrap();
+    assert_eq!(app.screen, Screen::Queue(WorkflowView::WarmAction));
+    assert_eq!(app.threads.len(), 3);
+    let original = app
+        .threads
+        .iter()
+        .map(|thread| thread.id)
+        .collect::<Vec<_>>();
+
+    app.dispatch(AppCommand::MoveToAction).await.unwrap();
+    assert_eq!(
+        backend
+            .threads()
+            .work_state(original[0])
+            .await
+            .unwrap()
+            .route_override,
+        None,
+        "moving Action mail to Action must be a no-op"
+    );
+
+    app.dispatch(AppCommand::Open).await.unwrap();
+    wait_for_reader_metadata(&mut app).await;
+    assert_eq!(app.current_thread.as_ref().unwrap().summary.id, original[0]);
+
+    app.dispatch(AppCommand::MarkDone).await.unwrap();
+    assert_eq!(app.screen, Screen::Reader);
+    assert_eq!(app.previous_screen, Screen::Queue(WorkflowView::WarmAction));
+    wait_for_reader_metadata(&mut app).await;
+    assert_eq!(app.current_thread.as_ref().unwrap().summary.id, original[1]);
+    assert_eq!(
+        backend
+            .threads()
+            .work_state(original[0])
+            .await
+            .unwrap()
+            .status,
+        ThreadWorkStatus::Done
+    );
+
+    app.dispatch(AppCommand::MoveToFyi).await.unwrap();
+    assert_eq!(app.screen, Screen::Reader);
+    assert_eq!(app.previous_screen, Screen::Queue(WorkflowView::WarmAction));
+    wait_for_reader_metadata(&mut app).await;
+    assert_eq!(app.current_thread.as_ref().unwrap().summary.id, original[2]);
+    assert_eq!(
+        backend
+            .threads()
+            .work_state(original[1])
+            .await
+            .unwrap()
+            .route_override,
+        Some(WarmRoute::Fyi)
+    );
+
+    app.dispatch(AppCommand::MoveToFyi).await.unwrap();
+    assert_eq!(app.screen, Screen::Queue(WorkflowView::WarmAction));
+    assert!(app.threads.is_empty());
+
+    app.dispatch(AppCommand::WarmFyi).await.unwrap();
+    assert_eq!(app.threads.len(), 2);
+    let fyi_id = app.threads[0].id;
+    app.dispatch(AppCommand::MoveToFyi).await.unwrap();
+    assert_eq!(
+        backend
+            .threads()
+            .work_state(fyi_id)
+            .await
+            .unwrap()
+            .route_override,
+        Some(WarmRoute::Fyi),
+        "moving FYI mail to FYI must be a no-op"
+    );
+    app.dispatch(AppCommand::MoveToAction).await.unwrap();
+    assert_eq!(app.screen, Screen::Queue(WorkflowView::WarmFyi));
+    assert_eq!(app.threads.len(), 1);
+}
+
+#[tokio::test]
 async fn cold_reader_keeps_identity_context_and_persistent_explanations() {
     let profile = tempfile::tempdir().unwrap();
     let backend = Backend::open(BackendConfig::new(profile.path()))
@@ -259,7 +375,8 @@ async fn cold_reader_keeps_identity_context_and_persistent_explanations() {
     assert!(text.contains("COLD / CONVERSATION"));
     assert!(text.contains("support@chase.com.evil.wtf"));
     assert!(text.contains("controlled by evil.wtf, not chase.com"));
-    assert!(text.contains("reply would be sent somewhere other"));
+    assert!(text.contains("Visible From: support@chase.com.evil.wtf"));
+    assert!(text.contains("Replies go to: payments@different.example"));
     assert!(text.contains("Received:"));
     assert!(text.contains("Message claims sent:"));
     assert!(text.contains("RESTRICTED VIEW"));

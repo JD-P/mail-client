@@ -987,10 +987,7 @@ fn finding_visual_style(severity: FindingSeverity) -> (&'static str, Style) {
     match severity {
         FindingSeverity::Danger => (
             "HIGH RISK",
-            Style::default()
-                .bg(DANGER)
-                .fg(Color::Black)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(DANGER).add_modifier(Modifier::BOLD),
         ),
         FindingSeverity::Warning => (
             "CAUTION",
@@ -1007,6 +1004,21 @@ fn finding_summary(finding: &HeuristicFinding) -> String {
             .get(key)
             .and_then(|value| value.as_str())
             .map(safe_single_line_text)
+    };
+    let strings = |key: &str| {
+        finding
+            .evidence
+            .get(key)
+            .and_then(|value| value.as_array())
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(|value| value.as_str())
+                    .map(safe_single_line_text)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .filter(|value| !value.is_empty())
     };
     let number = |key: &str| finding.evidence.get(key).and_then(|value| value.as_u64());
     let destination_host = || {
@@ -1105,12 +1117,18 @@ fn finding_summary(finding: &HeuristicFinding) -> String {
         ),
         "sender_from_mismatch" =>
             "The RFC Sender field disagrees with the visible From address".into(),
-        "reply_to_mismatch" =>
-            "A reply would be sent somewhere other than the visible From address".into(),
+        "reply_to_mismatch" => format!(
+            "Visible From: {} · Replies go to: {}",
+            string("from").unwrap_or_else(|| "unknown address".into()),
+            strings("reply_to").unwrap_or_else(|| "unknown address".into()),
+        ),
         "conversation_injection" =>
             "An unknown sender claims to belong to an established conversation".into(),
-        "unaligned_dkim" =>
-            "A DKIM signature passed, but it does not establish the visible From domain".into(),
+        "unaligned_dkim" => format!(
+            "Expected a signature from {}, but the valid signature came from {}",
+            string("from_domain").unwrap_or_else(|| "the visible From domain".into()),
+            strings("signing_domains").unwrap_or_else(|| "an unrelated domain".into()),
+        ),
         "missing_aligned_dkim" => match string("status").as_deref() {
             Some("unsigned") => format!(
                 "{} did not attach a DKIM signature",
@@ -1779,7 +1797,7 @@ fn draw_help(frame: &mut Frame<'_>, area: Rect) {
             "a Make Cold conversation actionable once · O Read through security warning with restrictions",
         ),
         Line::raw(
-            "< Move conversation to FYI · > Move conversation to Action · M Preview this-and-similar → FYI",
+            "> Action → FYI · < FYI → Action · M Preview this-and-similar → FYI",
         ),
         Line::raw(""),
         Line::styled(
@@ -1834,15 +1852,23 @@ fn draw_footer(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
         Screen::Queue(WorkflowView::SpamQuarantine) => {
             "j/k move · Enter inspect safely · d done · ? help"
         }
-        Screen::Queue(_) => {
-            "j/k move · </> FYI/Action · M similar→FYI · d done · w waiting · s snooze"
+        Screen::Queue(WorkflowView::WarmAction) => {
+            "j/k move · > move to FYI · M similar→FYI · d done · w waiting · s snooze"
         }
+        Screen::Queue(WorkflowView::WarmFyi) => {
+            "j/k move · < move to Action · M similar→FYI · d done · w waiting · s snooze"
+        }
+        Screen::Queue(_) => "j/k move · Enter inspect · d done · w waiting · s snooze · ? help",
         Screen::Reader if app.reader_is_blocked() => {
             "↑/↓ previous/next email · j/k scroll · PgUp/PgDn page · Esc back · O read restricted"
         }
-        Screen::Reader => {
-            "↑/↓ previous/next email · j/k scroll · PgUp/PgDn page · </> FYI/Action · Esc back"
+        Screen::Reader if app.previous_screen == Screen::Queue(WorkflowView::WarmAction) => {
+            "↑/↓ previous/next email · j/k scroll · PgUp/PgDn page · > move to FYI · Esc back"
         }
+        Screen::Reader if app.previous_screen == Screen::Queue(WorkflowView::WarmFyi) => {
+            "↑/↓ previous/next email · j/k scroll · PgUp/PgDn page · < move to Action · Esc back"
+        }
+        Screen::Reader => "↑/↓ previous/next email · j/k scroll · PgUp/PgDn page · Esc back",
         Screen::Onboarding => "j/k move · y accept · n reject · e edit · Enter inspect/edit",
         Screen::OnboardingEdit => {
             "type name · Ctrl-R route · Ctrl-K kind · Enter save · Esc cancel"
@@ -2105,10 +2131,39 @@ mod tests {
         let (warning_label, warning) = finding_visual_style(FindingSeverity::Warning);
 
         assert_eq!(danger_label, "HIGH RISK");
-        assert_eq!(danger.bg, Some(DANGER));
+        assert_eq!(danger.bg, None);
+        assert_eq!(danger.fg, Some(DANGER));
         assert_eq!(warning_label, "CAUTION");
         assert_eq!(warning.bg, None);
         assert_eq!(warning.fg, Some(FYI_HINT));
+    }
+
+    #[test]
+    fn unaligned_dkim_copy_names_the_expected_and_actual_domains() {
+        let finding = HeuristicFinding {
+            id: lizard_mail_backend::FindingId::new(),
+            message_id: lizard_mail_backend::MessageId::new(),
+            heuristic_id: lizard_mail_backend::HeuristicId::new(),
+            heuristic_version: 5,
+            code: "unaligned_dkim".into(),
+            presentation: lizard_mail_backend::FindingPresentation::OpenInterstitial,
+            severity: FindingSeverity::Warning,
+            target_kind: FindingTargetKind::Message,
+            target_id: None,
+            text: None,
+            evidence: serde_json::json!({
+                "from_domain": "expected.example",
+                "signing_domains": ["actual.example"],
+            }),
+            source_kind: lizard_mail_backend::HeuristicSourceKind::BuiltIn,
+            created_at: 0,
+            dismissed_at: None,
+        };
+
+        assert_eq!(
+            finding_summary(&finding),
+            "Expected a signature from expected.example, but the valid signature came from actual.example"
+        );
     }
 
     #[test]

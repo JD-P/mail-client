@@ -226,8 +226,8 @@ fn command_for(screen: Screen, key: KeyEvent) -> Option<AppCommand> {
         KeyCode::Char('w') => Some(AppCommand::MarkWaiting),
         KeyCode::Char('s') => Some(AppCommand::SnoozeOneDay),
         KeyCode::Char('a') => Some(AppCommand::MakeActionableOnce),
-        KeyCode::Char('>') => Some(AppCommand::MoveToAction),
-        KeyCode::Char('<') => Some(AppCommand::MoveToFyi),
+        KeyCode::Char('>') => Some(AppCommand::MoveToFyi),
+        KeyCode::Char('<') => Some(AppCommand::MoveToAction),
         KeyCode::Char('M') => Some(AppCommand::PreviewSimilarFyi),
         KeyCode::Char('O') => Some(AppCommand::RestrictedOpen),
         KeyCode::Char('y') if screen == Screen::Onboarding => Some(AppCommand::OnboardingAccept),
@@ -335,6 +335,14 @@ mod tests {
         assert!(matches!(
             command_for(Screen::Reader, key(KeyCode::PageDown)),
             Some(AppCommand::ReaderPageDown)
+        ));
+        assert!(matches!(
+            command_for(Screen::Reader, key(KeyCode::Char('>'))),
+            Some(AppCommand::MoveToFyi)
+        ));
+        assert!(matches!(
+            command_for(Screen::Reader, key(KeyCode::Char('<'))),
+            Some(AppCommand::MoveToAction)
         ));
     }
 }

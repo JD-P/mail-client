@@ -1684,6 +1684,7 @@ impl MailApp {
     }
 
     async fn set_selected_work_state(&mut self, status: ThreadWorkStatus) -> Result<()> {
+        let was_reader = self.screen == Screen::Reader;
         let id = match self.screen {
             Screen::Reader => self.current_thread.as_ref().map(|thread| thread.summary.id),
             Screen::Queue(_) => self.selected_thread().map(|thread| thread.id),
@@ -1699,13 +1700,17 @@ impl MailApp {
                 ThreadWorkStatus::Waiting => "Conversation moved to Waiting".into(),
                 _ => "Conversation work state changed".into(),
             });
-            if self.screen == Screen::Reader {
+            if was_reader && status == ThreadWorkStatus::Done {
+                self.remove_current_reader_and_advance(id).await?;
+            } else if was_reader {
                 self.cancel_reader_tasks();
                 self.screen = self.previous_screen;
                 self.current_thread = None;
                 self.clear_reader_html();
+                self.refresh().await?;
+            } else {
+                self.refresh().await?;
             }
-            self.refresh().await?;
         }
         Ok(())
     }
@@ -1751,17 +1756,32 @@ impl MailApp {
     }
 
     async fn move_selected_route(&mut self, route: WarmRoute) -> Result<()> {
-        if self.screen == Screen::Queue(WorkflowView::SpamQuarantine)
-            || (self.screen == Screen::Reader
-                && self.previous_screen == Screen::Queue(WorkflowView::SpamQuarantine))
-        {
-            self.status =
-                Some("Spam must be rescued before assigning an Action/FYI workflow".into());
+        let Some(source) = self.active_workflow() else {
+            return Ok(());
+        };
+        let allowed = matches!(
+            (source, route),
+            (WorkflowView::WarmAction, WarmRoute::Fyi) | (WorkflowView::WarmFyi, WarmRoute::Action)
+        );
+        if !allowed {
+            self.status = Some(match (source, route) {
+                (WorkflowView::WarmAction, WarmRoute::Action) => {
+                    "Conversation is already in Action".into()
+                }
+                (WorkflowView::WarmFyi, WarmRoute::Fyi) => "Conversation is already in FYI".into(),
+                (WorkflowView::SpamQuarantine, _) => {
+                    "Spam must be rescued before assigning an Action/FYI workflow".into()
+                }
+                _ => "Action/FYI routing is available from the Action and FYI inboxes".into(),
+            });
             return Ok(());
         }
+        let was_reader = self.screen == Screen::Reader;
         let id = match self.screen {
             Screen::Reader => self.current_thread.as_ref().map(|thread| thread.summary.id),
-            Screen::Queue(_) => self.selected_thread().map(|thread| thread.id),
+            Screen::Queue(WorkflowView::WarmAction | WorkflowView::WarmFyi) => {
+                self.selected_thread().map(|thread| thread.id)
+            }
             _ => None,
         };
         if let Some(id) = id {
@@ -1773,11 +1793,53 @@ impl MailApp {
                 WarmRoute::Action => "Conversation moved to Action".into(),
                 WarmRoute::Fyi => "Conversation moved to FYI".into(),
             });
-            self.switch_queue(match route {
-                WarmRoute::Action => WorkflowView::WarmAction,
-                WarmRoute::Fyi => WorkflowView::WarmFyi,
-            })
-            .await?;
+            if was_reader {
+                self.remove_current_reader_and_advance(id).await?;
+            } else {
+                self.refresh().await?;
+            }
+        }
+        Ok(())
+    }
+
+    fn active_workflow(&self) -> Option<WorkflowView> {
+        match self.screen {
+            Screen::Queue(workflow) => Some(workflow),
+            Screen::Reader => match self.previous_screen {
+                Screen::Queue(workflow) => Some(workflow),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    async fn remove_current_reader_and_advance(&mut self, id: ThreadId) -> Result<()> {
+        let removed_index = self
+            .threads
+            .iter()
+            .position(|thread| thread.id == id)
+            .unwrap_or(self.selected.min(self.threads.len()));
+        if removed_index < self.threads.len() {
+            self.threads.remove(removed_index);
+        }
+
+        if let Some(next) = self.threads.get(removed_index) {
+            self.selected = removed_index;
+            let next_id = next.id;
+            self.cancel_reader_tasks();
+            self.current_thread = None;
+            self.security_override = false;
+            self.reset_reader_scroll();
+            self.clear_reader_html();
+            self.start_reader_load(next_id);
+        } else {
+            self.cancel_reader_tasks();
+            self.screen = self.previous_screen;
+            self.current_thread = None;
+            self.security_override = false;
+            self.reset_reader_scroll();
+            self.clear_reader_html();
+            self.refresh().await?;
         }
         Ok(())
     }
