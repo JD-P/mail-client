@@ -23,7 +23,7 @@ use url::{Host, Url};
 use uuid::Uuid;
 
 const BUILTIN_ID: Uuid = Uuid::from_u128(0x5f01da21_0f79_5f3e_b210_0d96438890ac);
-const BUILTIN_VERSION: u32 = 3;
+const BUILTIN_VERSION: u32 = 4;
 const BUILTIN_SOURCE: &str = "native:security-evidence";
 const MAX_FINDINGS: usize = 256;
 const MAX_HTML_TOKENS: usize = 100_000;
@@ -604,6 +604,7 @@ fn dkim_findings(message: &Message, collector: &mut FindingCollector) {
         .signatures
         .iter()
         .any(|signature| signature.status == DkimSignatureStatus::Pass);
+    let severity = missing_aligned_dkim_severity(message.dkim.status);
     collector.push(message_finding(
         if unaligned {
             "unaligned_dkim"
@@ -611,13 +612,21 @@ fn dkim_findings(message: &Message, collector: &mut FindingCollector) {
             "missing_aligned_dkim"
         },
         FindingPresentation::OpenInterstitial,
-        FindingSeverity::Warning,
+        severity,
         json!({
             "from_domain": from_domain,
             "status": message.dkim.status,
             "valid_unaligned_signature": unaligned,
         }),
     ));
+}
+
+fn missing_aligned_dkim_severity(status: DkimAuthenticationStatus) -> FindingSeverity {
+    if status == DkimAuthenticationStatus::Failed {
+        FindingSeverity::Danger
+    } else {
+        FindingSeverity::Warning
+    }
 }
 
 /// A trusted DMARC pass establishes that the receiver accepted an aligned
@@ -778,7 +787,7 @@ fn navigation_findings(
             collector.push(link_finding(
                 "cross_domain_account_action",
                 target,
-                FindingSeverity::Danger,
+                FindingSeverity::Warning,
                 json!({
                     "from_domain": from_domain,
                     "destination_domain": link.registrable_domain,
@@ -821,18 +830,37 @@ fn contains_account_action(message: &Message) -> bool {
         .to_lowercase();
     text.push(' ');
     text.push_str(&message.body_text.to_lowercase());
+    text_contains_account_action(&text)
+}
+
+fn text_contains_account_action(text: &str) -> bool {
     [
         "password",
         "reset",
-        "account",
         "sign in",
         "signin",
         "log in",
         "login",
-        "verify",
+        "verify your account",
+        "verify account",
+        "verify your identity",
+        "verify identity",
+        "verify your email",
+        "verify email",
+        "confirm your account",
+        "confirm account",
+        "confirm your identity",
+        "confirm identity",
+        "confirm your email",
+        "confirm email",
+        "account access",
+        "account locked",
+        "account suspended",
+        "account disabled",
+        "account security",
+        "account alert",
         "security alert",
         "unlock",
-        "confirm identity",
         "unusual activity",
     ]
     .iter()
@@ -1704,5 +1732,30 @@ mod tests {
         );
         assert!(domains_align("notices.example.com", "mailer.example.com"));
         assert!(!domains_align("example.com", "example.net"));
+    }
+
+    #[test]
+    fn generic_account_copy_does_not_trigger_cross_domain_action_evidence() {
+        assert!(!text_contains_account_action(
+            "manage your account preferences or read our monthly account newsletter"
+        ));
+        assert!(text_contains_account_action(
+            "reset your password to restore account access"
+        ));
+        assert!(text_contains_account_action(
+            "security alert: verify your identity"
+        ));
+    }
+
+    #[test]
+    fn failed_dkim_is_more_severe_than_an_unsigned_message() {
+        assert_eq!(
+            missing_aligned_dkim_severity(DkimAuthenticationStatus::Failed),
+            FindingSeverity::Danger
+        );
+        assert_eq!(
+            missing_aligned_dkim_severity(DkimAuthenticationStatus::Unsigned),
+            FindingSeverity::Warning
+        );
     }
 }

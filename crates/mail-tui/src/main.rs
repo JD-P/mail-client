@@ -189,6 +189,22 @@ fn command_for(screen: Screen, key: KeyEvent) -> Option<AppCommand> {
             _ => None,
         };
     }
+    if screen == Screen::Reader {
+        let command = match key.code {
+            KeyCode::Up => Some(AppCommand::ReaderPrevious),
+            KeyCode::Down => Some(AppCommand::ReaderNext),
+            KeyCode::Char('k') => Some(AppCommand::ReaderScrollUp),
+            KeyCode::Char('j') => Some(AppCommand::ReaderScrollDown),
+            KeyCode::PageUp => Some(AppCommand::ReaderPageUp),
+            KeyCode::PageDown | KeyCode::Char(' ') => Some(AppCommand::ReaderPageDown),
+            KeyCode::Home | KeyCode::Char('g') => Some(AppCommand::ReaderScrollTop),
+            KeyCode::End | KeyCode::Char('G') => Some(AppCommand::ReaderScrollBottom),
+            _ => None,
+        };
+        if command.is_some() {
+            return command;
+        }
+    }
 
     match key.code {
         KeyCode::Char('q') => Some(AppCommand::Quit),
@@ -294,5 +310,31 @@ mod tests {
         assert!(profile.is_absolute());
         #[cfg(not(any(target_os = "windows", target_os = "macos")))]
         assert!(profile.ends_with("lizard-mail"));
+    }
+
+    #[test]
+    fn reader_keeps_message_navigation_separate_from_body_scrolling() {
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+
+        assert!(matches!(
+            command_for(Screen::Reader, key(KeyCode::Up)),
+            Some(AppCommand::ReaderPrevious)
+        ));
+        assert!(matches!(
+            command_for(Screen::Reader, key(KeyCode::Down)),
+            Some(AppCommand::ReaderNext)
+        ));
+        assert!(matches!(
+            command_for(Screen::Reader, key(KeyCode::Char('k'))),
+            Some(AppCommand::ReaderScrollUp)
+        ));
+        assert!(matches!(
+            command_for(Screen::Reader, key(KeyCode::Char('j'))),
+            Some(AppCommand::ReaderScrollDown)
+        ));
+        assert!(matches!(
+            command_for(Screen::Reader, key(KeyCode::PageDown)),
+            Some(AppCommand::ReaderPageDown)
+        ));
     }
 }

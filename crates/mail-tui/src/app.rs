@@ -9,6 +9,7 @@ use lizard_mail_backend::{
     WorkflowView, DEFAULT_SIMILARITY_CUTOFF_MILLIS,
 };
 use std::{
+    cell::Cell,
     collections::{HashMap, VecDeque},
     hash::{DefaultHasher, Hash, Hasher},
     time::{Duration as StdDuration, Instant},
@@ -245,6 +246,14 @@ pub enum AppCommand {
     Quit,
     Next,
     Previous,
+    ReaderNext,
+    ReaderPrevious,
+    ReaderScrollDown,
+    ReaderScrollUp,
+    ReaderPageDown,
+    ReaderPageUp,
+    ReaderScrollTop,
+    ReaderScrollBottom,
     Open,
     Back,
     WarmAction,
@@ -317,6 +326,9 @@ pub struct MailApp {
     pub status: Option<String>,
     pub background_status: Option<String>,
     pub security_override: bool,
+    pub reader_scroll: usize,
+    reader_scroll_max: Cell<usize>,
+    reader_viewport_rows: Cell<usize>,
     reader_html: Option<RenderedPage>,
     reader_html_error: Option<String>,
     reader_html_key: Option<ReaderHtmlKey>,
@@ -393,6 +405,9 @@ impl MailApp {
             status: None,
             background_status: None,
             security_override: false,
+            reader_scroll: 0,
+            reader_scroll_max: Cell::new(0),
+            reader_viewport_rows: Cell::new(1),
             reader_html: None,
             reader_html_error: None,
             reader_html_key: None,
@@ -459,6 +474,14 @@ impl MailApp {
             AppCommand::Quit => self.quit = true,
             AppCommand::Next => self.move_selection(1),
             AppCommand::Previous => self.move_selection(-1),
+            AppCommand::ReaderNext => self.open_adjacent_reader(1),
+            AppCommand::ReaderPrevious => self.open_adjacent_reader(-1),
+            AppCommand::ReaderScrollDown => self.scroll_reader(1),
+            AppCommand::ReaderScrollUp => self.scroll_reader(-1),
+            AppCommand::ReaderPageDown => self.page_reader(1),
+            AppCommand::ReaderPageUp => self.page_reader(-1),
+            AppCommand::ReaderScrollTop => self.reader_scroll = 0,
+            AppCommand::ReaderScrollBottom => self.reader_scroll = self.reader_scroll_max.get(),
             AppCommand::Back => self.go_back().await?,
             AppCommand::Open => self.open_selected().await?,
             AppCommand::WarmAction => self.switch_queue(WorkflowView::WarmAction).await?,
@@ -497,6 +520,7 @@ impl MailApp {
             AppCommand::RestrictedOpen => {
                 if self.screen == Screen::Reader {
                     self.security_override = true;
+                    self.reset_reader_scroll();
                 }
             }
             AppCommand::OnboardingAccept => self.accept_suggestion(None).await?,
@@ -1599,6 +1623,7 @@ impl MailApp {
         self.selected = 0;
         self.current_thread = None;
         self.security_override = false;
+        self.reset_reader_scroll();
         self.clear_reader_html();
         self.refresh().await
     }
@@ -1611,6 +1636,7 @@ impl MailApp {
                     self.screen = Screen::Reader;
                     self.current_thread = None;
                     self.security_override = false;
+                    self.reset_reader_scroll();
                     self.clear_reader_html();
                     self.start_reader_load(id);
                 }
@@ -1633,6 +1659,7 @@ impl MailApp {
                 self.screen = self.previous_screen;
                 self.current_thread = None;
                 self.security_override = false;
+                self.reset_reader_scroll();
                 self.clear_reader_html();
                 self.refresh().await?;
             }
@@ -2012,6 +2039,63 @@ impl MailApp {
             .selected
             .saturating_add_signed(delta)
             .min(length.saturating_sub(1));
+    }
+
+    fn open_adjacent_reader(&mut self, delta: isize) {
+        if self.screen != Screen::Reader || self.threads.is_empty() {
+            return;
+        }
+        let next = self
+            .selected
+            .saturating_add_signed(delta)
+            .min(self.threads.len().saturating_sub(1));
+        if next == self.selected {
+            self.status = Some(if delta < 0 {
+                "Already at the first conversation in this inbox".into()
+            } else {
+                "Already at the last conversation in this inbox".into()
+            });
+            return;
+        }
+        self.selected = next;
+        let thread_id = self.threads[next].id;
+        self.cancel_reader_tasks();
+        self.current_thread = None;
+        self.security_override = false;
+        self.reset_reader_scroll();
+        self.clear_reader_html();
+        self.start_reader_load(thread_id);
+    }
+
+    fn scroll_reader(&mut self, delta: isize) {
+        if self.screen == Screen::Reader {
+            self.reader_scroll = self
+                .reader_scroll
+                .saturating_add_signed(delta)
+                .min(self.reader_scroll_max.get());
+        }
+    }
+
+    fn page_reader(&mut self, delta: isize) {
+        let page = self.reader_viewport_rows.get().saturating_sub(1).max(1);
+        self.scroll_reader(delta.saturating_mul(isize::try_from(page).unwrap_or(isize::MAX)));
+    }
+
+    pub(crate) fn update_reader_scroll_bounds(
+        &self,
+        content_rows: usize,
+        viewport_rows: usize,
+    ) -> usize {
+        self.reader_viewport_rows.set(viewport_rows.max(1));
+        self.reader_scroll_max
+            .set(content_rows.saturating_sub(self.reader_viewport_rows.get()));
+        self.reader_scroll.min(self.reader_scroll_max.get())
+    }
+
+    fn reset_reader_scroll(&mut self) {
+        self.reader_scroll = 0;
+        self.reader_scroll_max.set(0);
+        self.reader_viewport_rows.set(1);
     }
 
     fn clamp_selection(&mut self) {

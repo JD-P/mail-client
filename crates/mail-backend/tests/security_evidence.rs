@@ -1,7 +1,7 @@
 use base64::Engine;
 use lizard_mail_backend::{
     ArchiveInspectionState, ArchiveIsolationConfig, ArchiveLimits, Backend, BackendConfig,
-    ContactAddress, IngestMessage, NewContact,
+    ContactAddress, FindingSeverity, IngestMessage, NewContact,
 };
 use std::collections::BTreeSet;
 use std::io::{Cursor, Write};
@@ -365,6 +365,12 @@ async fn native_navigation_evidence_parses_html_without_loading_or_executing_it(
             "interactive_credential_form",
         ],
     );
+    let cross_domain = stored
+        .findings
+        .iter()
+        .find(|finding| finding.code == "cross_domain_account_action")
+        .unwrap();
+    assert_eq!(cross_domain.severity, FindingSeverity::Warning);
     let form = stored
         .findings
         .iter()

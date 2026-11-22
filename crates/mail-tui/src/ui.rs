@@ -7,10 +7,13 @@ use lizard_mail_backend::{
     OpenPgpSignatureStatus, RelationshipKind, RemoteContentPolicy, ThreadWorkStatus, WarmRoute,
     WorkflowView,
 };
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{
+    Block, Borders, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation,
+    ScrollbarState, Wrap,
+};
 use ratatui::Frame;
 use unicode_width::UnicodeWidthChar;
 
@@ -64,7 +67,7 @@ fn draw_header(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
 fn header_navigation() -> Line<'static> {
     Line::from(vec![
         Span::styled("1", Style::default().fg(WARM).add_modifier(Modifier::BOLD)),
-        Span::raw(" Warm  "),
+        Span::raw(" Action  "),
         Span::styled(
             "F FYI",
             Style::default().fg(FYI_HINT).add_modifier(Modifier::BOLD),
@@ -303,6 +306,7 @@ fn draw_queue(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
         Screen::Queue(workflow) => workflow,
         _ => return,
     };
+    let queue_area = draw_workflow_banner(frame, workflow, area);
     if app.threads.is_empty() {
         let message = match workflow {
             WorkflowView::WarmAction => "No active obligations. Warm inbox zero.",
@@ -319,7 +323,7 @@ fn draw_queue(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
             Paragraph::new(message)
                 .block(Block::default().title("Queue").borders(Borders::ALL))
                 .wrap(Wrap { trim: false }),
-            area,
+            queue_area,
         );
         return;
     }
@@ -355,7 +359,7 @@ fn draw_queue(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
                 // Unknown identities get the entire author field. The address
                 // is wrapped, never truncated, so padding and deceptive domain
                 // structure remain visible instead of becoming camouflage.
-                let width = usize::from(area.width.saturating_sub(6).max(1));
+                let width = usize::from(queue_area.width.saturating_sub(6).max(1));
                 let address = address.unwrap_or("ambiguous or missing From address");
                 let mut lines = wrap_untrusted_identity(address, width)
                     .into_iter()
@@ -398,7 +402,11 @@ fn draw_queue(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
         })
         .collect::<Vec<_>>();
     let mut state = ListState::default().with_selected(Some(app.selected));
-    let title = format!("{} conversations", app.threads.len());
+    let title = match workflow {
+        WorkflowView::WarmAction => format!("ACTION · {} conversations", app.threads.len()),
+        WorkflowView::WarmFyi => format!("FYI · {} conversations", app.threads.len()),
+        _ => format!("{} conversations", app.threads.len()),
+    };
     frame.render_stateful_widget(
         List::new(items)
             .block(Block::default().title(title).borders(Borders::ALL))
@@ -409,9 +417,48 @@ fn draw_queue(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
                     .add_modifier(Modifier::BOLD),
             )
             .highlight_symbol("› "),
-        area,
+        queue_area,
         &mut state,
     );
+}
+
+fn draw_workflow_banner(frame: &mut Frame<'_>, workflow: WorkflowView, area: Rect) -> Rect {
+    let (label, explanation, label_style) = match workflow {
+        WorkflowView::WarmAction => (
+            "ACTION",
+            "People you know may be asking something of you · reply, schedule, snooze, or mark done",
+            Style::default()
+                .bg(WARM)
+                .fg(Color::Black)
+                .add_modifier(Modifier::BOLD),
+        ),
+        WorkflowView::WarmFyi => (
+            "FYI",
+            "Informational mail from people you know · no response is expected",
+            Style::default()
+                .fg(FYI_HINT)
+                .add_modifier(Modifier::BOLD),
+        ),
+        _ => return area,
+    };
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(0)])
+        .split(area);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(format!(" {label} "), label_style),
+            Span::raw(format!("  {explanation}")),
+        ]))
+        .block(
+            Block::default()
+                .title("Warm workflow")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(WARM)),
+        ),
+        chunks[0],
+    );
+    chunks[1]
 }
 
 fn draw_reader(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
@@ -432,10 +479,12 @@ fn draw_reader(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
         return;
     };
     if app.reader_is_blocked() {
+        let severity = highest_active_security_severity(message);
+        let (level, warning_style) = finding_visual_style(severity);
         let mut lines = vec![
             Line::styled(
-                "SECURITY WARNING — MESSAGE BODY BLOCKED",
-                Style::default().fg(DANGER).add_modifier(Modifier::BOLD),
+                format!("{level} SECURITY WARNING — MESSAGE BODY BLOCKED"),
+                warning_style,
             ),
             Line::raw(""),
             Line::raw(format!(
@@ -467,7 +516,7 @@ fn draw_reader(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
             Line::raw("Go back unless you have a specific reason to inspect this message."),
             Line::styled(
                 "If you continue, links and remote content remain disabled.",
-                Style::default().fg(DANGER),
+                warning_style,
             ),
             Line::raw(
                 "Use a bookmark, official app, or an address you already know; do not copy a site address from this email.",
@@ -475,16 +524,13 @@ fn draw_reader(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
             Line::raw(""),
             Line::raw("[Esc] Back   [O] Read restricted"),
         ]);
-        frame.render_widget(
-            Paragraph::new(Text::from(lines))
-                .block(
-                    Block::default()
-                        .title("Intrusive security interruption")
-                        .borders(Borders::ALL)
-                        .border_style(Style::default().fg(DANGER)),
-                )
-                .wrap(Wrap { trim: false }),
+        draw_scrolling_panel(
+            frame,
+            app,
             area,
+            "Intrusive security interruption",
+            lines,
+            security_color(severity),
         );
         return;
     }
@@ -569,13 +615,8 @@ fn draw_reader(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
         return;
     }
 
-    if let Some(page) = app.reader_html() {
-        frame.render_widget(
-            Paragraph::new(page.lines.clone())
-                .block(Block::default().borders(Borders::ALL).title("Message"))
-                .wrap(Wrap { trim: false }),
-            chunks[1],
-        );
+    let (title, body_lines) = if let Some(page) = app.reader_html() {
+        ("Message", page.lines.clone())
     } else {
         let title = if app.security_override && message.body_html.is_some() {
             "Message · RESTRICTED VIEW · safe plain-text fallback"
@@ -586,13 +627,16 @@ fn draw_reader(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
         } else {
             "Message"
         };
-        frame.render_widget(
-            Paragraph::new(safe_text(&message.body_text))
-                .block(Block::default().borders(Borders::ALL).title(title))
-                .wrap(Wrap { trim: false }),
-            chunks[1],
-        );
-    }
+        (
+            title,
+            wrap_message_body(
+                &message.body_text,
+                usize::from(chunks[1].width.saturating_sub(2).max(1)),
+            ),
+        )
+    };
+    let border_color = accent(app);
+    draw_scrolling_panel(frame, app, chunks[1], title, body_lines, border_color);
 }
 
 fn sender_identity_lines(app: &MailApp, message: &Message, width: usize) -> Vec<Line<'static>> {
@@ -826,20 +870,60 @@ fn append_finding_lines(
         })
         .collect::<Vec<_>>();
     for finding in active.iter().take(limit) {
+        let (level, style) = finding_visual_style(finding.severity);
         for line in
-            wrap_untrusted_identity(&format!("SECURITY: {}", finding_summary(finding)), width)
+            wrap_untrusted_identity(&format!("{level} — {}", finding_summary(finding)), width)
         {
-            lines.push(Line::styled(
-                line,
-                Style::default().fg(DANGER).add_modifier(Modifier::BOLD),
-            ));
+            lines.push(Line::styled(line, style));
         }
     }
     if active.len() > limit {
+        let hidden_severity = active
+            .iter()
+            .skip(limit)
+            .map(|finding| finding.severity)
+            .max()
+            .unwrap_or(FindingSeverity::Warning);
+        let (level, style) = finding_visual_style(hidden_severity);
         lines.push(Line::styled(
-            format!("SECURITY: {} additional findings", active.len() - limit),
-            Style::default().fg(DANGER),
+            format!("{level} — {} additional findings", active.len() - limit),
+            style,
         ));
+    }
+}
+
+fn highest_active_security_severity(message: &Message) -> FindingSeverity {
+    message
+        .findings
+        .iter()
+        .filter(|finding| finding.dismissed_at.is_none())
+        .map(|finding| finding.severity)
+        .max()
+        .unwrap_or(FindingSeverity::Warning)
+}
+
+fn security_color(severity: FindingSeverity) -> Color {
+    match severity {
+        FindingSeverity::Danger => DANGER,
+        FindingSeverity::Warning => FYI_HINT,
+        FindingSeverity::Information => COLD,
+    }
+}
+
+fn finding_visual_style(severity: FindingSeverity) -> (&'static str, Style) {
+    match severity {
+        FindingSeverity::Danger => (
+            "HIGH RISK",
+            Style::default()
+                .bg(DANGER)
+                .fg(Color::Black)
+                .add_modifier(Modifier::BOLD),
+        ),
+        FindingSeverity::Warning => (
+            "CAUTION",
+            Style::default().fg(FYI_HINT).add_modifier(Modifier::BOLD),
+        ),
+        FindingSeverity::Information => ("NOTICE", Style::default().fg(COLD)),
     }
 }
 
@@ -925,6 +1009,11 @@ fn finding_summary(finding: &HeuristicFinding) -> String {
             "Unsigned: your mail provider verified delivery through servers authorized by {}, but the domain did not sign this message",
             string("from_domain").unwrap_or_else(|| "the visible From domain".into()),
         ),
+        "cross_domain_account_action" => format!(
+            "An account-action link leaves the sender's site. Sender domain: {}. Link opens: {}. Notice that these domains differ. Do not use this link; use a bookmark, the official app, or type an address you already know",
+            string("from_domain").unwrap_or_else(|| "unknown".into()),
+            string("destination_domain").unwrap_or_else(|| "another site".into()),
+        ),
         "openpgp_protected_header_mismatch" =>
             "The outer headers disagree with the integrity-protected OpenPGP headers".into(),
         "invalid_openpgp_signature" => "The OpenPGP signature is invalid".into(),
@@ -967,6 +1056,82 @@ fn wrap_untrusted_identity(value: &str, width: usize) -> Vec<String> {
         lines.push(line);
     }
     lines
+}
+
+fn wrap_message_body(value: &str, width: usize) -> Vec<Line<'static>> {
+    let width = width.max(1);
+    let sanitized = safe_text(value).replace('\t', "    ");
+    let mut lines = Vec::new();
+    for logical_line in sanitized.split('\n') {
+        let mut line = String::new();
+        let mut used = 0usize;
+        for character in logical_line.chars() {
+            let character_width = UnicodeWidthChar::width(character).unwrap_or(1).max(1);
+            if used + character_width > width && !line.is_empty() {
+                lines.push(Line::raw(std::mem::take(&mut line)));
+                used = 0;
+            }
+            line.push(character);
+            used += character_width;
+        }
+        lines.push(Line::raw(line));
+    }
+    if lines.is_empty() {
+        lines.push(Line::raw(""));
+    }
+    lines
+}
+
+fn draw_scrolling_panel(
+    frame: &mut Frame<'_>,
+    app: &MailApp,
+    area: Rect,
+    title: &str,
+    lines: Vec<Line<'static>>,
+    border_color: Color,
+) {
+    let content_rows = lines.len();
+    let viewport_rows = usize::from(area.height.saturating_sub(2));
+    let scroll = app.update_reader_scroll_bounds(content_rows, viewport_rows);
+    let visible_start = if content_rows == 0 { 0 } else { scroll + 1 };
+    let visible_end = scroll.saturating_add(viewport_rows).min(content_rows);
+    let title = if content_rows > viewport_rows {
+        format!("{title} · rows {visible_start}–{visible_end} of {content_rows}")
+    } else {
+        title.to_owned()
+    };
+    let visible = lines
+        .into_iter()
+        .skip(scroll)
+        .take(viewport_rows)
+        .collect::<Vec<_>>();
+    frame.render_widget(
+        Paragraph::new(Text::from(visible)).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(title)
+                .border_style(Style::default().fg(border_color)),
+        ),
+        area,
+    );
+    if content_rows > viewport_rows && area.height > 2 {
+        let mut state = ScrollbarState::default()
+            .content_length(content_rows)
+            .position(scroll)
+            .viewport_content_length(viewport_rows);
+        frame.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(None)
+                .end_symbol(None)
+                .track_style(Style::default().fg(Color::DarkGray))
+                .thumb_style(Style::default().fg(border_color)),
+            area.inner(Margin {
+                horizontal: 0,
+                vertical: 1,
+            }),
+            &mut state,
+        );
+    }
 }
 
 fn draw_onboarding(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
@@ -1333,7 +1498,10 @@ fn draw_help(frame: &mut Frame<'_>, area: Rect) {
             "Queues and reader",
             Style::default().add_modifier(Modifier::BOLD),
         ),
-        Line::raw("j/k Move · Enter Open · d Done · w Waiting · s Snooze one day"),
+        Line::raw("Queue: j/k Move · Enter Open · d Done · w Waiting · s Snooze one day"),
+        Line::raw(
+            "Reader: ↑/↓ Previous/next email · j/k Scroll · PgUp/PgDn Page · g/G Top/bottom",
+        ),
         Line::raw(
             "a Make Cold conversation actionable once · O Read through security warning with restrictions",
         ),
@@ -1397,10 +1565,10 @@ fn draw_footer(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
             "j/k move · </> FYI/Action · M similar→FYI · d done · w waiting · s snooze"
         }
         Screen::Reader if app.reader_is_blocked() => {
-            "Esc back · O read restricted · ? evidence/help"
+            "↑/↓ previous/next email · j/k scroll · PgUp/PgDn page · Esc back · O read restricted"
         }
         Screen::Reader => {
-            "</> FYI/Action · M similar→FYI · d done · w waiting · s snooze · Esc back"
+            "↑/↓ previous/next email · j/k scroll · PgUp/PgDn page · </> FYI/Action · Esc back"
         }
         Screen::Onboarding => "j/k move · y accept · n reject · e edit · Enter inspect/edit",
         Screen::OnboardingEdit => {
@@ -1503,16 +1671,20 @@ fn screen_title(app: &MailApp) -> &'static str {
         Screen::Queue(WorkflowView::Waiting) => "LATER / WAITING",
         Screen::Queue(WorkflowView::Snoozed) => "LATER / SNOOZED",
         Screen::Queue(WorkflowView::Done) => "DONE / HISTORY",
-        Screen::Reader => app
-            .current_thread
-            .as_ref()
-            .and_then(|thread| thread.messages.last())
-            .map(|message| match message.summary.inbox_class {
-                InboxClass::Warm => "WARM / CONVERSATION",
-                InboxClass::Cold => "COLD / CONVERSATION",
-                InboxClass::Spam => "SPAM / CONVERSATION",
-            })
-            .unwrap_or("CONVERSATION"),
+        Screen::Reader => match app.previous_screen {
+            Screen::Queue(WorkflowView::WarmAction) => "WARM / ACTION / CONVERSATION",
+            Screen::Queue(WorkflowView::WarmFyi) => "WARM / FYI / CONVERSATION",
+            _ => app
+                .current_thread
+                .as_ref()
+                .and_then(|thread| thread.messages.last())
+                .map(|message| match message.summary.inbox_class {
+                    InboxClass::Warm => "WARM / CONVERSATION",
+                    InboxClass::Cold => "COLD / CONVERSATION",
+                    InboxClass::Spam => "SPAM / CONVERSATION",
+                })
+                .unwrap_or("CONVERSATION"),
+        },
         Screen::Contacts => "CONTACTS",
         Screen::ContactEdit => "CONTACTS / EDIT RELATIONSHIP",
         Screen::Help => "HELP",
@@ -1584,7 +1756,7 @@ mod tests {
             .iter()
             .map(|span| span.content.as_ref())
             .collect::<String>();
-        let warm = text.find("1 Warm").unwrap();
+        let warm = text.find("1 Action").unwrap();
         let fyi = text.find("F FYI").unwrap();
         let cold = text.find("2 Cold").unwrap();
         assert!(warm < fyi && fyi < cold);
@@ -1652,5 +1824,32 @@ mod tests {
         assert!(reader.matches('-').count() >= 2);
         assert!(reader.contains(':'));
         assert_ne!(queue, "invalid date");
+    }
+
+    #[test]
+    fn security_levels_have_distinct_labels_and_visual_weight() {
+        let (danger_label, danger) = finding_visual_style(FindingSeverity::Danger);
+        let (warning_label, warning) = finding_visual_style(FindingSeverity::Warning);
+
+        assert_eq!(danger_label, "HIGH RISK");
+        assert_eq!(danger.bg, Some(DANGER));
+        assert_eq!(warning_label, "CAUTION");
+        assert_eq!(warning.bg, None);
+        assert_eq!(warning.fg, Some(FYI_HINT));
+    }
+
+    #[test]
+    fn message_body_wrapping_produces_exact_scroll_rows() {
+        let lines = wrap_message_body("abcdef\nxy", 3)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.into_owned())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(lines, ["abc", "def", "xy"]);
     }
 }
