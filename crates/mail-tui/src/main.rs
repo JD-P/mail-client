@@ -213,9 +213,9 @@ fn command_for(screen: Screen, key: KeyEvent) -> Option<AppCommand> {
         KeyCode::Up | KeyCode::Char('k') => Some(AppCommand::Previous),
         KeyCode::Enter => Some(AppCommand::Open),
         KeyCode::Char('1') => Some(AppCommand::WarmAction),
-        KeyCode::Char('f' | 'F') => Some(AppCommand::WarmFyi),
-        KeyCode::Char('2') => Some(AppCommand::Cold),
-        KeyCode::Char('3') => Some(AppCommand::Spam),
+        KeyCode::Char('2') => Some(AppCommand::WarmFyi),
+        KeyCode::Char('3') => Some(AppCommand::Cold),
+        KeyCode::Char('4') => Some(AppCommand::Spam),
         KeyCode::Char('l' | 'L') => Some(AppCommand::Waiting),
         KeyCode::Char('z' | 'Z') => Some(AppCommand::Snoozed),
         KeyCode::Char('D') => Some(AppCommand::Done),
@@ -290,6 +290,7 @@ fn default_profile_directory() -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lizard_mail_backend::WorkflowView;
 
     #[test]
     fn explicit_profile_forms_remain_available() {
@@ -344,5 +345,28 @@ mod tests {
             command_for(Screen::Reader, key(KeyCode::Char('<'))),
             Some(AppCommand::MoveToAction)
         ));
+    }
+
+    #[test]
+    fn numbered_inbox_shortcuts_follow_the_visible_workflow_order() {
+        let key = |character| KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE);
+
+        assert!(matches!(
+            command_for(Screen::Queue(WorkflowView::WarmAction), key('1')),
+            Some(AppCommand::WarmAction)
+        ));
+        assert!(matches!(
+            command_for(Screen::Queue(WorkflowView::WarmAction), key('2')),
+            Some(AppCommand::WarmFyi)
+        ));
+        assert!(matches!(
+            command_for(Screen::Queue(WorkflowView::WarmAction), key('3')),
+            Some(AppCommand::Cold)
+        ));
+        assert!(matches!(
+            command_for(Screen::Queue(WorkflowView::WarmAction), key('4')),
+            Some(AppCommand::Spam)
+        ));
+        assert!(command_for(Screen::Queue(WorkflowView::WarmAction), key('f')).is_none());
     }
 }

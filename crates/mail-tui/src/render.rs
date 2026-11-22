@@ -13,6 +13,9 @@ use url::Url;
 
 use crate::parser::{Element, HtmlDocument, Node, ParseWarning, RenderError};
 
+const LINK_CONTEXT_WORD_RADIUS: usize = 6;
+const LINK_CONTEXT_MAX_CHARS: usize = 240;
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum LinkKind {
     Web,
@@ -29,6 +32,12 @@ pub struct LinkReference {
     pub destination: Option<String>,
     pub kind: LinkKind,
     pub blocked_scheme: Option<String>,
+    /// Bounded visible words surrounding one occurrence of this link.
+    ///
+    /// This is derived inside the renderer while generated link markers are
+    /// still distinguishable from attacker-authored text. Frontends must not
+    /// try to reconstruct it by treating arbitrary `[n]` text as a marker.
+    pub context: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -246,6 +255,7 @@ impl Default for Context {
 struct Piece {
     text: String,
     style: TextStyle,
+    link_marker: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -273,6 +283,7 @@ struct Composer<'a> {
     pending_space: bool,
     links: Vec<LinkReference>,
     link_numbers: HashMap<(LinkKind, Option<String>, Option<String>), usize>,
+    link_contexts: HashMap<usize, String>,
     images: Vec<ImageReference>,
     warnings: Vec<String>,
     table_cells: usize,
@@ -300,6 +311,7 @@ impl<'a> Composer<'a> {
             pending_space: false,
             links: Vec::new(),
             link_numbers: HashMap::new(),
+            link_contexts: HashMap::new(),
             images: Vec::new(),
             warnings,
             table_cells: 0,
@@ -392,12 +404,16 @@ impl<'a> Composer<'a> {
             return;
         };
         if let Some(last) = flow.pieces.last_mut() {
-            if same_style(last.style, style) {
+            if last.link_marker.is_none() && same_style(last.style, style) {
                 last.text.push_str(&text);
                 return;
             }
         }
-        flow.pieces.push(Piece { text, style });
+        flow.pieces.push(Piece {
+            text,
+            style,
+            link_marker: None,
+        });
     }
 
     fn has_content(&self) -> bool {
@@ -449,9 +465,28 @@ impl<'a> Composer<'a> {
             destination: classified.destination.clone(),
             kind: classified.kind.clone(),
             blocked_scheme: classified.blocked_scheme,
+            context: None,
         });
         self.link_numbers.insert(key, number);
         Some(number)
+    }
+
+    fn record_link_context(&mut self, number: usize, context: String) {
+        self.link_contexts.entry(number).or_insert(context);
+    }
+
+    fn append_link_marker(&mut self, number: usize, style: TextStyle, context: &Context) {
+        self.ensure(context);
+        self.pending_space = false;
+        let Some(flow) = self.current.as_mut() else {
+            debug_assert!(false, "link marker appended without an active flow");
+            return;
+        };
+        flow.pieces.push(Piece {
+            text: format!(" [{number}]"),
+            style,
+            link_marker: Some(number),
+        });
     }
 
     fn image(&mut self, element: &Element, context: &Context) {
@@ -660,6 +695,9 @@ pub(crate) fn render_document(
     let context = Context::default();
     render_nodes(&document.children, &context, &mut composer);
     composer.finish(false);
+    for (number, context) in contexts_from_semantic_markers(&composer.flows) {
+        composer.record_link_context(number, context);
+    }
     let link_target_flow_start = if options.show_link_targets && !composer.links.is_empty() {
         let start = composer.flows.len();
         append_link_targets(&mut composer, &context);
@@ -717,6 +755,10 @@ pub(crate) fn render_document(
     }
 
     let link_targets_start = link_targets_start.filter(|start| *start < lines.len());
+    let mut link_contexts = std::mem::take(&mut composer.link_contexts);
+    for link in &mut composer.links {
+        link.context = link_contexts.remove(&link.number);
+    }
     Ok(RenderedPage {
         lines,
         links: composer.links,
@@ -725,6 +767,76 @@ pub(crate) fn render_document(
         truncated,
         link_targets_start,
     })
+}
+
+fn contexts_from_semantic_markers(flows: &[Flow]) -> HashMap<usize, String> {
+    let mut contexts = HashMap::new();
+    for flow in flows {
+        let mut text = String::new();
+        let mut markers = Vec::new();
+        for piece in &flow.pieces {
+            let start = text.len();
+            text.push_str(&piece.text);
+            if let Some(number) = piece.link_marker {
+                markers.push((number, start, text.len()));
+            }
+        }
+        for (number, start, end) in markers {
+            if let Some(context) = bounded_rendered_context(&text, start, end) {
+                contexts.entry(number).or_insert(context);
+            }
+        }
+    }
+    contexts
+}
+
+fn bounded_rendered_context(text: &str, start: usize, end: usize) -> Option<String> {
+    if start > end
+        || end > text.len()
+        || !text.is_char_boundary(start)
+        || !text.is_char_boundary(end)
+    {
+        return None;
+    }
+    let mut left = text[..start]
+        .split_whitespace()
+        .rev()
+        .take(LINK_CONTEXT_WORD_RADIUS + 1)
+        .collect::<Vec<_>>();
+    let left_truncated = left.len() > LINK_CONTEXT_WORD_RADIUS;
+    left.truncate(LINK_CONTEXT_WORD_RADIUS);
+    left.reverse();
+    let mut right = text[end..]
+        .split_whitespace()
+        .take(LINK_CONTEXT_WORD_RADIUS + 1)
+        .collect::<Vec<_>>();
+    let right_truncated = right.len() > LINK_CONTEXT_WORD_RADIUS;
+    right.truncate(LINK_CONTEXT_WORD_RADIUS);
+    if left.is_empty() && right.is_empty() {
+        return None;
+    }
+
+    let mut context = String::new();
+    if left_truncated {
+        context.push_str("… ");
+    }
+    context.push_str(&left.join(" "));
+    if !context.is_empty() && !right.is_empty() {
+        context.push(' ');
+    }
+    context.push_str(&right.join(" "));
+    if right_truncated {
+        context.push_str(" …");
+    }
+    let context = sanitize_text(&context, Transform::None);
+    let mut bounded = context
+        .chars()
+        .take(LINK_CONTEXT_MAX_CHARS)
+        .collect::<String>();
+    if context.chars().count() > LINK_CONTEXT_MAX_CHARS {
+        bounded.push('…');
+    }
+    (!bounded.trim().is_empty()).then_some(bounded)
 }
 
 fn render_nodes(nodes: &[Node], context: &Context, composer: &mut Composer<'_>) {
@@ -877,7 +989,7 @@ fn render_link(element: &Element, context: &Context, composer: &mut Composer<'_>
         composer.append(label, &child_context);
     }
     if let Some(number) = number {
-        composer.append_literal(format!(" [{number}]"), child_context.style, &child_context);
+        composer.append_link_marker(number, child_context.style, &child_context);
     }
 }
 
@@ -1415,11 +1527,22 @@ fn render_stacked_table(
 
 fn cell_text(nodes: &[Node], composer: &mut Composer<'_>) -> String {
     let mut output = String::new();
-    collect_cell_text(nodes, composer, &mut output);
+    let mut link_markers = Vec::new();
+    collect_cell_text(nodes, composer, &mut output, &mut link_markers);
+    for (number, start, end) in link_markers {
+        if let Some(context) = bounded_rendered_context(&output, start, end) {
+            composer.record_link_context(number, context);
+        }
+    }
     collapse_whitespace(&output)
 }
 
-fn collect_cell_text(nodes: &[Node], composer: &mut Composer<'_>, output: &mut String) {
+fn collect_cell_text(
+    nodes: &[Node],
+    composer: &mut Composer<'_>,
+    output: &mut String,
+    link_markers: &mut Vec<(usize, usize, usize)>,
+) {
     for node in nodes {
         match node {
             Node::Text(text) => output.push_str(&sanitize_text(text, Transform::None)),
@@ -1429,15 +1552,20 @@ fn collect_cell_text(nodes: &[Node], composer: &mut Composer<'_>, output: &mut S
                 output.push_str(&composer.register_image(element));
             }
             Node::Element(element) if element.tag == "a" => {
-                collect_cell_text(&element.children, composer, output);
+                collect_cell_text(&element.children, composer, output, link_markers);
                 if let Some(number) = composer.link(element.attr("href").unwrap_or_default()) {
-                    output.push_str(&format!(" [{number}]"));
+                    output.push(' ');
+                    let start = output.len();
+                    output.push_str(&format!("[{number}]"));
+                    link_markers.push((number, start, output.len()));
                 }
             }
             Node::Element(element) if element.tag == "form" => {
                 output.push_str("[Interactive form omitted]")
             }
-            Node::Element(element) => collect_cell_text(&element.children, composer, output),
+            Node::Element(element) => {
+                collect_cell_text(&element.children, composer, output, link_markers)
+            }
         }
     }
 }
@@ -1662,6 +1790,7 @@ fn wrap_plain(text: &str, width: usize) -> Vec<String> {
         pieces: vec![Piece {
             text: text.to_owned(),
             style: TextStyle::default(),
+            link_marker: None,
         }],
         first_prefix: String::new(),
         rest_prefix: String::new(),
@@ -1926,6 +2055,42 @@ mod tests {
         assert!(!rendered.lines[..start]
             .iter()
             .any(|line| rendered_line_text_for_test(line) == "Links"));
+    }
+
+    #[test]
+    fn links_carry_context_through_plain_and_table_layout() {
+        let plain = page(
+            "<p>Review the invoice at <a href='https://billing.example/'>the billing portal</a> before Friday.</p>",
+            80,
+        );
+        assert_eq!(
+            plain.links[0].context.as_deref(),
+            Some("… the invoice at the billing portal before Friday.")
+        );
+
+        let table = page(
+            concat!(
+                "<table><tr><td>Review the invoice at ",
+                "<a href='https://billing.example/'>the billing portal</a>",
+                " before Friday.</td></tr></table>"
+            ),
+            80,
+        );
+        assert_eq!(
+            table.links[0].context.as_deref(),
+            Some("… the invoice at the billing portal before Friday.")
+        );
+
+        let spoofed_marker = page(
+            concat!(
+                "<p><u>attacker context [1]</u> one two three four five six seven ",
+                "<a href='https://billing.example/'>real target</a> after</p>"
+            ),
+            100,
+        );
+        let context = spoofed_marker.links[0].context.as_deref().unwrap();
+        assert!(context.contains("real target after"));
+        assert!(!context.contains("attacker context"));
     }
 
     fn rendered_line_text_for_test(line: &Line<'_>) -> String {

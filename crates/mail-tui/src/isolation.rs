@@ -39,6 +39,7 @@ const MAX_ERROR_CHARS: usize = 4 * 1024;
 const MAX_OUTPUT_SPANS: usize = 250_000;
 const MAX_OUTPUT_TEXT_BYTES: usize = 20 * 1024 * 1024;
 const MAX_REFERENCE_BYTES: usize = 16 * 1024;
+const MAX_LINK_CONTEXT_CHARS: usize = 240;
 const MAX_WARNINGS: usize = 1_024;
 const DEFAULT_LIBEXEC_DIR: &str = "/usr/libexec/lizard-mail";
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
@@ -369,6 +370,8 @@ struct WireLink {
     destination: Option<String>,
     kind: WireLinkKind,
     blocked_scheme: Option<String>,
+    #[serde(default)]
+    context: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -625,6 +628,7 @@ impl From<LinkReference> for WireLink {
                 LinkKind::Blocked => WireLinkKind::Blocked,
             },
             blocked_scheme: link.blocked_scheme,
+            context: link.context,
         }
     }
 }
@@ -639,6 +643,14 @@ impl WireLink {
         }
         validate_reference(self.destination.as_deref())?;
         validate_reference(self.blocked_scheme.as_deref())?;
+        validate_reference(self.context.as_deref())?;
+        if self
+            .context
+            .as_deref()
+            .is_some_and(|context| context.chars().count() > MAX_LINK_CONTEXT_CHARS)
+        {
+            return Err(protocol_error("renderer link context is too large"));
+        }
         let link = LinkReference {
             number: self.number,
             destination: self.destination,
@@ -651,6 +663,7 @@ impl WireLink {
                 WireLinkKind::Blocked => LinkKind::Blocked,
             },
             blocked_scheme: self.blocked_scheme,
+            context: self.context,
         };
         if !link_reference_is_consistent(&link) {
             return Err(protocol_error(
@@ -1217,6 +1230,7 @@ mod tests {
         let page = wire.validate_and_convert(40, &Limits::default()).unwrap();
         assert!(page.lines.iter().all(|line| line.width() <= 40));
         assert!(page.link_targets_start.is_some());
+        assert_eq!(page.links[0].context.as_deref(), Some("world"));
 
         let page = HtmlRenderer::default()
             .render(

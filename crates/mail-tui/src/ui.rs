@@ -74,13 +74,13 @@ fn header_navigation() -> Line<'static> {
         Span::styled("1", Style::default().fg(WARM).add_modifier(Modifier::BOLD)),
         Span::raw(" Action  "),
         Span::styled(
-            "F FYI",
+            "2",
             Style::default().fg(FYI_HINT).add_modifier(Modifier::BOLD),
         ),
-        Span::raw("  "),
-        Span::styled("2", Style::default().fg(COLD).add_modifier(Modifier::BOLD)),
+        Span::raw(" FYI  "),
+        Span::styled("3", Style::default().fg(COLD).add_modifier(Modifier::BOLD)),
         Span::raw(" Cold  "),
-        Span::styled("3", Style::default().fg(SPAM).add_modifier(Modifier::BOLD)),
+        Span::styled("4", Style::default().fg(SPAM).add_modifier(Modifier::BOLD)),
         Span::raw(" Spam  L Later  C Contacts  A Accounts  ? Help"),
     ])
 }
@@ -1328,16 +1328,21 @@ fn annotated_rendered_message_lines(
         append_restricted_link_explanation(&mut lines, message, width);
     }
     let link_contexts = rendered_link_contexts(page);
+    let link_targets = page
+        .links
+        .iter()
+        .map(|link| (link.number, target_ids_for_reference(message, link)))
+        .collect::<HashMap<_, _>>();
+    let matched_targets = link_targets
+        .values()
+        .flat_map(|targets| targets.iter().cloned())
+        .collect::<BTreeSet<_>>();
+    append_unmatched_targeted_link_findings(&mut lines, message, &matched_targets, width);
     for link in &page.links {
-        let targets = message
-            .links
-            .iter()
-            .filter(|message_link| message_link_matches_reference(message_link, link))
-            .map(|message_link| message_link.id.clone())
-            .collect::<BTreeSet<_>>();
+        let targets = link_targets.get(&link.number).cloned().unwrap_or_default();
         append_targeted_link_findings(&mut lines, message, &targets, width);
         if let Some(context) = link_contexts.get(&link.number) {
-            append_link_context(&mut lines, &context, width);
+            append_link_context(&mut lines, context, width);
         }
         append_wrapped_styled(
             &mut lines,
@@ -1367,11 +1372,21 @@ fn append_backend_link_section(
         append_restricted_link_explanation(lines, message, width);
     }
     let link_contexts = backend_link_contexts(message);
+    let link_targets = message
+        .links
+        .iter()
+        .map(|link| (link.id.clone(), target_ids_for_backend_link(message, link)))
+        .collect::<HashMap<_, _>>();
+    let matched_targets = link_targets
+        .values()
+        .flat_map(|targets| targets.iter().cloned())
+        .collect::<BTreeSet<_>>();
+    append_unmatched_targeted_link_findings(lines, message, &matched_targets, width);
     for link in &message.links {
-        let targets = BTreeSet::from([link.id.clone()]);
+        let targets = link_targets.get(&link.id).cloned().unwrap_or_default();
         append_targeted_link_findings(lines, message, &targets, width);
         if let Some(context) = link_contexts.get(&link.id) {
-            append_link_context(lines, &context, width);
+            append_link_context(lines, context, width);
         }
         let destination = if matches!(link.scheme.as_str(), "http" | "https" | "mailto" | "cid") {
             safe_single_line_text(&link.destination)
@@ -1421,6 +1436,11 @@ fn append_restricted_link_explanation(
 
 fn defang_restricted_lines(lines: &mut [Line<'static>]) {
     for line in lines {
+        // This yellow banner is application-authored guidance. Its domain is
+        // evidence named by the client, not a sender-supplied actionable URL.
+        if line.style.fg == Some(Color::Black) && line.style.bg == Some(Color::Yellow) {
+            continue;
+        }
         for span in &mut line.spans {
             let defanged = defang_clickable_runs(span.content.as_ref());
             if defanged != span.content {
@@ -1513,38 +1533,12 @@ fn append_link_context(lines: &mut Vec<Line<'static>>, context: &str, width: usi
 }
 
 fn rendered_link_contexts(page: &RenderedPage) -> HashMap<usize, String> {
-    let body_end = page.link_targets_start.unwrap_or(page.lines.len());
-    let mut body = String::new();
-    let mut marker_ranges = HashMap::new();
-    for line in page.lines.iter().take(body_end) {
-        for span in &line.spans {
-            let start = body.len();
-            body.push_str(span.content.as_ref());
-            if span.style.add_modifier.contains(Modifier::UNDERLINED) {
-                let value = span.content.as_ref();
-                let mut searched = 0;
-                while let Some(open) = value[searched..].find('[') {
-                    let open = searched + open;
-                    let Some(close) = value[open + 1..].find(']') else {
-                        break;
-                    };
-                    let close = open + 1 + close;
-                    if let Ok(number) = value[open + 1..close].parse::<usize>() {
-                        marker_ranges
-                            .entry(number)
-                            .or_insert(start + open..start + close + 1);
-                    }
-                    searched = close + 1;
-                }
-            }
-        }
-        body.push(' ');
-    }
-    marker_ranges
-        .into_iter()
-        .filter_map(|(number, marker)| {
-            bounded_surrounding_words(&body, marker.start, marker.end)
-                .map(|context| (number, context))
+    page.links
+        .iter()
+        .filter_map(|link| {
+            link.context
+                .as_ref()
+                .map(|context| (link.number, context.clone()))
         })
         .collect()
 }
@@ -1645,6 +1639,41 @@ fn append_targeted_link_findings(
     }
 }
 
+fn append_unmatched_targeted_link_findings(
+    lines: &mut Vec<Line<'static>>,
+    message: &Message,
+    matched_targets: &BTreeSet<String>,
+    width: usize,
+) {
+    let mut findings = message
+        .findings
+        .iter()
+        .filter(|finding| {
+            finding.dismissed_at.is_none()
+                && finding.target_kind == FindingTargetKind::Link
+                && finding.severity >= FindingSeverity::Warning
+                && finding
+                    .target_id
+                    .as_ref()
+                    .is_some_and(|target| !matched_targets.contains(target))
+        })
+        .map(|finding| (finding.severity, finding_summary(finding)))
+        .collect::<Vec<_>>();
+    findings.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(&right.1)));
+    findings.dedup();
+    for (severity, summary) in findings {
+        let (level, style) = finding_visual_style(severity);
+        append_wrapped_styled(
+            lines,
+            &format!(
+                "{level} — The client could not safely identify which displayed link triggered this warning: {summary}. Treat every link below as suspicious"
+            ),
+            width,
+            style,
+        );
+    }
+}
+
 fn append_wrapped_styled(lines: &mut Vec<Line<'static>>, value: &str, width: usize, style: Style) {
     for segment in wrap_untrusted_identity(value, width) {
         lines.push(Line::styled(segment, style));
@@ -1677,6 +1706,76 @@ fn message_link_matches_reference(message_link: &MessageLink, reference: &LinkRe
     Url::parse(&message_link.destination)
         .ok()
         .is_some_and(|destination| destination.as_str() == reference_destination)
+}
+
+fn target_ids_for_reference(message: &Message, reference: &LinkReference) -> BTreeSet<String> {
+    let mut targets = message
+        .links
+        .iter()
+        .filter(|message_link| message_link_matches_reference(message_link, reference))
+        .map(|message_link| message_link.id.clone())
+        .collect::<BTreeSet<_>>();
+    for finding in active_targeted_link_findings(message) {
+        if finding_destination(finding)
+            .is_some_and(|destination| destination_matches_reference(destination, reference))
+        {
+            if let Some(target) = &finding.target_id {
+                targets.insert(target.clone());
+            }
+        }
+    }
+    targets
+}
+
+fn target_ids_for_backend_link(message: &Message, link: &MessageLink) -> BTreeSet<String> {
+    let mut targets = BTreeSet::from([link.id.clone()]);
+    for finding in active_targeted_link_findings(message) {
+        if finding_destination(finding)
+            .is_some_and(|destination| destinations_equivalent(destination, &link.destination))
+        {
+            if let Some(target) = &finding.target_id {
+                targets.insert(target.clone());
+            }
+        }
+    }
+    targets
+}
+
+fn active_targeted_link_findings(message: &Message) -> impl Iterator<Item = &HeuristicFinding> {
+    message.findings.iter().filter(|finding| {
+        finding.dismissed_at.is_none()
+            && finding.target_kind == FindingTargetKind::Link
+            && finding.severity >= FindingSeverity::Warning
+            && finding.target_id.is_some()
+    })
+}
+
+fn finding_destination(finding: &HeuristicFinding) -> Option<&str> {
+    finding
+        .evidence
+        .get("destination")
+        .and_then(|value| value.as_str())
+}
+
+fn destination_matches_reference(destination: &str, reference: &LinkReference) -> bool {
+    if reference.kind == LinkKind::Blocked {
+        return Url::parse(destination.trim())
+            .ok()
+            .is_some_and(|destination| {
+                reference.blocked_scheme.as_deref() == Some(destination.scheme())
+            });
+    }
+    reference
+        .destination
+        .as_deref()
+        .is_some_and(|reference| destinations_equivalent(destination, reference))
+}
+
+fn destinations_equivalent(left: &str, right: &str) -> bool {
+    match (Url::parse(left.trim()), Url::parse(right.trim())) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => left.trim() == right.trim(),
+    }
 }
 
 fn rendered_link_destination(link: &LinkReference) -> String {
@@ -2109,7 +2208,7 @@ fn draw_help(frame: &mut Frame<'_>, area: Rect) {
     let text = Text::from(vec![
         Line::styled("Global", Style::default().add_modifier(Modifier::BOLD)),
         Line::raw(
-            "1 Warm Action · F Warm FYI · 2 Cold · 3 Spam · L Waiting · Z Snoozed · D Done",
+            "1 Warm Action · 2 Warm FYI · 3 Cold · 4 Spam · L Waiting · Z Snoozed · D Done",
         ),
         Line::raw("C Contacts · A Accounts · ? Help · q Quit · Esc Back"),
         Line::raw(""),
@@ -2384,16 +2483,22 @@ mod tests {
             .map(|span| span.content.as_ref())
             .collect::<String>();
         let warm = text.find("1 Action").unwrap();
-        let fyi = text.find("F FYI").unwrap();
-        let cold = text.find("2 Cold").unwrap();
+        let fyi = text.find("2 FYI").unwrap();
+        let cold = text.find("3 Cold").unwrap();
         assert!(warm < fyi && fyi < cold);
 
         let fyi = navigation
             .spans
             .iter()
-            .find(|span| span.content == "F FYI")
+            .find(|span| span.content.contains("FYI"))
             .unwrap();
-        assert_eq!(fyi.style.fg, Some(FYI_HINT));
+        assert_eq!(fyi.style.fg, None);
+        let shortcut = navigation
+            .spans
+            .iter()
+            .find(|span| span.content == "2")
+            .unwrap();
+        assert_eq!(shortcut.style.fg, Some(FYI_HINT));
         assert_eq!(accent_for_workflow(WorkflowView::WarmFyi), WARM);
     }
 
@@ -2518,9 +2623,9 @@ mod tests {
         .await
         .unwrap();
         let html = concat!(
-            "<p>Reset your password using ",
+            "<table><tr><td>Reset your password using ",
             "<a href='https://evil.example.net/login'>https://login.example.com</a>",
-            " before noon to retain access.</p>"
+            " before noon to retain access.</td></tr></table>"
         );
         let raw = format!(
             concat!(
@@ -2579,6 +2684,35 @@ mod tests {
         assert!(warning < context && context < destination);
         assert_eq!(annotated_lines[context].style.fg, Some(Color::White));
 
+        let mut rebuilt_projection = message.clone();
+        rebuilt_projection
+            .findings
+            .retain(|finding| finding.code == "misleading_link_text");
+        for (ordinal, link) in rebuilt_projection.links.iter_mut().enumerate() {
+            link.id = format!("rebuilt-link:{ordinal}");
+        }
+        let rebuilt = annotated_rendered_message_lines(&page, &rebuilt_projection, 100, false)
+            .iter()
+            .map(rendered_line_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rebuilt.contains(
+            "The link text says login.example.com, but the link actually opens evil.example.net"
+        ));
+        assert!(!rebuilt.contains("could not safely identify"));
+
+        let mut unresolved = rebuilt_projection;
+        unresolved.findings[0].evidence["destination"] =
+            serde_json::json!("https://unmatched.example.test/");
+        let unresolved = annotated_rendered_message_lines(&page, &unresolved, 100, false)
+            .iter()
+            .map(rendered_line_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let unresolved = unresolved.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(unresolved.contains("could not safely identify which displayed link"));
+        assert!(unresolved.contains("Treat every link below as suspicious"));
+
         let mut restricted = annotated_rendered_message_lines(&page, &message, 100, true);
         defang_restricted_lines(&mut restricted);
         let restricted = restricted
@@ -2586,7 +2720,7 @@ mod tests {
             .map(rendered_line_text)
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(restricted.contains("This email was not signed by example. com."));
+        assert!(restricted.contains("This email was not signed by example.com."));
         assert!(restricted.contains("spaces have been added to every address"));
         assert!(restricted.contains("https: / / evil. example. net/ login"));
         assert!(!restricted.contains("https://"));
