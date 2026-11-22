@@ -27,7 +27,7 @@ use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 use zeroize::{Zeroize, Zeroizing};
 
-const WORKER_PROTOCOL_VERSION: u32 = 1;
+const WORKER_PROTOCOL_VERSION: u32 = 2;
 const MAX_WORKER_REQUEST_BYTES: usize = 2 * 1024 * 1024;
 const MAX_WORKER_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_WORKER_ERROR_CHARS: usize = 4 * 1024;
@@ -142,7 +142,7 @@ impl IsolatedImapAccountEngine {
                     self.record_infrastructure_failure(account_id, &error.detail)
                         .await?;
                 }
-                Err(BackendError::Imap(error.detail))
+                Err(error.into_backend_error())
             }
             (_, Err(error)) => Err(error),
         }
@@ -180,7 +180,7 @@ impl IsolatedImapAccountEngine {
                         .await?;
                 }
                 attempt.disarm();
-                Err(BackendError::Imap(error.detail))
+                Err(error.into_backend_error())
             }
         }
     }
@@ -372,8 +372,10 @@ impl IsolatedImapAccountEngine {
         wall_timeout: Duration,
     ) -> std::result::Result<WorkerResult, WorkerFailure> {
         let worker_current_dir = request.backend.profile_dir.clone();
-        let mut payload =
-            Zeroizing::new(serde_json::to_vec(&request).map_err(WorkerFailure::operation)?);
+        let mut payload = Zeroizing::new(
+            serde_json::to_vec(&request)
+                .map_err(|error| WorkerFailure::operation_detail(error.to_string()))?,
+        );
         drop(request);
         if payload.len() > MAX_WORKER_REQUEST_BYTES {
             return Err(WorkerFailure::infrastructure(
@@ -452,9 +454,7 @@ impl IsolatedImapAccountEngine {
                 "IMAP worker protocol version mismatch",
             ));
         }
-        response
-            .result
-            .map_err(|detail| WorkerFailure::operation_detail(bounded_error(&detail)))
+        response.result.map_err(WorkerFailure::operation_wire)
     }
 
     async fn remote_account_for_message(&self, message_id: MessageId) -> Result<AccountId> {
@@ -503,6 +503,7 @@ impl IsolatedImapAccountEngine {
 struct WorkerFailure {
     detail: String,
     infrastructure: bool,
+    database_error: Option<WireDatabaseError>,
 }
 
 impl WorkerFailure {
@@ -510,17 +511,42 @@ impl WorkerFailure {
         Self {
             detail: bounded_error(&detail.into()),
             infrastructure: true,
+            database_error: None,
         }
     }
 
-    fn operation(error: impl std::fmt::Display) -> Self {
-        Self::operation_detail(error.to_string())
+    fn operation(error: BackendError) -> Self {
+        Self::operation_wire(WireWorkerError::from_backend(&error))
     }
 
     fn operation_detail(detail: impl Into<String>) -> Self {
         Self {
             detail: bounded_error(&detail.into()),
             infrastructure: false,
+            database_error: None,
+        }
+    }
+
+    fn operation_wire(error: WireWorkerError) -> Self {
+        Self {
+            detail: bounded_error(&error.detail),
+            infrastructure: false,
+            database_error: error.database_error,
+        }
+    }
+
+    fn into_backend_error(self) -> BackendError {
+        match self.database_error {
+            Some(WireDatabaseError::Busy) => {
+                BackendError::Database(turso::Error::Busy(self.detail))
+            }
+            Some(WireDatabaseError::BusySnapshot) => {
+                BackendError::Database(turso::Error::BusySnapshot(self.detail))
+            }
+            Some(WireDatabaseError::Other) => {
+                BackendError::Database(turso::Error::Error(self.detail))
+            }
+            None => BackendError::Imap(self.detail),
         }
     }
 }
@@ -580,7 +606,40 @@ enum WorkerResult {
 #[derive(Serialize, Deserialize)]
 struct WorkerResponse {
     protocol: u32,
-    result: std::result::Result<WorkerResult, String>,
+    result: std::result::Result<WorkerResult, WireWorkerError>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct WireWorkerError {
+    detail: String,
+    database_error: Option<WireDatabaseError>,
+}
+
+impl WireWorkerError {
+    fn from_backend(error: &BackendError) -> Self {
+        let (detail, database_error) = match error {
+            BackendError::Database(source) => (
+                source.to_string(),
+                Some(match source {
+                    turso::Error::Busy(_) => WireDatabaseError::Busy,
+                    turso::Error::BusySnapshot(_) => WireDatabaseError::BusySnapshot,
+                    _ => WireDatabaseError::Other,
+                }),
+            ),
+            _ => (error.to_string(), None),
+        };
+        Self {
+            detail: bounded_error(&detail),
+            database_error,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Serialize, Deserialize)]
+enum WireDatabaseError {
+    Busy,
+    BusySnapshot,
+    Other,
 }
 
 #[derive(Clone, Copy, Serialize, Deserialize)]
@@ -692,7 +751,7 @@ pub(crate) fn run_worker_process() -> std::result::Result<(), String> {
     let response = runtime.block_on(run_worker_request(request));
     let response = WorkerResponse {
         protocol: WORKER_PROTOCOL_VERSION,
-        result: response.map_err(|error| bounded_error(&error.to_string())),
+        result: response.map_err(|error| WireWorkerError::from_backend(&error)),
     };
     let bytes = serde_json::to_vec(&response)
         .map_err(|error| format!("serializing worker response: {error}"))?;
@@ -1196,5 +1255,19 @@ mod tests {
             bounded_error("server\r\nstatus\x1b[31m"),
             "server  status [31m"
         );
+    }
+
+    #[test]
+    fn worker_protocol_preserves_database_busy_classification() {
+        for original in [
+            BackendError::Database(turso::Error::Busy("database is locked".into())),
+            BackendError::Database(turso::Error::BusySnapshot("snapshot is stale".into())),
+        ] {
+            let encoded = serde_json::to_vec(&WireWorkerError::from_backend(&original)).unwrap();
+            let decoded: WireWorkerError = serde_json::from_slice(&encoded).unwrap();
+            let restored = WorkerFailure::operation_wire(decoded).into_backend_error();
+            assert!(restored.is_database_busy());
+            assert!(!restored.to_string().contains("IMAP protocol error"));
+        }
     }
 }

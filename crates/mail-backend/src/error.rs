@@ -102,6 +102,13 @@ impl BackendError {
             Self::Serialization(_) => ErrorCode::InvalidInput,
         }
     }
+
+    pub(crate) fn is_database_busy(&self) -> bool {
+        matches!(
+            self,
+            Self::Database(turso::Error::Busy(_) | turso::Error::BusySnapshot(_))
+        )
+    }
 }
 
 impl From<turso::Error> for BackendError {

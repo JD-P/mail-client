@@ -836,3 +836,56 @@ async fn dkim_evidence_is_persisted_for_unsigned_and_malformed_messages() {
         malformed.dkim
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn local_backend_waits_for_a_concurrent_wal_writer() {
+    let profile = tempfile::tempdir().unwrap();
+    let backend = Backend::open(BackendConfig::new(profile.path()))
+        .await
+        .unwrap();
+
+    // Model the isolated synchronization worker with a second Turso handle.
+    // Holding a short write transaction here used to make the live backend
+    // immediately surface `database is locked` to the user.
+    let database_path = profile.path().join("mail.db");
+    let database = turso::Builder::new_local(database_path.to_str().unwrap())
+        .experimental_index_method(true)
+        .experimental_multiprocess_wal(true)
+        .build()
+        .await
+        .unwrap();
+    let mut competing = database.connect().unwrap();
+    let transaction = competing.transaction().await.unwrap();
+    transaction
+        .execute("UPDATE schema_meta SET version = version", ())
+        .await
+        .unwrap();
+
+    let writer = tokio::spawn({
+        let backend = backend.clone();
+        async move {
+            backend
+                .accounts()
+                .add(NewAccount {
+                    name: "Waited writer".into(),
+                    kind: AccountKind::Local,
+                    credential_ref: None,
+                    imap: None,
+                })
+                .await
+        }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert!(
+        !writer.is_finished(),
+        "the second writer should wait for routine WAL contention"
+    );
+    transaction.commit().await.unwrap();
+
+    let account = tokio::time::timeout(std::time::Duration::from_secs(2), writer)
+        .await
+        .expect("the waiting write should resume promptly")
+        .unwrap()
+        .unwrap();
+    assert_eq!(account.name, "Waited writer");
+}

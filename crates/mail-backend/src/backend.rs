@@ -29,6 +29,7 @@ use std::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc, Weak,
     },
+    time::Duration,
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{broadcast, Mutex, RwLock};
@@ -42,6 +43,12 @@ const MAX_MESSAGE_LOAD_BATCH: usize = 100;
 const MAX_IMAP_METADATA_UIDS: usize = 100;
 const IMAP_BODY_CHUNK_BYTES: usize = 1024 * 1024;
 const MAX_TEMPORARY_DKIM_RETRIES: usize = 256;
+// The isolated IMAP worker and its supervisor intentionally open the same
+// multiprocess-WAL database. Their process-local mutexes cannot serialize one
+// another, so routine write overlap must wait instead of escaping as a user-
+// visible `database is locked` failure.
+const DATABASE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+const HYDRATION_BUSY_RETRIES: usize = 3;
 
 struct PreparedIngest {
     id: MessageId,
@@ -290,6 +297,7 @@ impl Backend {
             .build()
             .await?;
         let mut connection = database.connect()?;
+        connection.busy_timeout(DATABASE_BUSY_TIMEOUT)?;
         if !sync_worker {
             schema::migrate(&connection).await?;
             crate::spam::initialize(&mut connection).await?;
@@ -303,6 +311,7 @@ impl Backend {
             schema::prepare_connection(&connection).await?;
         }
         let interactive_connection = database.connect()?;
+        interactive_connection.busy_timeout(DATABASE_BUSY_TIMEOUT)?;
         // Sorting a large conversation must remain possible inside an
         // isolated worker, where Landlock intentionally provides no writable
         // temporary directory.
@@ -5020,10 +5029,25 @@ impl Sync {
         }
         drop(file);
         drop(storage_reservation);
-        let result = self
-            .0
-            .hydrate_downloaded_message(message_id, &path, target.expected_bytes)
-            .await;
+        let mut busy_retries = 0;
+        let result = loop {
+            let result = self
+                .0
+                .hydrate_downloaded_message(message_id, &path, target.expected_bytes)
+                .await;
+            if result.as_ref().is_err_and(BackendError::is_database_busy)
+                && busy_retries < HYDRATION_BUSY_RETRIES
+            {
+                // BusySnapshot requires restarting the transaction rather
+                // than merely waiting inside its current statement. Rebuild
+                // from the already-durable local message; no IMAP bytes are
+                // downloaded again.
+                busy_retries += 1;
+                tokio::time::sleep(Duration::from_millis(25 * (1 << busy_retries))).await;
+                continue;
+            }
+            break result;
+        };
         match result {
             Ok(status) => {
                 attempt.disarm();
