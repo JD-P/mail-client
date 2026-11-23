@@ -320,6 +320,44 @@ async fn sender_identity_rejects_ambiguous_from_and_embedded_popular_domains() {
 }
 
 #[tokio::test]
+async fn sentence_punctuation_is_not_mistaken_for_a_displayed_domain() {
+    let profile = tempfile::tempdir().unwrap();
+    let backend = Backend::open(BackendConfig::new(profile.path()))
+        .await
+        .unwrap();
+    let body = concat!(
+        "<a href=\"https://www.paypal.com/settings\">",
+        "Accessing your data and privacy settings. Thank you for being a PayPal customer.",
+        "</a>",
+        "<a href=\"https://evil.example/login\">paypal.com</a>"
+    );
+    let id = backend
+        .messages()
+        .ingest(IngestMessage::local(message(
+            "Notices <notices@example.com>",
+            "Your privacy settings",
+            "",
+            "text/html; charset=utf-8",
+            body,
+        )))
+        .await
+        .unwrap();
+    let stored = backend.messages().get(id).await.unwrap();
+    let misleading = stored
+        .findings
+        .iter()
+        .filter(|finding| finding.code == "misleading_link_text")
+        .collect::<Vec<_>>();
+
+    assert_eq!(misleading.len(), 1);
+    assert_eq!(
+        misleading[0].evidence["destination"],
+        "https://evil.example/login"
+    );
+    assert_eq!(misleading[0].evidence["displayed_host"], "paypal.com");
+}
+
+#[tokio::test]
 async fn native_navigation_evidence_parses_html_without_loading_or_executing_it() {
     let profile = tempfile::tempdir().unwrap();
     let backend = Backend::open(BackendConfig::new(profile.path()))

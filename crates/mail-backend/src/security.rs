@@ -23,7 +23,7 @@ use url::{Host, Url};
 use uuid::Uuid;
 
 const BUILTIN_ID: Uuid = Uuid::from_u128(0x5f01da21_0f79_5f3e_b210_0d96438890ac);
-const BUILTIN_VERSION: u32 = 5;
+const BUILTIN_VERSION: u32 = 6;
 const BUILTIN_SOURCE: &str = "native:security-evidence";
 const MAX_FINDINGS: usize = 256;
 const MAX_HTML_TOKENS: usize = 100_000;
@@ -1340,7 +1340,9 @@ fn raw_host(destination: &str) -> Option<String> {
 fn displayed_host(value: &str) -> Option<String> {
     let trimmed = value.trim();
     if let Ok(url) = Url::parse(trimmed) {
-        return url.host_str().map(str::to_lowercase);
+        if let Some(host) = plausible_displayed_host(&url) {
+            return Some(host);
+        }
     }
     for token in trimmed.split_whitespace() {
         let token = token.trim_matches(|character: char| {
@@ -1348,13 +1350,25 @@ fn displayed_host(value: &str) -> Option<String> {
         });
         if token.contains('.') && !token.contains('@') {
             if let Ok(url) = Url::parse(&format!("https://{token}")) {
-                if let Some(host) = url.host_str() {
-                    return Some(host.to_lowercase());
+                if let Some(host) = plausible_displayed_host(&url) {
+                    return Some(host);
                 }
             }
         }
     }
     None
+}
+
+fn plausible_displayed_host(url: &Url) -> Option<String> {
+    match url.host()? {
+        Host::Domain(domain) => {
+            let domain = domain.trim_end_matches('.').to_lowercase();
+            let suffix = psl::suffix(domain.as_bytes())?;
+            (suffix.is_known() && registrable(&domain).is_some()).then_some(domain)
+        }
+        Host::Ipv4(address) => Some(address.to_string()),
+        Host::Ipv6(address) => Some(address.to_string()),
+    }
 }
 
 fn is_dangerous_scheme(value: &str) -> bool {
@@ -1754,6 +1768,26 @@ mod tests {
         assert!(text_contains_account_action(
             "security alert: verify your identity"
         ));
+    }
+
+    #[test]
+    fn displayed_hosts_require_a_complete_registrable_domain() {
+        assert_eq!(displayed_host("settings."), None);
+        assert_eq!(displayed_host("e.g."), None);
+        assert_eq!(displayed_host("service.not-a-real-tld"), None);
+        assert_eq!(
+            displayed_host("Accessing your data and privacy settings. Thank you."),
+            None
+        );
+        assert_eq!(displayed_host("paypal.com"), Some("paypal.com".into()));
+        assert_eq!(
+            displayed_host("Open accounts.paypal.com/settings."),
+            Some("accounts.paypal.com".into())
+        );
+        assert_eq!(
+            displayed_host("https://accounts.paypal.com/settings"),
+            Some("accounts.paypal.com".into())
+        );
     }
 
     #[test]
