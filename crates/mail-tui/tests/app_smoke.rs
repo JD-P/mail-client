@@ -276,6 +276,21 @@ async fn slash_search_opens_the_exact_matching_message_in_a_conversation() {
     let mut app = MailApp::open(backend).await.unwrap();
     app.dispatch(AppCommand::SearchStart).await.unwrap();
     assert_eq!(app.screen, Screen::SearchInput);
+    let terminal_backend = TestBackend::new(120, 36);
+    let mut terminal = Terminal::new(terminal_backend).unwrap();
+    terminal
+        .draw(|frame| lizard_mail_tui::ui::draw(frame, &app))
+        .unwrap();
+    let help = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(help.contains("has:attachment"));
+    assert!(help.contains("newer_than:/older_than:"));
+    assert!(help.contains("message-id: or rfc822msgid:"));
     app.dispatch(AppCommand::EditPaste(Zeroizing::new("needleword".into())))
         .await
         .unwrap();

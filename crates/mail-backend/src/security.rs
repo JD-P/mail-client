@@ -23,7 +23,7 @@ use url::{Host, Url};
 use uuid::Uuid;
 
 const BUILTIN_ID: Uuid = Uuid::from_u128(0x5f01da21_0f79_5f3e_b210_0d96438890ac);
-const BUILTIN_VERSION: u32 = 6;
+const BUILTIN_VERSION: u32 = 7;
 const BUILTIN_SOURCE: &str = "native:security-evidence";
 const MAX_FINDINGS: usize = 256;
 const MAX_HTML_TOKENS: usize = 100_000;
@@ -607,6 +607,13 @@ fn dkim_findings(message: &Message, collector: &mut FindingCollector) {
         .filter_map(|signature| signature.signing_domain.as_deref())
         .map(str::to_ascii_lowercase)
         .collect::<BTreeSet<_>>();
+    let claimed_signing_domains = message
+        .dkim
+        .signatures
+        .iter()
+        .filter_map(|signature| signature.signing_domain.as_deref())
+        .map(str::to_ascii_lowercase)
+        .collect::<BTreeSet<_>>();
     let unaligned = message
         .dkim
         .signatures
@@ -626,6 +633,7 @@ fn dkim_findings(message: &Message, collector: &mut FindingCollector) {
             "status": message.dkim.status,
             "valid_unaligned_signature": unaligned,
             "signing_domains": unaligned_signing_domains,
+            "claimed_signing_domains": claimed_signing_domains,
         }),
     ));
 }

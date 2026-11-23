@@ -559,7 +559,7 @@ fn draw_search_input(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
         .unwrap_or_default();
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(6), Constraint::Min(5)])
+        .constraints([Constraint::Length(4), Constraint::Min(5)])
         .split(area);
     frame.render_widget(
         Paragraph::new(safe_single_line_text(query))
@@ -574,8 +574,18 @@ fn draw_search_input(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
     );
     frame.render_widget(
         Paragraph::new(Text::from(vec![
-            Line::raw("Type words or Gmail-style operators, then press Enter."),
-            Line::raw(""),
+            Line::styled(
+                "Words search message bodies; quote multiword phrases.",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Line::raw("Text: subject: from: to: cc: bcc: deliveredto: filename: list:"),
+            Line::raw("State: has:attachment · is:read/unread/starred/warm/cold/spam"),
+            Line::raw("Dates: after:/newer:YYYY-MM-DD · before:/older:YYYY-MM-DD"),
+            Line::raw("Age: newer_than:/older_than:7d, 2w, 3m, or 1y"),
+            Line::raw("Size: larger:10mb · smaller:500k · size:1024"),
+            Line::raw("Location: in: or label: folder · account: account"),
+            Line::raw("IDs: message-id: or rfc822msgid:"),
+            Line::raw("Logic: adjacent terms mean AND · uppercase AND/OR · -negation · (groups)"),
             Line::raw("Examples:"),
             Line::raw("  from:alice@example.com subject:\"project update\""),
             Line::raw("  has:attachment after:2026-01-01"),
@@ -1010,8 +1020,48 @@ fn append_labeled_lines(lines: &mut Vec<Line<'static>>, label: &str, value: &str
 }
 
 fn dkim_summary(message: &Message) -> String {
-    if let Some(domain) = aligned_dkim_domain(&message.dkim.signatures) {
-        return format!("This message was signed by {domain}");
+    if !message.dkim.signatures.is_empty() {
+        let aligned = message
+            .dkim
+            .signatures
+            .iter()
+            .enumerate()
+            .find(|(_, signature)| {
+                signature.status == DkimSignatureStatus::Pass
+                    && signature.from_domain_aligned == Some(true)
+                    && signature.signing_domain.is_some()
+            });
+        if let Some((aligned_index, signature)) = aligned {
+            let domain = signature
+                .signing_domain
+                .as_deref()
+                .unwrap_or("unknown domain");
+            let other = message
+                .dkim
+                .signatures
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| *index != aligned_index)
+                .map(|(_, signature)| dkim_signature_description(signature))
+                .collect::<Vec<_>>();
+            if other.is_empty() {
+                return format!("This message was signed by {domain}");
+            }
+            return format!(
+                "This message was signed by {domain}. Other signature evidence: {}",
+                other.join("; ")
+            );
+        }
+        return format!(
+            "DKIM signature evidence: {}",
+            message
+                .dkim
+                .signatures
+                .iter()
+                .map(dkim_signature_description)
+                .collect::<Vec<_>>()
+                .join("; ")
+        );
     }
     let claimed = message
         .summary
@@ -1032,6 +1082,43 @@ fn dkim_summary(message: &Message) -> String {
             "DKIM verification is temporarily unavailable".into()
         }
         DkimAuthenticationStatus::NotEvaluated => "DKIM has not been evaluated".into(),
+    }
+}
+
+fn dkim_signature_description(signature: &lizard_mail_backend::DkimSignatureEvidence) -> String {
+    let domain = signature
+        .signing_domain
+        .as_deref()
+        .filter(|domain| !domain.is_empty());
+    match signature.status {
+        DkimSignatureStatus::Pass => match (domain, signature.from_domain_aligned) {
+            (Some(domain), Some(true)) => {
+                format!("{domain} signed this message and matches the visible From domain")
+            }
+            (Some(domain), Some(false)) => {
+                format!("{domain} signed this message, but does not match the visible From domain")
+            }
+            (Some(domain), None) => format!(
+                "{domain} signed this message; alignment with the visible From domain is unknown"
+            ),
+            (None, _) => "A signature passed, but its signing domain was unavailable".into(),
+        },
+        DkimSignatureStatus::Fail => format!(
+            "A signature claiming {} failed verification",
+            domain.unwrap_or("an unknown domain")
+        ),
+        DkimSignatureStatus::Neutral => format!(
+            "A signature claiming {} had an inconclusive result",
+            domain.unwrap_or("an unknown domain")
+        ),
+        DkimSignatureStatus::PermanentError => format!(
+            "A signature claiming {} could not be verified",
+            domain.unwrap_or("an unknown domain")
+        ),
+        DkimSignatureStatus::TemporaryError => format!(
+            "Verification for a signature claiming {} is temporarily unavailable",
+            domain.unwrap_or("an unknown domain")
+        ),
     }
 }
 
@@ -1427,11 +1514,16 @@ fn finding_summary(finding: &HeuristicFinding) -> String {
                 string("from_domain").unwrap_or_else(|| "The visible From domain".into()),
             ),
             Some("failed") => format!(
-                "A DKIM signature was present but failed verification for {}",
+                "A signature claiming {} failed verification; a valid signature from {} was expected",
+                strings("claimed_signing_domains")
+                    .unwrap_or_else(|| "an unknown signing domain".into()),
                 string("from_domain").unwrap_or_else(|| "the visible From domain".into()),
             ),
-            Some("temporary_failure") =>
-                "DKIM verification is temporarily unavailable".into(),
+            Some("temporary_failure") => format!(
+                "Verification is temporarily unavailable for a signature claiming {}",
+                strings("claimed_signing_domains")
+                    .unwrap_or_else(|| "an unknown signing domain".into()),
+            ),
             _ => format!(
                 "There is no valid signature from {}",
                 string("from_domain").unwrap_or_else(|| "the visible From domain".into()),
@@ -2775,6 +2867,18 @@ mod tests {
         ];
 
         assert_eq!(aligned_dkim_domain(&signatures), Some("author.example"));
+        assert_eq!(
+            dkim_signature_description(&signatures[0]),
+            "A signature claiming failed.example failed verification"
+        );
+        assert_eq!(
+            dkim_signature_description(&signatures[1]),
+            "relay.example signed this message, but does not match the visible From domain"
+        );
+        assert_eq!(
+            dkim_signature_description(&signatures[2]),
+            "author.example signed this message and matches the visible From domain"
+        );
     }
 
     #[test]
@@ -2804,7 +2908,7 @@ mod tests {
 
     #[test]
     fn unaligned_dkim_copy_names_the_expected_and_actual_domains() {
-        let finding = HeuristicFinding {
+        let mut finding = HeuristicFinding {
             id: lizard_mail_backend::FindingId::new(),
             message_id: lizard_mail_backend::MessageId::new(),
             heuristic_id: lizard_mail_backend::HeuristicId::new(),
@@ -2827,6 +2931,16 @@ mod tests {
         assert_eq!(
             finding_summary(&finding),
             "Expected a signature from expected.example, but the valid signature came from actual.example"
+        );
+        finding.code = "missing_aligned_dkim".into();
+        finding.evidence = serde_json::json!({
+            "from_domain": "expected.example",
+            "status": "failed",
+            "claimed_signing_domains": ["mailing-list.example"],
+        });
+        assert_eq!(
+            finding_summary(&finding),
+            "A signature claiming mailing-list.example failed verification; a valid signature from expected.example was expected"
         );
     }
 
