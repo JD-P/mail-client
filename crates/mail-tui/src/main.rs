@@ -14,6 +14,7 @@ use std::error::Error;
 use std::ffi::OsString;
 use std::io;
 use std::path::PathBuf;
+use std::process::{Command, Stdio};
 use std::time::Duration;
 use zeroize::Zeroizing;
 
@@ -82,6 +83,11 @@ async fn run(
         if let Some(command) = command {
             if let Err(error) = app.dispatch(command).await {
                 app.status = Some(error.to_string());
+            }
+            if let Some(url) = app.take_external_url_request() {
+                if let Err(error) = open_default_browser(&url) {
+                    app.status = Some(format!("Could not open the default browser: {error}"));
+                }
             }
         }
     }
@@ -225,6 +231,9 @@ fn command_for(screen: Screen, key: KeyEvent) -> Option<AppCommand> {
     }
     if screen == Screen::Reader {
         let command = match key.code {
+            KeyCode::Tab => Some(AppCommand::ReaderNextLink),
+            KeyCode::BackTab => Some(AppCommand::ReaderPreviousLink),
+            KeyCode::Enter => Some(AppCommand::ReaderOpenLink),
             KeyCode::Up => Some(AppCommand::ReaderPrevious),
             KeyCode::Down => Some(AppCommand::ReaderNext),
             KeyCode::Char('k') => Some(AppCommand::ReaderScrollUp),
@@ -272,6 +281,45 @@ fn command_for(screen: Screen, key: KeyEvent) -> Option<AppCommand> {
         KeyCode::Char('e') if screen == Screen::Onboarding => Some(AppCommand::OnboardingEdit),
         _ => None,
     }
+}
+
+fn open_default_browser(url: &str) -> io::Result<()> {
+    let mut command = default_browser_command(url);
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let mut child = command.spawn()?;
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn default_browser_command(url: &str) -> Command {
+    let mut command = Command::new("explorer.exe");
+    command.arg(url);
+    command
+}
+
+#[cfg(target_os = "macos")]
+fn default_browser_command(url: &str) -> Command {
+    let mut command = Command::new("open");
+    command.arg(url);
+    command
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn default_browser_command(url: &str) -> Command {
+    let mut command = Command::new("xdg-open");
+    command.arg(url);
+    command
+}
+
+#[cfg(not(any(unix, target_os = "windows")))]
+fn default_browser_command(_url: &str) -> Command {
+    Command::new("unsupported-default-browser-platform")
 }
 
 struct TerminalGuard;
@@ -457,6 +505,23 @@ mod tests {
                 KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)
             ),
             Some(AppCommand::SearchSubmit)
+        ));
+    }
+
+    #[test]
+    fn reader_reserves_tab_and_enter_for_trusted_link_navigation() {
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        assert!(matches!(
+            command_for(Screen::Reader, key(KeyCode::Tab)),
+            Some(AppCommand::ReaderNextLink)
+        ));
+        assert!(matches!(
+            command_for(Screen::Reader, key(KeyCode::BackTab)),
+            Some(AppCommand::ReaderPreviousLink)
+        ));
+        assert!(matches!(
+            command_for(Screen::Reader, key(KeyCode::Enter)),
+            Some(AppCommand::ReaderOpenLink)
         ));
     }
 }

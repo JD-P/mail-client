@@ -39,6 +39,9 @@ not implemented merely because it is described there.
   backend relationship model.
 - Terminal queue navigation, conversation reader, Contacts list, contextual
   help, Done, Waiting, one-day Snooze, and Make Actionable Once.
+- Local Gmail-style search with mixed-result identity cues: Warm rows remain
+  red, Cold rows blue, and Spam rows amber instead of inheriting one search
+  palette.
 - Symmetric one-conversation Action/FYI correction, with manual choices taking
   precedence over learned routing.
 - Exact-sender similar-mail FYI rules backed by the Tantivy lexical index. The
@@ -61,6 +64,10 @@ not implemented merely because it is described there.
   x86-64 CLI this runs in a disposable Landlock/seccomp worker; worker or
   sandbox failure falls back to the stored plain-text part without parsing HTML
   in the client process.
+- Trusted keyboard link navigation in the reader: Tab and Shift-Tab traverse
+  parsed absolute HTTP(S) destinations, Enter delegates the selected canonical
+  destination to the platform default browser, and interstitial/restricted
+  message views expose no openable links.
 
 ## Partially implemented
 
@@ -88,5 +95,5 @@ not implemented merely because it is described there.
 - Filter/heuristic editors and rules overview. Similar-mail rule creation and
   preview are wired; listing, disabling, and deleting those rules still need a
   management screen.
-- Search, search results, saved views, folders, and mailbox management.
+- Saved views, folders, and mailbox management.
 - Encryption/key, storage/offline, appearance, and keybinding screens.

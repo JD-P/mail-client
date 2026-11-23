@@ -298,6 +298,24 @@ async fn slash_search_opens_the_exact_matching_message_in_a_conversation() {
     assert_eq!(app.screen, Screen::SearchResults);
     assert_eq!(app.search_results.len(), 1);
     assert_eq!(app.search_results[0].id, matched);
+    terminal
+        .draw(|frame| lizard_mail_tui::ui::draw(frame, &app))
+        .unwrap();
+    let result_row = terminal
+        .backend()
+        .buffer()
+        .content()
+        .chunks(120)
+        .find(|row| {
+            row.iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>()
+                .contains("[WARM] Cobalt migration details")
+        })
+        .expect("search result should retain an explicit Warm identity");
+    assert!(result_row
+        .iter()
+        .any(|cell| cell.fg == Color::Rgb(198, 48, 67)));
 
     app.dispatch(AppCommand::Open).await.unwrap();
     wait_for_reader_metadata(&mut app).await;
@@ -315,6 +333,90 @@ async fn slash_search_opens_the_exact_matching_message_in_a_conversation() {
     );
     app.dispatch(AppCommand::Back).await.unwrap();
     assert_eq!(app.screen, Screen::SearchResults);
+}
+
+#[tokio::test]
+async fn reader_tabs_through_browser_links_but_never_in_restricted_view() {
+    let profile = tempfile::tempdir().unwrap();
+    let backend = Backend::open(BackendConfig::new(profile.path()))
+        .await
+        .unwrap();
+    backend
+        .accounts()
+        .add(NewAccount {
+            name: "Local".into(),
+            kind: AccountKind::Local,
+            credential_ref: None,
+            imap: None,
+        })
+        .await
+        .unwrap();
+    backend
+        .ingest(IngestMessage::local(
+            concat!(
+                "From: Links <links@example.test>\r\n",
+                "To: reader@example.test\r\n",
+                "Message-ID: <link-focus@example.test>\r\n",
+                "Subject: Useful links\r\n",
+                "MIME-Version: 1.0\r\n",
+                "Content-Type: text/html; charset=utf-8\r\n\r\n",
+                "<a href=\"https://first.example/path\">First</a>",
+                "<a href=\"mailto:person@example.test\">Mail</a>",
+                "<a href=\"https://second.example/next\">Second</a>\r\n"
+            )
+            .as_bytes(),
+        ))
+        .await
+        .unwrap();
+
+    let mut app = MailApp::open(backend).await.unwrap();
+    app.dispatch(AppCommand::Cold).await.unwrap();
+    app.dispatch(AppCommand::Open).await.unwrap();
+    wait_for_reader_metadata(&mut app).await;
+    app.current_thread
+        .as_mut()
+        .unwrap()
+        .messages
+        .last_mut()
+        .unwrap()
+        .findings
+        .clear();
+
+    app.dispatch(AppCommand::ReaderNextLink).await.unwrap();
+    assert_eq!(app.reader_selected_link(), Some(0));
+    app.dispatch(AppCommand::ReaderOpenLink).await.unwrap();
+    assert_eq!(
+        app.take_external_url_request().as_deref(),
+        Some("https://first.example/path")
+    );
+    app.dispatch(AppCommand::ReaderNextLink).await.unwrap();
+    assert_eq!(app.reader_selected_link(), Some(1));
+    app.dispatch(AppCommand::ReaderOpenLink).await.unwrap();
+    assert_eq!(
+        app.take_external_url_request().as_deref(),
+        Some("https://second.example/next")
+    );
+    app.dispatch(AppCommand::ReaderPreviousLink).await.unwrap();
+    assert_eq!(app.reader_selected_link(), Some(0));
+
+    let terminal_backend = TestBackend::new(120, 36);
+    let mut terminal = Terminal::new(terminal_backend).unwrap();
+    terminal
+        .draw(|frame| lizard_mail_tui::ui::draw(frame, &app))
+        .unwrap();
+    assert!(terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .any(|cell| cell.fg == Color::Black && cell.bg == Color::Cyan));
+
+    app.dispatch(AppCommand::RestrictedOpen).await.unwrap();
+    assert_eq!(app.reader_selected_link(), None);
+    app.dispatch(AppCommand::ReaderNextLink).await.unwrap();
+    app.dispatch(AppCommand::ReaderOpenLink).await.unwrap();
+    assert_eq!(app.reader_selected_link(), None);
+    assert!(app.take_external_url_request().is_none());
 }
 
 #[tokio::test]
@@ -624,6 +726,10 @@ async fn cold_reader_keeps_identity_context_and_persistent_explanations() {
     assert_eq!(app.reader_load_status(), Some("Opening conversation…"));
     wait_for_reader_metadata(&mut app).await;
     assert!(app.reader_is_blocked());
+    app.dispatch(AppCommand::ReaderNextLink).await.unwrap();
+    app.dispatch(AppCommand::ReaderOpenLink).await.unwrap();
+    assert_eq!(app.reader_selected_link(), None);
+    assert!(app.take_external_url_request().is_none());
 
     let compact_backend = TestBackend::new(100, 12);
     let mut compact_terminal = Terminal::new(compact_backend).unwrap();

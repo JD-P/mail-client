@@ -567,7 +567,7 @@ fn draw_search_input(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
                 Block::default()
                     .title("Search all locally indexed mail")
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(COLD)),
+                    .border_style(Style::default().fg(Color::Gray)),
             )
             .wrap(Wrap { trim: false }),
         chunks[0],
@@ -622,6 +622,7 @@ fn draw_search_results(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
         .search_results
         .iter()
         .map(|message| {
+            let (class_label, class_color) = search_result_identity(message.inbox_class);
             let address = message.from_address.as_deref().unwrap_or("unknown sender");
             let sender = app.contact_name(address).map_or_else(
                 || safe_single_line_text(address),
@@ -636,13 +637,22 @@ fn draw_search_results(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
             ListItem::new(Text::from(vec![
                 Line::from(vec![
                     Span::styled(
+                        format!("[{class_label}] "),
+                        Style::default()
+                            .fg(class_color)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
                         safe_single_line_text(message.subject.as_deref().unwrap_or("(no subject)")),
-                        Style::default().add_modifier(Modifier::BOLD),
+                        Style::default()
+                            .fg(class_color)
+                            .add_modifier(Modifier::BOLD),
                     ),
                     Span::raw(format!("  {}", format_queue_timestamp(message.received_at))),
                 ]),
                 Line::raw(format!("  From: {sender}")),
             ]))
+            .style(Style::default().fg(class_color))
         })
         .collect::<Vec<_>>();
     let title = format!(
@@ -657,14 +667,21 @@ fn draw_search_results(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
             .block(Block::default().title(title).borders(Borders::ALL))
             .highlight_style(
                 Style::default()
-                    .bg(COLD)
-                    .fg(Color::Black)
+                    .bg(Color::Rgb(45, 45, 45))
                     .add_modifier(Modifier::BOLD),
             )
             .highlight_symbol("› "),
         area,
         &mut state,
     );
+}
+
+fn search_result_identity(class: InboxClass) -> (&'static str, Color) {
+    match class {
+        InboxClass::Warm => ("WARM", WARM),
+        InboxClass::Cold => ("COLD", COLD),
+        InboxClass::Spam => ("SPAM", SPAM),
+    }
 }
 
 fn draw_compose_field(frame: &mut Frame<'_>, area: Rect, label: &str, value: &str, selected: bool) {
@@ -691,6 +708,7 @@ fn draw_compose_field(frame: &mut Frame<'_>, area: Rect, label: &str, value: &st
 }
 
 fn draw_reader(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
+    app.update_reader_link_rows(Vec::new());
     let area = if app.security_override {
         draw_restricted_caution_frame(frame, area);
         if area.width > 2 && area.height > 2 {
@@ -866,6 +884,8 @@ fn draw_reader(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
         return;
     }
 
+    let mut link_rows = Vec::new();
+    let selected_link = app.reader_selected_link();
     let (title, body_lines) = if let Some(page) = app.reader_html() {
         let title = if app.security_override {
             "Message · RESTRICTED VIEW · links made non-clickable"
@@ -874,7 +894,14 @@ fn draw_reader(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
         };
         (
             title,
-            annotated_rendered_message_lines(page, message, inner_width, app.security_override),
+            annotated_rendered_message_lines(
+                page,
+                message,
+                inner_width,
+                app.security_override,
+                selected_link,
+                &mut link_rows,
+            ),
         )
     } else {
         let title = if app.security_override && message.body_html.is_some() {
@@ -891,9 +918,17 @@ fn draw_reader(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
         if app.security_override {
             defang_sender_lines(&mut lines);
         }
-        append_backend_link_section(&mut lines, message, width, app.security_override);
+        append_backend_link_section(
+            &mut lines,
+            message,
+            width,
+            app.security_override,
+            selected_link,
+            &mut link_rows,
+        );
         (title, lines)
     };
+    app.update_reader_link_rows(link_rows);
     let border_color = accent(app);
     draw_scrolling_panel(frame, app, chunks[1], title, body_lines, border_color);
 }
@@ -1655,6 +1690,8 @@ fn annotated_rendered_message_lines(
     message: &Message,
     width: usize,
     restricted: bool,
+    selected_link: Option<usize>,
+    link_rows: &mut Vec<usize>,
 ) -> Vec<Line<'static>> {
     if page.links.is_empty() {
         let mut lines = page.lines.clone();
@@ -1695,6 +1732,7 @@ fn annotated_rendered_message_lines(
         .flat_map(|targets| targets.iter().cloned())
         .collect::<BTreeSet<_>>();
     append_unmatched_targeted_link_findings(&mut lines, message, &matched_targets, width);
+    let mut browser_link_index = 0usize;
     for link in &page.links {
         let targets = link_targets.get(&link.number).cloned().unwrap_or_default();
         append_targeted_link_findings(&mut lines, message, &targets, width);
@@ -1707,11 +1745,21 @@ fn annotated_rendered_message_lines(
         } else {
             destination
         };
+        let browser_link = !restricted && rendered_link_is_browser_openable(link);
+        let style = if browser_link && selected_link == Some(browser_link_index) {
+            focused_link_style()
+        } else {
+            Style::default().fg(Color::Cyan)
+        };
+        if browser_link {
+            link_rows.push(lines.len());
+            browser_link_index += 1;
+        }
         append_wrapped_styled(
             &mut lines,
             &format!("{}. {destination}", link.number),
             width,
-            Style::default().fg(Color::Cyan),
+            style,
         );
     }
     lines
@@ -1722,6 +1770,8 @@ fn append_backend_link_section(
     message: &Message,
     width: usize,
     restricted: bool,
+    selected_link: Option<usize>,
+    link_rows: &mut Vec<usize>,
 ) {
     if message.links.is_empty() {
         return;
@@ -1745,6 +1795,7 @@ fn append_backend_link_section(
         .flat_map(|targets| targets.iter().cloned())
         .collect::<BTreeSet<_>>();
     append_unmatched_targeted_link_findings(lines, message, &matched_targets, width);
+    let mut browser_link_index = 0usize;
     for link in &message.links {
         let targets = link_targets.get(&link.id).cloned().unwrap_or_default();
         append_targeted_link_findings(lines, message, &targets, width);
@@ -1760,11 +1811,21 @@ fn append_backend_link_section(
         if restricted {
             destination = defang_destination(&destination);
         }
+        let browser_link = !restricted && backend_link_is_browser_openable(link);
+        let style = if browser_link && selected_link == Some(browser_link_index) {
+            focused_link_style()
+        } else {
+            Style::default().fg(Color::Cyan)
+        };
+        if browser_link {
+            link_rows.push(lines.len());
+            browser_link_index += 1;
+        }
         append_wrapped_styled(
             lines,
             &format!("{}. {destination}", link.ordinal.saturating_add(1)),
             width,
-            Style::default().fg(Color::Cyan),
+            style,
         );
     }
 }
@@ -2173,6 +2234,31 @@ fn rendered_link_destination(link: &LinkReference) -> String {
             .map(safe_single_line_text)
             .unwrap_or_else(|| "[unavailable]".into()),
     }
+}
+
+fn rendered_link_is_browser_openable(link: &LinkReference) -> bool {
+    link.kind == LinkKind::Web
+        && link
+            .destination
+            .as_deref()
+            .is_some_and(is_browser_destination)
+}
+
+fn backend_link_is_browser_openable(link: &MessageLink) -> bool {
+    matches!(link.scheme.as_str(), "http" | "https") && is_browser_destination(&link.destination)
+}
+
+fn is_browser_destination(destination: &str) -> bool {
+    Url::parse(destination.trim())
+        .ok()
+        .is_some_and(|url| matches!(url.scheme(), "http" | "https") && url.host_str().is_some())
+}
+
+fn focused_link_style() -> Style {
+    Style::default()
+        .fg(Color::Black)
+        .bg(Color::Cyan)
+        .add_modifier(Modifier::BOLD)
 }
 
 fn draw_scrolling_panel(
@@ -2595,6 +2681,7 @@ fn draw_help(frame: &mut Frame<'_>, area: Rect) {
         Line::raw(
             "Reader: ↑/↓ Previous/next email · j/k Scroll · PgUp/PgDn Page · g/G Top/bottom",
         ),
+        Line::raw("Tab/Shift-Tab Select browser link · Enter Open selected link"),
         Line::raw("r Reply · R Reply all · reply editor: Ctrl-S save · Ctrl-D send"),
         Line::raw(
             "a Make Cold conversation actionable once · O Read through security warning with restrictions",
@@ -2666,16 +2753,16 @@ fn draw_footer(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
             "↑/↓ previous/next · j/k scroll · Esc back · O inspect before reply · r reply"
         }
         Screen::Reader if app.previous_screen == Screen::SearchResults => {
-            "↑/↓ previous/next result · j/k scroll · r reply · R reply all · / search · Esc results"
+            "↑/↓ previous/next result · j/k scroll · Tab links · Enter open · r reply · Esc results"
         }
         Screen::Reader if app.previous_screen == Screen::Queue(WorkflowView::WarmAction) => {
-            "↑/↓ previous/next · j/k scroll · r reply · R reply all · > move to FYI · Esc back"
+            "↑/↓ previous/next · j/k scroll · Tab links · Enter open · r reply · > FYI · Esc back"
         }
         Screen::Reader if app.previous_screen == Screen::Queue(WorkflowView::WarmFyi) => {
-            "↑/↓ previous/next · j/k scroll · r reply · R reply all · < move to Action · Esc back"
+            "↑/↓ previous/next · j/k scroll · Tab links · Enter open · r reply · < Action · Esc back"
         }
         Screen::Reader => {
-            "↑/↓ previous/next · j/k scroll · PgUp/PgDn page · r reply · R reply all · Esc back"
+            "↑/↓ previous/next · j/k scroll · Tab/Shift-Tab links · Enter open · r reply · Esc back"
         }
         Screen::Compose => {
             "Tab/↑/↓ fields · Enter newline/next · Ctrl-S save draft · Ctrl-D send · Esc save/close"
@@ -2752,7 +2839,7 @@ fn accent(app: &MailApp) -> Color {
             })
             .unwrap_or(Color::Gray),
         Screen::Compose => WARM,
-        Screen::SearchInput | Screen::SearchResults => COLD,
+        Screen::SearchInput | Screen::SearchResults => Color::Gray,
         Screen::AccountEdit => COLD,
         Screen::ContactEdit => WARM,
         Screen::AccountDeleteConfirm => DANGER,
@@ -2892,6 +2979,13 @@ mod tests {
             .unwrap();
         assert_eq!(shortcut.style.fg, Some(FYI_HINT));
         assert_eq!(accent_for_workflow(WorkflowView::WarmFyi), WARM);
+    }
+
+    #[test]
+    fn search_result_identity_preserves_each_inbox_color() {
+        assert_eq!(search_result_identity(InboxClass::Warm), ("WARM", WARM));
+        assert_eq!(search_result_identity(InboxClass::Cold), ("COLD", COLD));
+        assert_eq!(search_result_identity(InboxClass::Spam), ("SPAM", SPAM));
     }
 
     #[test]
@@ -3086,7 +3180,8 @@ mod tests {
         assert!(top.contains("Misleading or disguised links"));
         assert!(!top.contains("link text says"));
 
-        let annotated_lines = annotated_rendered_message_lines(&page, &message, 100, false);
+        let annotated_lines =
+            annotated_rendered_message_lines(&page, &message, 100, false, None, &mut Vec::new());
         let annotated = annotated_lines
             .iter()
             .map(rendered_line_text)
@@ -3121,11 +3216,18 @@ mod tests {
         for (ordinal, link) in rebuilt_projection.links.iter_mut().enumerate() {
             link.id = format!("rebuilt-link:{ordinal}");
         }
-        let rebuilt = annotated_rendered_message_lines(&page, &rebuilt_projection, 100, false)
-            .iter()
-            .map(rendered_line_text)
-            .collect::<Vec<_>>()
-            .join("\n");
+        let rebuilt = annotated_rendered_message_lines(
+            &page,
+            &rebuilt_projection,
+            100,
+            false,
+            None,
+            &mut Vec::new(),
+        )
+        .iter()
+        .map(rendered_line_text)
+        .collect::<Vec<_>>()
+        .join("\n");
         assert!(rebuilt.contains(
             "The link text says login.example.com, but the link actually opens evil.example.net"
         ));
@@ -3134,16 +3236,18 @@ mod tests {
         let mut unresolved = rebuilt_projection;
         unresolved.findings[0].evidence["destination"] =
             serde_json::json!("https://unmatched.example.test/");
-        let unresolved = annotated_rendered_message_lines(&page, &unresolved, 100, false)
-            .iter()
-            .map(rendered_line_text)
-            .collect::<Vec<_>>()
-            .join("\n");
+        let unresolved =
+            annotated_rendered_message_lines(&page, &unresolved, 100, false, None, &mut Vec::new())
+                .iter()
+                .map(rendered_line_text)
+                .collect::<Vec<_>>()
+                .join("\n");
         let unresolved = unresolved.split_whitespace().collect::<Vec<_>>().join(" ");
         assert!(unresolved.contains("could not safely identify which displayed link"));
         assert!(unresolved.contains("Treat every link below as suspicious"));
 
-        let restricted = annotated_rendered_message_lines(&page, &message, 100, true);
+        let restricted =
+            annotated_rendered_message_lines(&page, &message, 100, true, None, &mut Vec::new());
         let restricted = restricted
             .iter()
             .map(rendered_line_text)

@@ -38,8 +38,9 @@ responsive semantic transformation.
   Explicit bidi embedding, isolate, and override controls are exposed as
   visible tokens so they cannot silently reorder identities or destinations.
 - Relative and blocked-scheme links are reported but are not navigation
-  authority. The future client action broker decides whether any supported
-  reference may be opened.
+  authority. The terminal client's trusted action broker accepts only parsed
+  absolute HTTP(S) references and disables navigation entirely in
+  interstitial/restricted message views.
 
 ## Resource and capability boundary
 

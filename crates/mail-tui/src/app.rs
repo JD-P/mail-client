@@ -11,13 +11,14 @@ use lizard_mail_backend::{
     DEFAULT_SIMILARITY_CUTOFF_MILLIS,
 };
 use std::{
-    cell::Cell,
+    cell::{Cell, RefCell},
     collections::{HashMap, VecDeque},
     hash::{DefaultHasher, Hash, Hasher},
     time::{Duration as StdDuration, Instant},
 };
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
+use url::Url;
 use zeroize::Zeroizing;
 
 use crate::{IsolatedHtmlRenderer, RenderedPage};
@@ -334,6 +335,9 @@ pub enum AppCommand {
     ReaderPageUp,
     ReaderScrollTop,
     ReaderScrollBottom,
+    ReaderNextLink,
+    ReaderPreviousLink,
+    ReaderOpenLink,
     Reply,
     ReplyAll,
     ComposeSave,
@@ -425,6 +429,9 @@ pub struct MailApp {
     pub background_status: Option<String>,
     pub security_override: bool,
     pub reader_scroll: usize,
+    reader_selected_link: Option<usize>,
+    reader_link_rows: RefCell<Vec<usize>>,
+    pending_external_url: Option<String>,
     reader_scroll_max: Cell<usize>,
     reader_viewport_rows: Cell<usize>,
     reader_html: Option<RenderedPage>,
@@ -539,6 +546,9 @@ impl MailApp {
             background_status: None,
             security_override: false,
             reader_scroll: 0,
+            reader_selected_link: None,
+            reader_link_rows: RefCell::new(Vec::new()),
+            pending_external_url: None,
             reader_scroll_max: Cell::new(0),
             reader_viewport_rows: Cell::new(1),
             reader_html: None,
@@ -627,6 +637,9 @@ impl MailApp {
             AppCommand::ReaderPageUp => self.page_reader(-1),
             AppCommand::ReaderScrollTop => self.reader_scroll = 0,
             AppCommand::ReaderScrollBottom => self.reader_scroll = self.reader_scroll_max.get(),
+            AppCommand::ReaderNextLink => self.move_reader_link(1),
+            AppCommand::ReaderPreviousLink => self.move_reader_link(-1),
+            AppCommand::ReaderOpenLink => self.open_reader_link(),
             AppCommand::Reply => self.begin_reply(ReplyAudience::Sender).await?,
             AppCommand::ReplyAll => self.begin_reply(ReplyAudience::All).await?,
             AppCommand::ComposeSave => self.save_compose_draft(true).await?,
@@ -2886,6 +2899,108 @@ impl MailApp {
         self.scroll_reader(delta.saturating_mul(isize::try_from(page).unwrap_or(isize::MAX)));
     }
 
+    fn reader_browser_links(&self) -> Vec<String> {
+        if self.screen != Screen::Reader || self.security_override || self.reader_is_blocked() {
+            return Vec::new();
+        }
+        if let Some(page) = self.reader_html() {
+            return page
+                .links
+                .iter()
+                .filter_map(|link| link.destination.as_deref())
+                .filter_map(browser_url)
+                .collect();
+        }
+        self.current_thread
+            .as_ref()
+            .and_then(|thread| thread.messages.last())
+            .into_iter()
+            .flat_map(|message| message.links.iter())
+            .filter_map(|link| browser_url(&link.destination))
+            .collect()
+    }
+
+    fn move_reader_link(&mut self, delta: isize) {
+        if self.security_override || self.reader_is_blocked() {
+            self.reader_selected_link = None;
+            self.status = Some("Links are disabled in the restricted message view".into());
+            return;
+        }
+        let links = self.reader_browser_links();
+        if links.is_empty() {
+            self.reader_selected_link = None;
+            self.status = Some("This message has no browser links".into());
+            return;
+        }
+        let length = isize::try_from(links.len()).unwrap_or(isize::MAX);
+        let selected = self.reader_selected_link.map_or_else(
+            || if delta < 0 { links.len() - 1 } else { 0 },
+            |selected| {
+                usize::try_from(
+                    (isize::try_from(selected).unwrap_or_default() + delta).rem_euclid(length),
+                )
+                .unwrap_or_default()
+            },
+        );
+        self.reader_selected_link = Some(selected);
+        self.reveal_reader_link(selected);
+        self.status = Some(format!(
+            "Link {}/{} · {}",
+            selected + 1,
+            links.len(),
+            links[selected]
+        ));
+    }
+
+    fn open_reader_link(&mut self) {
+        if self.security_override || self.reader_is_blocked() {
+            self.pending_external_url = None;
+            self.status = Some("Links are disabled in the restricted message view".into());
+            return;
+        }
+        let Some(selected) = self.reader_selected_link else {
+            self.status = Some("Press Tab to select a link before opening it".into());
+            return;
+        };
+        let links = self.reader_browser_links();
+        let Some(destination) = links.get(selected).cloned() else {
+            self.reader_selected_link = None;
+            self.status = Some("That link is no longer present in this message".into());
+            return;
+        };
+        self.pending_external_url = Some(destination.clone());
+        self.status = Some(format!("Opening {destination} in the default browser"));
+    }
+
+    fn reveal_reader_link(&mut self, selected: usize) {
+        let row = self.reader_link_rows.borrow().get(selected).copied();
+        let Some(row) = row else {
+            self.reader_scroll = self.reader_scroll_max.get();
+            return;
+        };
+        let viewport = self.reader_viewport_rows.get().max(1);
+        if row < self.reader_scroll {
+            self.reader_scroll = row;
+        } else if row >= self.reader_scroll.saturating_add(viewport) {
+            self.reader_scroll = row
+                .saturating_add(1)
+                .saturating_sub(viewport)
+                .min(self.reader_scroll_max.get());
+        }
+    }
+
+    pub fn reader_selected_link(&self) -> Option<usize> {
+        self.reader_selected_link
+    }
+
+    pub(crate) fn update_reader_link_rows(&self, rows: Vec<usize>) {
+        *self.reader_link_rows.borrow_mut() = rows;
+    }
+
+    pub fn take_external_url_request(&mut self) -> Option<String> {
+        self.pending_external_url.take()
+    }
+
     pub(crate) fn update_reader_scroll_bounds(
         &self,
         content_rows: usize,
@@ -2899,6 +3014,9 @@ impl MailApp {
 
     fn reset_reader_scroll(&mut self) {
         self.reader_scroll = 0;
+        self.reader_selected_link = None;
+        self.reader_link_rows.get_mut().clear();
+        self.pending_external_url = None;
         self.reader_scroll_max.set(0);
         self.reader_viewport_rows.set(1);
     }
@@ -2960,6 +3078,12 @@ impl Drop for MailApp {
         self.cancel_reader_tasks();
         self.clear_reader_html();
     }
+}
+
+fn browser_url(value: &str) -> Option<String> {
+    let parsed = Url::parse(value.trim()).ok()?;
+    (matches!(parsed.scheme(), "http" | "https") && parsed.host_str().is_some())
+        .then(|| parsed.into())
 }
 
 fn parse_recipient_list(value: &str) -> Result<Vec<String>> {
@@ -3087,6 +3211,22 @@ mod tests {
             .await
             .unwrap();
         (profile, backend, account.id)
+    }
+
+    #[test]
+    fn browser_actions_accept_only_absolute_http_destinations() {
+        assert_eq!(
+            browser_url("https://example.com/path").as_deref(),
+            Some("https://example.com/path")
+        );
+        assert_eq!(
+            browser_url("http://example.com/").as_deref(),
+            Some("http://example.com/")
+        );
+        assert_eq!(browser_url("mailto:person@example.com"), None);
+        assert_eq!(browser_url("javascript:alert(1)"), None);
+        assert_eq!(browser_url("/relative/path"), None);
+        assert_eq!(browser_url("https://"), None);
     }
 
     #[tokio::test]
