@@ -11,7 +11,8 @@ not implemented merely because it is described there.
 - Relationship policy with Action/FYI routing and obligation permission.
 - Warm — Action, Warm — FYI, Cold — Review, Spam — Quarantine, Waiting,
   Snoozed, and Done backend projections.
-- Make Actionable Once for a Cold conversation without creating a contact.
+- Make Actionable Once for a Cold conversation without creating a contact. Its
+  authorization is local-only and excluded from server metadata synchronization.
 - New inbound mail reactivates Done and Waiting conversations.
 - First-account contact suggestions, limited to twenty candidates from the
   previous six months of inbound and outbound correspondence, with durable
@@ -84,6 +85,10 @@ not implemented merely because it is described there.
 
 ## Not yet wired into the terminal client
 
+- Cross-client IMAP keyword synchronization for user tags, Done, Waiting,
+  Snooze, Mute, Priority, and known-sender Action/FYI overrides.
+- JMAP account transport. It is specified as deferred work and is not part of
+  the current implementation phase.
 - Sender grouping and priority variants of Warm — Action.
 - Spam rescue, delete-now, classification explanation, and retention display.
 - Full attachment inspector and raw-message view. Core identity,
@@ -95,5 +100,5 @@ not implemented merely because it is described there.
 - Filter/heuristic editors and rules overview. Similar-mail rule creation and
   preview are wired; listing, disabling, and deleting those rules still need a
   management screen.
-- Saved views, folders, and mailbox management.
+- Saved views, tags, folders, and mailbox management.
 - Encryption/key, storage/offline, appearance, and keybinding screens.

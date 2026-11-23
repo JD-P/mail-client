@@ -204,10 +204,81 @@ identical:
 - canonical Warm/Cold/Spam views are frontend product policy over API
   predicates.
 
+An account-scoped folder created by the user is server-backed by default so it
+appears in webmail and every client. IMAP supports subfolders through a
+server-advertised hierarchy delimiter returned by `LIST`; clients must not
+assume that delimiter is `/`, and a `NIL` delimiter means the account has only
+a flat mailbox namespace. Parent mailboxes may be non-selectable containers.
+Creation, rename, move and deletion therefore operate on discovered remote
+mailbox identities and capabilities rather than concatenating unvalidated
+paths. Explicit local-only folders and cross-account aggregate views remain
+available, but must be visibly distinguished because they cannot synchronize
+through one account's IMAP namespace.
+
+Tags are not emulated by copying messages into several folders: on ordinary
+IMAP servers that creates distinct remote messages rather than Gmail-style
+labels. Account-scoped tags instead use the private keyword synchronization
+described below when supported. Existing provider-specific label behavior may
+be preserved by its adapter, but is never assumed as generic IMAP behavior.
+
 A third-party frontend must be able to ask the backend where a message has been
 placed without replaying historical rules. Folder/label actions therefore
 materialize membership transactionally and record the responsible rule and
 version.
+
+### Cross-client workflow metadata
+
+Lizard should use ordinary IMAP state for the user-authored organization that
+people reasonably expect to follow an account between computers. Subject to
+server capability and size limits, the IMAP adapter will map the following to a
+versioned private keyword namespace:
+
+- user tags;
+- Done/undone and Waiting conversation state;
+- snooze time;
+- mute state;
+- priority; and
+- an explicit Action/FYI override for a known-sender conversation.
+
+The encoding must be reversible, bounded and legal as an IMAP keyword. User tag
+names require an ASCII-safe encoding rather than assuming arbitrary Unicode is
+legal in a flag. Single-valued fields such as work state and priority must reject
+or surface contradictory remote values instead of silently selecting one. A
+conversation-level value is projected to its eligible remote message instances;
+the eventual implementation must specify multi-mailbox and multi-account
+conflict resolution before enabling writes. Servers that do not advertise
+permanent arbitrary keywords retain this state locally and expose the loss of
+cross-client synchronization as an account capability, not as a silent partial
+success.
+
+Remote workflow metadata is user organization, never security evidence. No
+keyword may create a contact, establish sender identity, change Warm/Cold/Spam
+classification, dismiss an authentication or heuristic finding, allow remote
+content, accept a cryptographic key, or grant an unknown sender access to the
+Action workflow. Make Actionable Once remains an explicit local user action,
+but its authorization state is security-sensitive and must never be represented,
+created or modified through an IMAP keyword or other server-controlled metadata.
+
+Red/blue workflow folders and the Action/FYI/Cold views remain entirely
+client-side; only the explicit user-authored override metadata described above
+may synchronize. Lizard does not create remote workflow mailboxes, move messages
+to reflect a trust class, or import trust or relationship state from remote
+mailbox membership. Ordinary user-created IMAP folders continue to synchronize
+normally and remain available to rules and manual organization, but they are
+independent of the product's security workflows.
+
+### Deferred JMAP transport
+
+JMAP support is desired but deliberately not part of the current implementation
+phase. A future account adapter should perform standard session discovery,
+negotiate capabilities, synchronize Mailbox/Email/Thread changes and keywords,
+support submission where advertised, and lower all of that into the existing
+account, message, mutation-outbox and change-stream APIs rather than creating a
+second backend model. JMAP mailbox membership and keywords can carry the same
+portable workflow metadata described above, but remain subject to the same rule:
+server state can synchronize organization and must never establish identity,
+contact membership or security trust. JMAP support must not turn the local
+red/blue or Action/FYI/Cold views into server-owned mailboxes.
 
 ## Ingestion pipeline
 
@@ -1103,7 +1174,12 @@ a fail-closed conservative bound until a delayed exact census completes.
 7. Change-stream API and official CLI/GUI integration.
 8. Broader SMTP interoperability and provider-native send adapters (drafts,
    SMTP submission and IMAP mutations are implemented).
-9. POP3 and import/export adapters.
+9. Portable user tags and workflow metadata over versioned IMAP keywords,
+   with explicit capability reporting and conflict behavior.
+10. POP3 and import/export adapters.
+11. A capability-driven JMAP adapter reusing the existing backend model,
+    including portable workflow keywords. This is explicitly deferred; IMAP
+    interoperability remains the current priority.
 
 ## Research references
 
@@ -1118,6 +1194,8 @@ a fail-closed conservative bound until a delayed exact census completes.
 - [CMU Enron Email Dataset](https://www.cs.cmu.edu/~enron/)
 - [RFC 9051: IMAP4rev2](https://www.rfc-editor.org/rfc/rfc9051.html)
 - [RFC 7162: CONDSTORE and QRESYNC](https://www.rfc-editor.org/rfc/rfc7162.html)
+- [RFC 8620: JMAP Core](https://www.rfc-editor.org/rfc/rfc8620.html)
+- [RFC 8621: JMAP Mail](https://www.rfc-editor.org/rfc/rfc8621.html)
 - [RFC 6376: DKIM](https://www.rfc-editor.org/rfc/rfc6376.html)
 - [RFC 8601: Authentication-Results](https://www.rfc-editor.org/rfc/rfc8601.html)
 - [RFC 9580: OpenPGP](https://www.rfc-editor.org/rfc/rfc9580.html)

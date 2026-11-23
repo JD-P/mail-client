@@ -77,7 +77,7 @@ These are short transitions rather than permanent navigation destinations.
 | **Waiting** | Records that the user acted and expects another participant to respond. |
 | **Snooze** | Selects when the conversation becomes active again. |
 | **Delete** | Moves mail to Trash and removes it from the active workflow without claiming the obligation was completed. |
-| **Make Actionable Once** | Moves one Cold conversation into Warm — Action without creating a contact or granting the sender future obligation permission. The permission is scoped to the conversation. |
+| **Make Actionable Once** | Moves one Cold conversation into Warm — Action without creating a contact or granting the sender future obligation permission. The permission is scoped to the conversation, stored only in the local profile, and never accepted from IMAP/JMAP keywords or remote folders. |
 | **Move to Action / Move to FYI** | Corrects the route of one known-sender conversation in either direction. This explicit correction outranks relationship defaults and learned routing rules. Unknown-sender mail cannot be placed in FYI without first establishing a contact; it may instead use Make Actionable Once. |
 | **Reopen** | Returns a Done conversation to Warm — Action. |
 
@@ -135,7 +135,8 @@ import contacts via vCard/CardDAV when available.
 | **Search** | Runs Gmail-like queries over headers, bodies, contacts, attachments, folders, workflow state, security evidence, and dates. | “Find mail by what I remember about it.” |
 | **Search Results** | Behaves like a message queue and preserves each result’s source workflow. | “Operate on retrieved mail without pretending the results are a new mailbox.” |
 | **Saved Views** | Presents persistent live queries. | “Create useful perspectives without moving or duplicating messages.” |
-| **Folders / All Mail** | Browses accounts, IMAP mailboxes, and physical placement; supports conventional server-side organization. | “Retain interoperability even though folders are not the primary workflow.” |
+| **Tags** | Creates, renames, deletes, applies, and removes user tags. Account-scoped tags synchronize as private IMAP keywords when supported; the screen clearly identifies a local-only fallback. Tags never alter sender trust or suppress security findings. | “Let me build reusable organization once and see it on my other computers.” |
+| **Folders / All Mail** | Browses accounts, hierarchical IMAP mailboxes, explicitly local folders, and physical placement; supports conventional server-side organization without confusing it with red/blue workflow state. | “Retain interoperability even though folders are not the primary workflow.” |
 
 BM25 scores are not percentages or stable probabilities. Similar-mail UI should
 offer understandable strictness and an affected-message preview; raw score
@@ -147,7 +148,7 @@ the same stored profile, but never overwrites a later manual Action/FYI choice.
 | Screen | Functions | What it implies the user wants |
 |---|---|---|
 | **Accounts** | Adds, updates, removes, synchronizes, and diagnoses IMAP/SMTP accounts. | “Connect and maintain mail providers.” |
-| **Mailbox Management** | Creates, renames, deletes, and subscribes to remote mailboxes. | “Administer server-visible organization.” |
+| **Mailbox Management** | Creates, renames, deletes, and subscribes to remote mailboxes using the server-advertised hierarchy. | “Administer server-visible organization.” |
 | **Calendar Accounts** | Configures CalDAV servers, collections, and default destinations. | “Choose where events created from mail live.” |
 | **Encryption and Keys** | Manages OpenPGP identities, accepted recipient certificates, YubiKey providers, key changes, and encrypted-search policy. | “Control cryptographic identity and local plaintext exposure deliberately.” |
 | **Storage and Offline Policy** | Configures quotas, body retention, offline downloads, integrity audits, backup, and export. | “Control disk use and recoverability.” |
