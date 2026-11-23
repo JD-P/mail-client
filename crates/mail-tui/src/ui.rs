@@ -1103,23 +1103,67 @@ fn dkim_signature_description(signature: &lizard_mail_backend::DkimSignatureEvid
             ),
             (None, _) => "A signature passed, but its signing domain was unavailable".into(),
         },
-        DkimSignatureStatus::Fail => format!(
-            "A signature claiming {} failed verification",
-            domain.unwrap_or("an unknown domain")
+        DkimSignatureStatus::Fail => dkim_nonpassing_description(
+            &format!(
+                "A signature claiming {} failed verification",
+                domain.unwrap_or("an unknown domain")
+            ),
+            signature,
         ),
-        DkimSignatureStatus::Neutral => format!(
-            "A signature claiming {} had an inconclusive result",
-            domain.unwrap_or("an unknown domain")
+        DkimSignatureStatus::Neutral => dkim_nonpassing_description(
+            &format!(
+                "A signature claiming {} did not verify",
+                domain.unwrap_or("an unknown domain")
+            ),
+            signature,
         ),
-        DkimSignatureStatus::PermanentError => format!(
-            "A signature claiming {} could not be verified",
-            domain.unwrap_or("an unknown domain")
+        DkimSignatureStatus::PermanentError => dkim_nonpassing_description(
+            &format!(
+                "A signature claiming {} could not be verified",
+                domain.unwrap_or("an unknown domain")
+            ),
+            signature,
         ),
-        DkimSignatureStatus::TemporaryError => format!(
-            "Verification for a signature claiming {} is temporarily unavailable",
-            domain.unwrap_or("an unknown domain")
+        DkimSignatureStatus::TemporaryError => dkim_nonpassing_description(
+            &format!(
+                "Verification for a signature claiming {} is temporarily unavailable",
+                domain.unwrap_or("an unknown domain")
+            ),
+            signature,
         ),
     }
+}
+
+fn dkim_nonpassing_description(
+    prefix: &str,
+    signature: &lizard_mail_backend::DkimSignatureEvidence,
+) -> String {
+    if let Some(reason) = dkim_signature_reason(signature) {
+        format!("{prefix}: {reason}")
+    } else {
+        format!("{prefix}, but the verifier gave no specific reason")
+    }
+}
+
+fn dkim_signature_reason(signature: &lizard_mail_backend::DkimSignatureEvidence) -> Option<String> {
+    let reason = signature
+        .reason
+        .as_deref()
+        .filter(|reason| !reason.trim().is_empty())
+        .map(str::to_owned)
+        .or_else(|| {
+            signature
+                .reason_code
+                .as_deref()
+                .filter(|reason| !reason.is_empty())
+                .map(|reason| reason.replace('_', " "))
+        })?;
+    let safe = safe_single_line_text(reason.trim());
+    let mut bounded = safe.chars().take(240).collect::<String>();
+    if safe.chars().count() > 240 {
+        bounded.push('…');
+    }
+    Some(bounded)
 }
 
 fn aligned_dkim_domain(signatures: &[lizard_mail_backend::DkimSignatureEvidence]) -> Option<&str> {
@@ -2860,16 +2904,17 @@ mod tests {
                 key_testing: false,
                 raw_header_value: None,
             };
-        let signatures = vec![
+        let mut signatures = vec![
             signature(DkimSignatureStatus::Fail, Some(true), "failed.example"),
             signature(DkimSignatureStatus::Pass, Some(false), "relay.example"),
             signature(DkimSignatureStatus::Pass, Some(true), "author.example"),
         ];
+        signatures[0].reason = Some("Calculated body hash does not match signature hash".into());
 
         assert_eq!(aligned_dkim_domain(&signatures), Some("author.example"));
         assert_eq!(
             dkim_signature_description(&signatures[0]),
-            "A signature claiming failed.example failed verification"
+            "A signature claiming failed.example failed verification: Calculated body hash does not match signature hash"
         );
         assert_eq!(
             dkim_signature_description(&signatures[1]),
@@ -2878,6 +2923,21 @@ mod tests {
         assert_eq!(
             dkim_signature_description(&signatures[2]),
             "author.example signed this message and matches the visible From domain"
+        );
+        let mut neutral = signature(
+            DkimSignatureStatus::Neutral,
+            Some(false),
+            "mailing-list.example",
+        );
+        neutral.reason = Some("Unsupported algorithm in DKIM Signature".into());
+        assert_eq!(
+            dkim_signature_description(&neutral),
+            "A signature claiming mailing-list.example did not verify: Unsupported algorithm in DKIM Signature"
+        );
+        neutral.reason = None;
+        assert_eq!(
+            dkim_signature_description(&neutral),
+            "A signature claiming mailing-list.example did not verify, but the verifier gave no specific reason"
         );
     }
 
