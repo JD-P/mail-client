@@ -23,7 +23,10 @@ use url::{Host, Url};
 use uuid::Uuid;
 
 const BUILTIN_ID: Uuid = Uuid::from_u128(0x5f01da21_0f79_5f3e_b210_0d96438890ac);
-const BUILTIN_VERSION: u32 = 7;
+// Increment whenever native detector semantics change. Stored findings are
+// joined through this version, so a bump hides obsolete evidence immediately
+// and schedules existing messages for background re-evaluation.
+const BUILTIN_VERSION: u32 = 8;
 const BUILTIN_SOURCE: &str = "native:security-evidence";
 const MAX_FINDINGS: usize = 256;
 const MAX_HTML_TOKENS: usize = 100_000;

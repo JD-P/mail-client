@@ -1819,7 +1819,7 @@ impl Heuristics {
                             AND evaluation.heuristic_id = ?1
                             AND evaluation.heuristic_version = ?2
                     )
-                    ORDER BY m.received_at, m.id LIMIT ?3"#,
+                    ORDER BY m.received_at DESC, m.id DESC LIMIT ?3"#,
                     (
                         crate::security::builtin_id().to_string(),
                         i64::from(crate::security::definition().version),
