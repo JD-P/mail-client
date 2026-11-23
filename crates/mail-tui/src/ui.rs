@@ -866,7 +866,7 @@ fn draw_reader(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
         return;
     }
 
-    let (title, mut body_lines) = if let Some(page) = app.reader_html() {
+    let (title, body_lines) = if let Some(page) = app.reader_html() {
         let title = if app.security_override {
             "Message · RESTRICTED VIEW · links made non-clickable"
         } else {
@@ -888,12 +888,12 @@ fn draw_reader(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
         };
         let width = usize::from(chunks[1].width.saturating_sub(2).max(1));
         let mut lines = wrap_message_body(&message.body_text, width);
+        if app.security_override {
+            defang_sender_lines(&mut lines);
+        }
         append_backend_link_section(&mut lines, message, width, app.security_override);
         (title, lines)
     };
-    if app.security_override {
-        defang_restricted_lines(&mut body_lines);
-    }
     let border_color = accent(app);
     draw_scrolling_panel(frame, app, chunks[1], title, body_lines, border_color);
 }
@@ -1657,7 +1657,11 @@ fn annotated_rendered_message_lines(
     restricted: bool,
 ) -> Vec<Line<'static>> {
     if page.links.is_empty() {
-        return page.lines.clone();
+        let mut lines = page.lines.clone();
+        if restricted {
+            defang_sender_lines(&mut lines);
+        }
+        return lines;
     }
     let generated_link_start = page.link_targets_start.or_else(|| {
         if page.truncated {
@@ -1669,6 +1673,9 @@ fn annotated_rendered_message_lines(
         }
     });
     let mut lines = page.lines[..generated_link_start.unwrap_or(page.lines.len())].to_vec();
+    if restricted {
+        defang_sender_lines(&mut lines);
+    }
     append_section_break(&mut lines);
     lines.push(Line::styled(
         "Links and safety",
@@ -1692,11 +1699,17 @@ fn annotated_rendered_message_lines(
         let targets = link_targets.get(&link.number).cloned().unwrap_or_default();
         append_targeted_link_findings(&mut lines, message, &targets, width);
         if let Some(context) = link_contexts.get(&link.number) {
-            append_link_context(&mut lines, context, width);
+            append_link_context(&mut lines, context, width, restricted);
         }
+        let destination = rendered_link_destination(link);
+        let destination = if restricted {
+            defang_destination(&destination)
+        } else {
+            destination
+        };
         append_wrapped_styled(
             &mut lines,
-            &format!("{}. {}", link.number, rendered_link_destination(link)),
+            &format!("{}. {destination}", link.number),
             width,
             Style::default().fg(Color::Cyan),
         );
@@ -1736,13 +1749,17 @@ fn append_backend_link_section(
         let targets = link_targets.get(&link.id).cloned().unwrap_or_default();
         append_targeted_link_findings(lines, message, &targets, width);
         if let Some(context) = link_contexts.get(&link.id) {
-            append_link_context(lines, context, width);
+            append_link_context(lines, context, width, restricted);
         }
-        let destination = if matches!(link.scheme.as_str(), "http" | "https" | "mailto" | "cid") {
+        let mut destination = if matches!(link.scheme.as_str(), "http" | "https" | "mailto" | "cid")
+        {
             safe_single_line_text(&link.destination)
         } else {
             format!("[blocked {} link]", safe_single_line_text(&link.scheme))
         };
+        if restricted {
+            destination = defang_destination(&destination);
+        }
         append_wrapped_styled(
             lines,
             &format!("{}. {destination}", link.ordinal.saturating_add(1)),
@@ -1784,13 +1801,11 @@ fn append_restricted_link_explanation(
     );
 }
 
-fn defang_restricted_lines(lines: &mut [Line<'static>]) {
+/// Make sender-controlled text inert before application-authored safety text is
+/// appended. Keeping this boundary explicit prevents domains in our own
+/// findings and explanations from being corrupted by URL defanging.
+fn defang_sender_lines(lines: &mut [Line<'static>]) {
     for line in lines {
-        // This yellow banner is application-authored guidance. Its domain is
-        // evidence named by the client, not a sender-supplied actionable URL.
-        if line.style.fg == Some(Color::Black) && line.style.bg == Some(Color::Yellow) {
-            continue;
-        }
         for span in &mut line.spans {
             let defanged = defang_clickable_runs(span.content.as_ref());
             if defanged != span.content {
@@ -1873,7 +1888,17 @@ fn defang_destination(value: &str) -> String {
     output
 }
 
-fn append_link_context(lines: &mut Vec<Line<'static>>, context: &str, width: usize) {
+fn append_link_context(
+    lines: &mut Vec<Line<'static>>,
+    context: &str,
+    width: usize,
+    restricted: bool,
+) {
+    let context = if restricted {
+        defang_clickable_runs(context)
+    } else {
+        context.to_owned()
+    };
     append_wrapped_styled(
         lines,
         &format!("Context: {context}"),
@@ -3118,8 +3143,7 @@ mod tests {
         assert!(unresolved.contains("could not safely identify which displayed link"));
         assert!(unresolved.contains("Treat every link below as suspicious"));
 
-        let mut restricted = annotated_rendered_message_lines(&page, &message, 100, true);
-        defang_restricted_lines(&mut restricted);
+        let restricted = annotated_rendered_message_lines(&page, &message, 100, true);
         let restricted = restricted
             .iter()
             .map(rendered_line_text)
@@ -3127,9 +3151,14 @@ mod tests {
             .join("\n");
         assert!(restricted.contains("This email was not signed by example.com."));
         assert!(restricted.contains("spaces have been added to every address"));
+        assert!(restricted.contains(
+            "The link text says login.example.com, but the link actually opens evil.example.net"
+        ));
+        assert!(restricted.contains(
+            "Context: Reset your password using https: / / login. example. com before noon to retain access."
+        ));
         assert!(restricted.contains("https: / / evil. example. net/ login"));
         assert!(!restricted.contains("https://"));
-        assert!(!restricted.contains("evil.example.net"));
     }
 
     #[test]

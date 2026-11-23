@@ -916,8 +916,9 @@ fn anchor_findings(
         (displayed_host.as_deref(), Url::parse(anchor.href.trim()))
     {
         let actual = destination.host_str().map(str::to_lowercase);
-        if actual.as_deref().is_some_and(|actual| actual != displayed)
-            && registrable(actual.as_deref().unwrap()) != registrable(displayed)
+        if actual
+            .as_deref()
+            .is_some_and(|actual| !hosts_are_same_or_ancestor_related(actual, displayed))
         {
             collector.push(link_or_message_finding(
                 "misleading_link_text",
@@ -1303,12 +1304,27 @@ fn embedded_popular_domain(sender_domain: &str) -> Option<String> {
             if candidate != actual
                 && registrable(&candidate).as_deref() == Some(candidate.as_str())
                 && popular_domains().contains(candidate.as_str())
+                && !host_is_same_or_subdomain(&sender_domain, &candidate)
             {
                 return Some(candidate);
             }
         }
     }
     None
+}
+
+fn hosts_are_same_or_ancestor_related(left: &str, right: &str) -> bool {
+    host_is_same_or_subdomain(left, right) || host_is_same_or_subdomain(right, left)
+}
+
+fn host_is_same_or_subdomain(host: &str, possible_ancestor: &str) -> bool {
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    let possible_ancestor = possible_ancestor.trim_end_matches('.').to_ascii_lowercase();
+    !possible_ancestor.is_empty()
+        && (host == possible_ancestor
+            || host
+                .strip_suffix(&possible_ancestor)
+                .is_some_and(|prefix| prefix.ends_with('.')))
 }
 
 fn skeleton_string(value: &str) -> String {
@@ -1796,6 +1812,30 @@ mod tests {
             displayed_host("https://accounts.paypal.com/settings"),
             Some("accounts.paypal.com".into())
         );
+    }
+
+    #[test]
+    fn host_relationships_require_dns_ancestry_not_a_shared_base_domain() {
+        assert!(hosts_are_same_or_ancestor_related(
+            "amazonaws.com",
+            "stripe-images.s3.amazonaws.com"
+        ));
+        assert!(hosts_are_same_or_ancestor_related(
+            "WWW.Example.COM.",
+            "example.com"
+        ));
+        assert!(!hosts_are_same_or_ancestor_related(
+            "business1.zendesk.com",
+            "business2.zendesk.com"
+        ));
+        assert!(!hosts_are_same_or_ancestor_related(
+            "amazonaws.com.attacker.example",
+            "amazonaws.com"
+        ));
+        assert!(!hosts_are_same_or_ancestor_related(
+            "notamazonaws.com",
+            "amazonaws.com"
+        ));
     }
 
     #[test]

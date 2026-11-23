@@ -87,7 +87,7 @@ First message from this address
 Using the Public Suffix List, determine the registrable domain that actually
 controls the address. Against the bundled, versioned popular-domain set and
 the user's saved domains, detect a protected domain appearing as complete DNS
-labels anywhere other than the controlling suffix:
+labels anywhere other than the right-hand DNS suffix:
 
 ```text
 support@chase.com.evil.wtf
@@ -97,7 +97,10 @@ It places the popular domain "chase.com" before its real domain.
 ```
 
 `mail.chase.com` is an ordinary subdomain of `chase.com` and does not trigger.
-`chase.com.evil.wtf` and `zendesk.com.company` do. Detection runs against the
+Neither does `stripe-images.s3.amazonaws.com` for `amazonaws.com`, even when a
+Public Suffix List private rule identifies a narrower tenant boundary.
+`chase.com.evil.wtf` and `zendesk.com.company` do trigger because the protected
+domain is not the hostname's right-hand suffix. Detection runs against the
 complete normalized domain before layout, never against a truncated rendering.
 The list is an offline heuristic and not a claim that a popular domain is safe.
 
@@ -273,6 +276,13 @@ The link is blocked behind an action-specific interstitial. Detect misleading
 userinfo (`example.com@evil.example`), raw IP destinations, unusual ports,
 dangerous schemes and nested redirect targets where they can be decoded
 without making a network request.
+
+For displayed-host comparisons, identical hosts and literal DNS ancestry are
+equivalent: `amazonaws.com` and `stripe-images.s3.amazonaws.com` describe the
+same right-hand namespace. Merely sharing a registrable domain is insufficient:
+`business1.zendesk.com` and `business2.zendesk.com` are sibling hosts that may
+belong to different tenants, so a link displaying one while opening the other
+is treated as misleading.
 
 ### Confusable domains
 
