@@ -74,6 +74,8 @@ async fn run(
                         | Screen::ContactEdit
                         | Screen::Compose
                         | Screen::SearchInput
+                        | Screen::FolderEdit
+                        | Screen::FolderDeleteConfirm
                 ) =>
             {
                 Some(AppCommand::EditPaste(Zeroizing::new(value)))
@@ -186,6 +188,40 @@ fn command_for(screen: Screen, key: KeyEvent) -> Option<AppCommand> {
             _ => None,
         };
     }
+    if screen == Screen::FolderEdit {
+        return match (key.code, key.modifiers) {
+            (KeyCode::Esc, _) => Some(AppCommand::Back),
+            (KeyCode::Enter, _) => Some(AppCommand::FolderSave),
+            (KeyCode::Backspace, _) => Some(AppCommand::EditBackspace),
+            (KeyCode::Char(character), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+                Some(AppCommand::EditCharacter(character))
+            }
+            _ => None,
+        };
+    }
+    if screen == Screen::FolderDeleteConfirm {
+        return match (key.code, key.modifiers) {
+            (KeyCode::Esc, _) => Some(AppCommand::Back),
+            (KeyCode::Enter, _) => Some(AppCommand::FolderConfirmDelete),
+            (KeyCode::Backspace, _) => Some(AppCommand::EditBackspace),
+            (KeyCode::Char(character), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+                Some(AppCommand::EditCharacter(character))
+            }
+            _ => None,
+        };
+    }
+    if screen == Screen::FolderBind {
+        return match key.code {
+            KeyCode::Esc => Some(AppCommand::Back),
+            KeyCode::Char('5') => Some(AppCommand::FolderBind(5)),
+            KeyCode::Char('6') => Some(AppCommand::FolderBind(6)),
+            KeyCode::Char('7') => Some(AppCommand::FolderBind(7)),
+            KeyCode::Char('8') => Some(AppCommand::FolderBind(8)),
+            KeyCode::Char('9') => Some(AppCommand::FolderBind(9)),
+            KeyCode::Char('0') => Some(AppCommand::FolderBind(0)),
+            _ => None,
+        };
+    }
     if screen == Screen::SimilarityPreview {
         return match key.code {
             KeyCode::Esc | KeyCode::Char('n' | 'N') => Some(AppCommand::SimilarityCancel),
@@ -229,6 +265,46 @@ fn command_for(screen: Screen, key: KeyEvent) -> Option<AppCommand> {
             _ => None,
         };
     }
+    if screen == Screen::Folders {
+        return match key.code {
+            KeyCode::Char('q') => Some(AppCommand::Quit),
+            KeyCode::Esc => Some(AppCommand::Back),
+            KeyCode::Down | KeyCode::Char('j') => Some(AppCommand::Next),
+            KeyCode::Up | KeyCode::Char('k') => Some(AppCommand::Previous),
+            KeyCode::Enter => Some(AppCommand::Open),
+            KeyCode::Char('b' | 'B') => Some(AppCommand::FolderBeginBind),
+            KeyCode::Char('n' | 'N') => Some(AppCommand::FolderNew),
+            KeyCode::Char('r' | 'R') => Some(AppCommand::FolderRename),
+            KeyCode::Char('d') => Some(AppCommand::FolderDelete),
+            KeyCode::Char('5') => Some(AppCommand::FolderOpenShortcut(5)),
+            KeyCode::Char('6') => Some(AppCommand::FolderOpenShortcut(6)),
+            KeyCode::Char('7') => Some(AppCommand::FolderOpenShortcut(7)),
+            KeyCode::Char('8') => Some(AppCommand::FolderOpenShortcut(8)),
+            KeyCode::Char('9') => Some(AppCommand::FolderOpenShortcut(9)),
+            KeyCode::Char('0') => Some(AppCommand::FolderOpenShortcut(0)),
+            KeyCode::Char('?') => Some(AppCommand::Help),
+            _ => None,
+        };
+    }
+    if screen == Screen::FolderMessages {
+        return match key.code {
+            KeyCode::Char('q') => Some(AppCommand::Quit),
+            KeyCode::Esc => Some(AppCommand::Back),
+            KeyCode::Down | KeyCode::Char('j') => Some(AppCommand::Next),
+            KeyCode::Up | KeyCode::Char('k') => Some(AppCommand::Previous),
+            KeyCode::Enter => Some(AppCommand::Open),
+            KeyCode::Char('f' | 'F') => Some(AppCommand::Folders),
+            KeyCode::Char('/') => Some(AppCommand::SearchStart),
+            KeyCode::Char('5') => Some(AppCommand::FolderOpenShortcut(5)),
+            KeyCode::Char('6') => Some(AppCommand::FolderOpenShortcut(6)),
+            KeyCode::Char('7') => Some(AppCommand::FolderOpenShortcut(7)),
+            KeyCode::Char('8') => Some(AppCommand::FolderOpenShortcut(8)),
+            KeyCode::Char('9') => Some(AppCommand::FolderOpenShortcut(9)),
+            KeyCode::Char('0') => Some(AppCommand::FolderOpenShortcut(0)),
+            KeyCode::Char('?') => Some(AppCommand::Help),
+            _ => None,
+        };
+    }
     if screen == Screen::Reader {
         let command = match key.code {
             KeyCode::Tab => Some(AppCommand::ReaderNextLink),
@@ -261,6 +337,13 @@ fn command_for(screen: Screen, key: KeyEvent) -> Option<AppCommand> {
         KeyCode::Char('2') => Some(AppCommand::WarmFyi),
         KeyCode::Char('3') => Some(AppCommand::Cold),
         KeyCode::Char('4') => Some(AppCommand::Spam),
+        KeyCode::Char('5') => Some(AppCommand::FolderOpenShortcut(5)),
+        KeyCode::Char('6') => Some(AppCommand::FolderOpenShortcut(6)),
+        KeyCode::Char('7') => Some(AppCommand::FolderOpenShortcut(7)),
+        KeyCode::Char('8') => Some(AppCommand::FolderOpenShortcut(8)),
+        KeyCode::Char('9') => Some(AppCommand::FolderOpenShortcut(9)),
+        KeyCode::Char('0') => Some(AppCommand::FolderOpenShortcut(0)),
+        KeyCode::Char('f' | 'F') => Some(AppCommand::Folders),
         KeyCode::Char('l' | 'L') => Some(AppCommand::Waiting),
         KeyCode::Char('z' | 'Z') => Some(AppCommand::Snoozed),
         KeyCode::Char('D') => Some(AppCommand::Done),
@@ -485,7 +568,32 @@ mod tests {
             command_for(Screen::Queue(WorkflowView::WarmAction), key('4')),
             Some(AppCommand::Spam)
         ));
-        assert!(command_for(Screen::Queue(WorkflowView::WarmAction), key('f')).is_none());
+        assert!(matches!(
+            command_for(Screen::Queue(WorkflowView::WarmAction), key('f')),
+            Some(AppCommand::Folders)
+        ));
+    }
+
+    #[test]
+    fn folder_binding_is_an_explicit_two_key_operation() {
+        let key = |character| KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE);
+
+        assert!(matches!(
+            command_for(Screen::Folders, key('b')),
+            Some(AppCommand::FolderBeginBind)
+        ));
+        assert!(matches!(
+            command_for(Screen::FolderBind, key('7')),
+            Some(AppCommand::FolderBind(7))
+        ));
+        assert!(matches!(
+            command_for(Screen::Folders, key('7')),
+            Some(AppCommand::FolderOpenShortcut(7))
+        ));
+        assert!(matches!(
+            command_for(Screen::Folders, key('r')),
+            Some(AppCommand::FolderRename)
+        ));
     }
 
     #[test]

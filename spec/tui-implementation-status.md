@@ -69,6 +69,13 @@ not implemented merely because it is described there.
   parsed absolute HTTP(S) destinations, Enter delegates the selected canonical
   destination to the platform default browser, and interstitial/restricted
   message views expose no openable links.
+- A hierarchical-ready folder browser with message-level folder results,
+  reader-to-folder-to-folder-list Escape navigation, and six durable global
+  folder shortcuts on 5, 6, 7, 8, 9, and 0. Binding is the reversible `b` then
+  digit operation and replaces the old slot without confirmation.
+- Local and remote folder creation, rename, and deletion from the terminal.
+  Remote mutations run in the disposable isolated IMAP worker; deletion
+  requires typing the exact folder name before it can reach the server.
 
 ## Partially implemented
 
@@ -82,6 +89,8 @@ not implemented merely because it is described there.
 - The reader exposes the core work-state actions. Reply, delete, move,
   attachments, calendar creation, and profile navigation are backed elsewhere
   in the backend but not yet wired into this terminal surface.
+- Folder creation, rename, deletion, browsing, and shortcuts are wired. IMAP
+  subscription management and a dedicated hierarchy picker remain pending.
 
 ## Not yet wired into the terminal client
 
@@ -100,5 +109,5 @@ not implemented merely because it is described there.
 - Filter/heuristic editors and rules overview. Similar-mail rule creation and
   preview are wired; listing, disabling, and deleting those rules still need a
   management screen.
-- Saved views, tags, folders, and mailbox management.
+- Saved views and tags.
 - Encryption/key, storage/offline, appearance, and keybinding screens.

@@ -1,14 +1,14 @@
 use chrono::{Duration, Utc};
 use lizard_mail_backend::{
     Account, AccountId, AccountKind, Backend, BackendError, Contact, ContactAddress, ContactId,
-    ContactRelationship, ContactSuggestion, Draft, FindingPresentation, FindingSeverity,
-    ImapAccountEngineConfig, ImapAccountSyncReport, ImapAccountSyncState, ImapCredential,
-    ImapSecurity, MessageContentAvailability, MessageId, MessageSummary, NewAccount, NewContact,
-    NewContactRelationship, RelationshipKind, RemoteContentPolicy, ReplyAudience, Result,
-    SearchRequest, SecretValue, SendingLimits, SimilarityPreview, SmtpAccount, SmtpAuthMethod,
-    SmtpEngineConfig, SmtpSecurity, SmtpSettings, SubmissionId, SubmissionStatus, Thread,
-    ThreadFilter, ThreadId, ThreadSummary, ThreadWorkStatus, WarmRoute, WorkflowView,
-    DEFAULT_SIMILARITY_CUTOFF_MILLIS,
+    ContactRelationship, ContactSuggestion, Draft, FindingPresentation, FindingSeverity, Folder,
+    FolderId, FolderKind, ImapAccountEngineConfig, ImapAccountSyncReport, ImapAccountSyncState,
+    ImapCredential, ImapMailboxSyncState, ImapSecurity, MessageContentAvailability, MessageFilter,
+    MessageId, MessageSummary, NewAccount, NewContact, NewContactRelationship, NewFolder,
+    RelationshipKind, RemoteContentPolicy, ReplyAudience, Result, SearchRequest, SecretValue,
+    SendingLimits, SimilarityPreview, SmtpAccount, SmtpAuthMethod, SmtpEngineConfig, SmtpSecurity,
+    SmtpSettings, SubmissionId, SubmissionStatus, Thread, ThreadFilter, ThreadId, ThreadSummary,
+    ThreadWorkStatus, WarmRoute, WorkflowView, DEFAULT_SIMILARITY_CUTOFF_MILLIS,
 };
 use std::{
     cell::{Cell, RefCell},
@@ -41,6 +41,11 @@ pub enum Screen {
     Compose,
     SearchInput,
     SearchResults,
+    Folders,
+    FolderBind,
+    FolderMessages,
+    FolderEdit,
+    FolderDeleteConfirm,
     Contacts,
     ContactEdit,
     Help,
@@ -212,6 +217,26 @@ pub struct SearchEditor {
     pub query: String,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FolderEditorMode {
+    Create,
+    Rename,
+}
+
+pub struct FolderEditor {
+    pub mode: FolderEditorMode,
+    pub folder_id: Option<FolderId>,
+    pub account_id: Option<AccountId>,
+    pub kind: FolderKind,
+    pub name: String,
+}
+
+pub struct FolderDeleteEditor {
+    pub folder_id: FolderId,
+    pub expected_name: String,
+    pub typed_name: String,
+}
+
 impl ComposeEditor {
     fn new(draft: Draft) -> Self {
         Self {
@@ -346,6 +371,15 @@ pub enum AppCommand {
     SearchStart,
     SearchSubmit,
     SearchCancel,
+    Folders,
+    FolderOpenShortcut(u8),
+    FolderBeginBind,
+    FolderBind(u8),
+    FolderNew,
+    FolderRename,
+    FolderSave,
+    FolderDelete,
+    FolderConfirmDelete,
     Open,
     Back,
     WarmAction,
@@ -414,6 +448,17 @@ pub struct MailApp {
     pub search_content_complete: bool,
     search_return_screen: Screen,
     search_return_selected: usize,
+    pub folders: Vec<Folder>,
+    pub folder_states: HashMap<FolderId, ImapMailboxSyncState>,
+    pub folder_shortcuts: HashMap<u8, FolderId>,
+    pub folder_messages: Vec<MessageSummary>,
+    pub folder_messages_has_more: bool,
+    pub current_folder_id: Option<FolderId>,
+    pub folder_editor: Option<FolderEditor>,
+    pub folder_delete_editor: Option<FolderDeleteEditor>,
+    folder_return_screen: Screen,
+    folder_return_selected: usize,
+    folder_list_selected: usize,
     pub pending_account_delete: Option<AccountId>,
     pub onboarding_account: Option<AccountId>,
     pub suggestions: Vec<ContactSuggestion>,
@@ -532,6 +577,17 @@ impl MailApp {
             search_content_complete: true,
             search_return_screen: Screen::Queue(WorkflowView::WarmAction),
             search_return_selected: 0,
+            folders: Vec::new(),
+            folder_states: HashMap::new(),
+            folder_shortcuts: HashMap::new(),
+            folder_messages: Vec::new(),
+            folder_messages_has_more: false,
+            current_folder_id: None,
+            folder_editor: None,
+            folder_delete_editor: None,
+            folder_return_screen: Screen::Queue(WorkflowView::WarmAction),
+            folder_return_selected: 0,
+            folder_list_selected: 0,
             onboarding_account,
             suggestions,
             onboarding_edit: None,
@@ -572,6 +628,8 @@ impl MailApp {
             quit: false,
         };
         app.rebuild_contact_names();
+        app.refresh_folders().await?;
+        app.initialize_default_folder_shortcuts().await?;
         app.refresh().await?;
         Ok(app)
     }
@@ -595,6 +653,11 @@ impl MailApp {
                 self.refresh_contacts().await?;
                 self.clamp_selection();
             }
+            Screen::Folders | Screen::FolderBind => {
+                self.refresh_folders().await?;
+                self.clamp_selection();
+            }
+            Screen::FolderMessages => self.refresh_folder_messages().await?,
             Screen::Reader => {
                 if let Some(thread_id) = self
                     .reader_thread_id
@@ -607,6 +670,8 @@ impl MailApp {
             Screen::Compose
             | Screen::SearchInput
             | Screen::SearchResults
+            | Screen::FolderEdit
+            | Screen::FolderDeleteConfirm
             | Screen::AccountEdit
             | Screen::AccountDeleteConfirm
             | Screen::Onboarding
@@ -648,6 +713,15 @@ impl MailApp {
             AppCommand::SearchStart => self.begin_search(),
             AppCommand::SearchSubmit => self.submit_search().await?,
             AppCommand::SearchCancel => self.cancel_search().await?,
+            AppCommand::Folders => self.open_folders().await?,
+            AppCommand::FolderOpenShortcut(digit) => self.open_folder_shortcut(digit).await?,
+            AppCommand::FolderBeginBind => self.begin_folder_bind(),
+            AppCommand::FolderBind(digit) => self.bind_selected_folder(digit).await?,
+            AppCommand::FolderNew => self.begin_new_folder(),
+            AppCommand::FolderRename => self.begin_folder_rename(),
+            AppCommand::FolderSave => self.save_folder().await?,
+            AppCommand::FolderDelete => self.begin_folder_delete(),
+            AppCommand::FolderConfirmDelete => self.confirm_folder_delete().await?,
             AppCommand::Back => self.go_back().await?,
             AppCommand::Open => self.open_selected().await?,
             AppCommand::WarmAction => self.switch_queue(WorkflowView::WarmAction).await?,
@@ -827,7 +901,12 @@ impl MailApp {
             || (state.status == lizard_mail_backend::ImapAccountSyncStatus::Hydrating
                 && previous_status != Some(lizard_mail_backend::ImapAccountSyncStatus::Hydrating));
         self.account_states.insert(account_id, state);
-        if refresh_headers && matches!(self.screen, Screen::Queue(_)) {
+        if refresh_headers
+            && matches!(
+                self.screen,
+                Screen::Queue(_) | Screen::Folders | Screen::FolderMessages
+            )
+        {
             self.refresh().await?;
         }
         Ok(())
@@ -965,6 +1044,8 @@ impl MailApp {
             BackendError::Imap(format!("account synchronization task failed: {error}"))
         })?;
         self.refresh_accounts().await?;
+        self.refresh_folders().await?;
+        self.initialize_default_folder_shortcuts().await?;
         match outcome {
             Ok(report) => {
                 let fetched = report
@@ -1268,6 +1349,353 @@ impl MailApp {
             .map(|relationship| (relationship.contact_id, relationship))
             .collect();
         self.rebuild_contact_names();
+        Ok(())
+    }
+
+    async fn refresh_folders(&mut self) -> Result<()> {
+        self.folders = self.backend.folders().list(None).await?;
+        self.folder_shortcuts = self
+            .backend
+            .folders()
+            .shortcuts()
+            .await?
+            .into_iter()
+            .map(|shortcut| (shortcut.digit, shortcut.folder_id))
+            .collect();
+        self.folder_states.clear();
+        let state_reader = self
+            .backend
+            .managed_imap_account_engine_in_process(ImapAccountEngineConfig::default())?;
+        for account in &self.accounts {
+            if account.kind != AccountKind::Imap {
+                continue;
+            }
+            for state in state_reader.mailbox_states(account.id).await? {
+                self.folder_states.insert(state.folder_id, state);
+            }
+        }
+        Ok(())
+    }
+
+    async fn initialize_default_folder_shortcuts(&mut self) -> Result<()> {
+        if !self.folder_shortcuts.is_empty() || self.folders.is_empty() {
+            return Ok(());
+        }
+        let mut candidates = self.folders.iter().collect::<Vec<_>>();
+        candidates.sort_by_key(|folder| {
+            let name = folder
+                .remote_name
+                .as_deref()
+                .unwrap_or(&folder.name)
+                .to_ascii_lowercase();
+            let priority = if name == "inbox" {
+                0
+            } else if name.ends_with("sent") || name.ends_with("sent items") {
+                1
+            } else if name.ends_with("drafts") {
+                2
+            } else if name.ends_with("archive") || name.ends_with("all mail") {
+                3
+            } else if name.ends_with("trash") || name.ends_with("deleted items") {
+                4
+            } else {
+                5
+            };
+            (priority, name)
+        });
+        for (digit, folder) in [5, 6, 7, 8, 9, 0].into_iter().zip(candidates) {
+            self.backend
+                .folders()
+                .bind_shortcut(digit, folder.id)
+                .await?;
+            self.folder_shortcuts.insert(digit, folder.id);
+        }
+        Ok(())
+    }
+
+    async fn refresh_folder_messages(&mut self) -> Result<()> {
+        let Some(folder_id) = self.current_folder_id else {
+            self.folder_messages.clear();
+            self.folder_messages_has_more = false;
+            return Ok(());
+        };
+        let page = self
+            .backend
+            .messages()
+            .list(MessageFilter {
+                folder_id: Some(folder_id),
+                page_size: 200,
+                ..MessageFilter::default()
+            })
+            .await?;
+        self.folder_messages_has_more = page.next_cursor.is_some();
+        self.folder_messages = page.items;
+        self.clamp_selection();
+        Ok(())
+    }
+
+    async fn open_folders(&mut self) -> Result<()> {
+        if !matches!(
+            self.screen,
+            Screen::Folders
+                | Screen::FolderBind
+                | Screen::FolderMessages
+                | Screen::FolderEdit
+                | Screen::FolderDeleteConfirm
+        ) {
+            self.folder_return_screen = if self.screen == Screen::Reader {
+                self.previous_screen
+            } else {
+                self.screen
+            };
+            self.folder_return_selected = self.selected;
+        }
+        self.cancel_reader_tasks();
+        self.screen = Screen::Folders;
+        self.selected = self.folder_list_selected;
+        self.current_thread = None;
+        self.security_override = false;
+        self.reset_reader_scroll();
+        self.clear_reader_html();
+        self.refresh_folders().await?;
+        self.clamp_selection();
+        Ok(())
+    }
+
+    async fn open_folder_shortcut(&mut self, digit: u8) -> Result<()> {
+        let Some(folder_id) = self.folder_shortcuts.get(&digit).copied() else {
+            self.status = Some(format!("No folder is assigned to {digit}"));
+            return Ok(());
+        };
+        if !matches!(self.screen, Screen::Folders | Screen::FolderMessages)
+            && !(self.screen == Screen::Reader && self.previous_screen == Screen::FolderMessages)
+        {
+            self.folder_return_screen = if self.screen == Screen::Reader {
+                self.previous_screen
+            } else {
+                self.screen
+            };
+            self.folder_return_selected = self.selected;
+        }
+        self.cancel_reader_tasks();
+        self.current_folder_id = Some(folder_id);
+        self.folder_list_selected = self
+            .folders
+            .iter()
+            .position(|folder| folder.id == folder_id)
+            .unwrap_or(0);
+        self.screen = Screen::FolderMessages;
+        self.selected = 0;
+        self.current_thread = None;
+        self.security_override = false;
+        self.reset_reader_scroll();
+        self.clear_reader_html();
+        self.refresh_folder_messages().await
+    }
+
+    fn begin_folder_bind(&mut self) {
+        if self.screen == Screen::Folders && self.folders.get(self.selected).is_some() {
+            self.screen = Screen::FolderBind;
+            self.status = Some("Press 5, 6, 7, 8, 9, or 0 to replace that shortcut".into());
+        }
+    }
+
+    async fn bind_selected_folder(&mut self, digit: u8) -> Result<()> {
+        let Some(folder) = self.folders.get(self.selected).cloned() else {
+            return Ok(());
+        };
+        self.backend
+            .folders()
+            .bind_shortcut(digit, folder.id)
+            .await?;
+        self.folder_shortcuts.retain(|_, id| *id != folder.id);
+        self.folder_shortcuts.insert(digit, folder.id);
+        self.screen = Screen::Folders;
+        self.status = Some(format!("{digit} now opens {}", folder.name));
+        Ok(())
+    }
+
+    fn begin_new_folder(&mut self) {
+        let selected = self.folders.get(self.selected);
+        let (account_id, kind) = selected
+            .map(|folder| (folder.account_id, folder.kind))
+            .unwrap_or_else(|| {
+                self.accounts
+                    .iter()
+                    .find(|account| account.kind == AccountKind::Imap)
+                    .map_or((None, FolderKind::Local), |account| {
+                        (Some(account.id), FolderKind::Remote)
+                    })
+            });
+        if kind == FolderKind::Remote && self.account_sync_task.is_some() {
+            self.status = Some("Wait for the current account synchronization to finish".into());
+            return;
+        }
+        self.folder_editor = Some(FolderEditor {
+            mode: FolderEditorMode::Create,
+            folder_id: None,
+            account_id,
+            kind,
+            name: String::new(),
+        });
+        self.screen = Screen::FolderEdit;
+    }
+
+    fn begin_folder_rename(&mut self) {
+        let Some(folder) = self.folders.get(self.selected).cloned() else {
+            return;
+        };
+        if folder.kind == FolderKind::Remote && self.account_sync_task.is_some() {
+            self.status = Some("Wait for the current account synchronization to finish".into());
+            return;
+        }
+        self.folder_editor = Some(FolderEditor {
+            mode: FolderEditorMode::Rename,
+            folder_id: Some(folder.id),
+            account_id: folder.account_id,
+            kind: folder.kind,
+            name: folder
+                .remote_name
+                .clone()
+                .unwrap_or_else(|| folder.name.clone()),
+        });
+        self.screen = Screen::FolderEdit;
+    }
+
+    async fn save_folder(&mut self) -> Result<()> {
+        let Some(editor) = self.folder_editor.take() else {
+            return Ok(());
+        };
+        if editor.kind == FolderKind::Remote && self.account_sync_task.is_some() {
+            self.status = Some("Wait for the current account synchronization to finish".into());
+            self.folder_editor = Some(editor);
+            return Ok(());
+        }
+        let name = editor.name.trim().to_owned();
+        if name.is_empty() {
+            self.status = Some("A folder needs a name".into());
+            self.folder_editor = Some(editor);
+            return Ok(());
+        }
+        let saved = match (editor.mode, editor.kind) {
+            (FolderEditorMode::Create, FolderKind::Local) => {
+                self.backend
+                    .folders()
+                    .add(NewFolder {
+                        account_id: editor.account_id,
+                        name,
+                        kind: FolderKind::Local,
+                        remote_name: None,
+                    })
+                    .await?
+            }
+            (FolderEditorMode::Create, FolderKind::Remote) => {
+                let account_id = editor.account_id.ok_or_else(|| {
+                    BackendError::InvalidInput("remote folder is missing an account".into())
+                })?;
+                self.backend
+                    .managed_imap_account_engine(ImapAccountEngineConfig::default())?
+                    .create_mailbox(account_id, name)
+                    .await?
+            }
+            (FolderEditorMode::Rename, FolderKind::Local) => {
+                let folder_id = editor.folder_id.ok_or_else(|| {
+                    BackendError::InvalidInput("folder rename is missing a folder".into())
+                })?;
+                self.backend
+                    .folders()
+                    .update(
+                        folder_id,
+                        NewFolder {
+                            account_id: editor.account_id,
+                            name,
+                            kind: FolderKind::Local,
+                            remote_name: None,
+                        },
+                    )
+                    .await?
+            }
+            (FolderEditorMode::Rename, FolderKind::Remote) => {
+                let account_id = editor.account_id.ok_or_else(|| {
+                    BackendError::InvalidInput("remote folder is missing an account".into())
+                })?;
+                let folder_id = editor.folder_id.ok_or_else(|| {
+                    BackendError::InvalidInput("folder rename is missing a folder".into())
+                })?;
+                self.backend
+                    .managed_imap_account_engine(ImapAccountEngineConfig::default())?
+                    .rename_mailbox(account_id, folder_id, name)
+                    .await?
+            }
+        };
+        self.refresh_folders().await?;
+        self.selected = self
+            .folders
+            .iter()
+            .position(|folder| folder.id == saved.id)
+            .unwrap_or(0);
+        self.folder_list_selected = self.selected;
+        self.screen = Screen::Folders;
+        self.status = Some(match editor.mode {
+            FolderEditorMode::Create => "Folder created".into(),
+            FolderEditorMode::Rename => "Folder renamed".into(),
+        });
+        Ok(())
+    }
+
+    fn begin_folder_delete(&mut self) {
+        let Some(folder) = self.folders.get(self.selected) else {
+            return;
+        };
+        if folder.kind == FolderKind::Remote && self.account_sync_task.is_some() {
+            self.status = Some("Wait for the current account synchronization to finish".into());
+            return;
+        }
+        let expected_name = folder
+            .remote_name
+            .clone()
+            .unwrap_or_else(|| folder.name.clone());
+        self.folder_delete_editor = Some(FolderDeleteEditor {
+            folder_id: folder.id,
+            expected_name,
+            typed_name: String::new(),
+        });
+        self.screen = Screen::FolderDeleteConfirm;
+    }
+
+    async fn confirm_folder_delete(&mut self) -> Result<()> {
+        let Some(editor) = self.folder_delete_editor.take() else {
+            return Ok(());
+        };
+        if editor.typed_name != editor.expected_name {
+            self.status = Some("The folder name does not match exactly".into());
+            self.folder_delete_editor = Some(editor);
+            return Ok(());
+        }
+        let folder = self.backend.folders().get(editor.folder_id).await?;
+        if folder.kind == FolderKind::Remote && self.account_sync_task.is_some() {
+            self.status = Some("Wait for the current account synchronization to finish".into());
+            self.folder_delete_editor = Some(editor);
+            return Ok(());
+        }
+        match folder.kind {
+            FolderKind::Local => self.backend.folders().remove(folder.id).await?,
+            FolderKind::Remote => {
+                let account_id = folder.account_id.ok_or_else(|| {
+                    BackendError::InvalidInput("remote folder is missing an account".into())
+                })?;
+                self.backend
+                    .managed_imap_account_engine(ImapAccountEngineConfig::default())?
+                    .delete_mailbox(account_id, folder.id)
+                    .await?;
+            }
+        }
+        self.current_folder_id = None;
+        self.refresh_folders().await?;
+        self.selected = self.selected.min(self.folders.len().saturating_sub(1));
+        self.folder_list_selected = self.selected;
+        self.screen = Screen::Folders;
+        self.status = Some(format!("Deleted {}", editor.expected_name));
         Ok(())
     }
 
@@ -2076,6 +2504,14 @@ impl MailApp {
     }
 
     fn edit_backspace(&mut self) {
+        if let Some(editor) = &mut self.folder_delete_editor {
+            editor.typed_name.pop();
+            return;
+        }
+        if let Some(editor) = &mut self.folder_editor {
+            editor.name.pop();
+            return;
+        }
         if let Some(editor) = &mut self.search_editor {
             editor.query.pop();
             return;
@@ -2151,6 +2587,18 @@ impl MailApp {
 
     fn edit_character(&mut self, character: char) {
         if character.is_control() {
+            return;
+        }
+        if let Some(editor) = &mut self.folder_delete_editor {
+            if editor.typed_name.len() < 8 * 1024 {
+                editor.typed_name.push(character);
+            }
+            return;
+        }
+        if let Some(editor) = &mut self.folder_editor {
+            if editor.name.len() < 8 * 1024 {
+                editor.name.push(character);
+            }
             return;
         }
         if let Some(editor) = &mut self.search_editor {
@@ -2248,7 +2696,10 @@ impl MailApp {
     }
 
     fn edit_paste(&mut self, value: &str) {
-        if self.search_editor.is_some() {
+        if self.search_editor.is_some()
+            || self.folder_editor.is_some()
+            || self.folder_delete_editor.is_some()
+        {
             for character in value.chars() {
                 if !character.is_control() || character == '\t' {
                     self.edit_character(if character == '\t' { ' ' } else { character });
@@ -2335,6 +2786,27 @@ impl MailApp {
                     self.start_reader_load(result.thread_id);
                 }
             }
+            Screen::Folders => {
+                if let Some(folder) = self.folders.get(self.selected) {
+                    self.current_folder_id = Some(folder.id);
+                    self.folder_list_selected = self.selected;
+                    self.screen = Screen::FolderMessages;
+                    self.selected = 0;
+                    self.refresh_folder_messages().await?;
+                }
+            }
+            Screen::FolderMessages => {
+                if let Some(result) = self.folder_messages.get(self.selected).cloned() {
+                    self.previous_screen = Screen::FolderMessages;
+                    self.screen = Screen::Reader;
+                    self.current_thread = None;
+                    self.reader_target_message_id = Some(result.id);
+                    self.security_override = false;
+                    self.reset_reader_scroll();
+                    self.clear_reader_html();
+                    self.start_reader_load(result.thread_id);
+                }
+            }
             Screen::Onboarding => self.begin_suggestion_edit(),
             Screen::Accounts => self.begin_selected_account_edit().await?,
             Screen::Contacts => self.begin_selected_contact_edit().await?,
@@ -2348,6 +2820,29 @@ impl MailApp {
             Screen::SimilarityPreview => self.cancel_similarity_preview(),
             Screen::SearchInput => self.cancel_search().await?,
             Screen::SearchResults => self.cancel_search().await?,
+            Screen::FolderBind => {
+                self.screen = Screen::Folders;
+                self.status = None;
+            }
+            Screen::FolderMessages => {
+                self.screen = Screen::Folders;
+                self.selected = self.folder_list_selected;
+                self.refresh_folders().await?;
+                self.clamp_selection();
+            }
+            Screen::Folders => {
+                self.screen = self.folder_return_screen;
+                self.selected = self.folder_return_selected;
+                self.refresh().await?;
+            }
+            Screen::FolderEdit => {
+                self.folder_editor = None;
+                self.screen = Screen::Folders;
+            }
+            Screen::FolderDeleteConfirm => {
+                self.folder_delete_editor = None;
+                self.screen = Screen::Folders;
+            }
             Screen::Compose => {
                 self.save_compose_draft(false).await?;
                 self.compose_editor = None;
@@ -2516,20 +3011,42 @@ impl MailApp {
     }
 
     async fn remove_current_reader_and_advance(&mut self, id: ThreadId) -> Result<()> {
+        if self.previous_screen == Screen::FolderMessages {
+            let next = self.selected.saturating_add(1);
+            if let Some(result) = self.folder_messages.get(next).cloned() {
+                self.selected = next;
+                self.cancel_reader_tasks();
+                self.reader_target_message_id = Some(result.id);
+                self.current_thread = None;
+                self.security_override = false;
+                self.reset_reader_scroll();
+                self.clear_reader_html();
+                self.start_reader_load(result.thread_id);
+            } else {
+                self.cancel_reader_tasks();
+                self.screen = Screen::FolderMessages;
+                self.current_thread = None;
+                self.security_override = false;
+                self.reset_reader_scroll();
+                self.clear_reader_html();
+                self.refresh_folder_messages().await?;
+            }
+            return Ok(());
+        }
         if self.previous_screen == Screen::SearchResults {
             let selected = self.selected;
-            self.search_results
-                .retain(|message| message.thread_id != id);
-            if self.search_results.is_empty() {
+            let messages = &mut self.search_results;
+            messages.retain(|message| message.thread_id != id);
+            if messages.is_empty() {
                 self.cancel_reader_tasks();
-                self.screen = Screen::SearchResults;
+                self.screen = self.previous_screen;
                 self.current_thread = None;
                 self.selected = 0;
                 self.clear_reader_html();
                 return Ok(());
             }
-            self.selected = selected.min(self.search_results.len().saturating_sub(1));
-            let result = self.search_results[self.selected].clone();
+            self.selected = selected.min(messages.len().saturating_sub(1));
+            let result = messages[self.selected].clone();
             self.cancel_reader_tasks();
             self.reader_target_message_id = Some(result.id);
             self.current_thread = None;
@@ -2817,6 +3334,8 @@ impl MailApp {
             Screen::Contacts => self.contacts.len(),
             Screen::Queue(_) => self.threads.len(),
             Screen::SearchResults => self.search_results.len(),
+            Screen::Folders | Screen::FolderBind => self.folders.len(),
+            Screen::FolderMessages => self.folder_messages.len(),
             _ => 0,
         };
         if length == 0 {
@@ -2833,24 +3352,32 @@ impl MailApp {
         if self.screen != Screen::Reader {
             return;
         }
-        if self.previous_screen == Screen::SearchResults {
-            if self.search_results.is_empty() {
+        if matches!(
+            self.previous_screen,
+            Screen::SearchResults | Screen::FolderMessages
+        ) {
+            let messages = if self.previous_screen == Screen::SearchResults {
+                &self.search_results
+            } else {
+                &self.folder_messages
+            };
+            if messages.is_empty() {
                 return;
             }
             let next = self
                 .selected
                 .saturating_add_signed(delta)
-                .min(self.search_results.len().saturating_sub(1));
+                .min(messages.len().saturating_sub(1));
             if next == self.selected {
                 self.status = Some(if delta < 0 {
-                    "Already at the first search result".into()
+                    "Already at the first message".into()
                 } else {
-                    "Already at the last search result".into()
+                    "Already at the last message".into()
                 });
                 return;
             }
             self.selected = next;
-            let result = self.search_results[next].clone();
+            let result = messages[next].clone();
             self.cancel_reader_tasks();
             self.reader_target_message_id = Some(result.id);
             self.current_thread = None;
@@ -3028,6 +3555,8 @@ impl MailApp {
             Screen::Contacts => self.contacts.len(),
             Screen::Queue(_) => self.threads.len(),
             Screen::SearchResults => self.search_results.len(),
+            Screen::Folders | Screen::FolderBind => self.folders.len(),
+            Screen::FolderMessages => self.folder_messages.len(),
             _ => 0,
         };
         self.selected = self.selected.min(length.saturating_sub(1));

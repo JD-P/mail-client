@@ -1069,3 +1069,73 @@ async fn automatic_sync_ignores_local_only_profiles() {
     assert!(app.queued_sync_accounts().is_empty());
     assert!(!app.account_syncing(account.id));
 }
+
+#[tokio::test]
+async fn folder_screen_supports_navigation_binding_rename_and_exact_delete_confirmation() {
+    let profile = tempfile::tempdir().unwrap();
+    let backend = Backend::open(BackendConfig::new(profile.path()))
+        .await
+        .unwrap();
+    let folder = backend
+        .folders()
+        .add(NewFolder {
+            account_id: None,
+            name: "Receipts and statements".into(),
+            kind: FolderKind::Local,
+            remote_name: None,
+        })
+        .await
+        .unwrap();
+    let message_id = backend
+        .ingest(IngestMessage::local(
+            b"From: billing@example.test\r\nTo: reader@example.test\r\nMessage-ID: <folder-test@example.test>\r\nSubject: November receipt\r\n\r\nPaid.\r\n"
+                .to_vec(),
+        ))
+        .await
+        .unwrap();
+    backend
+        .messages()
+        .add_to_local_folder(message_id, folder.id)
+        .await
+        .unwrap();
+
+    let mut app = MailApp::open(backend.clone()).await.unwrap();
+    app.dispatch(AppCommand::Folders).await.unwrap();
+    assert_eq!(app.screen, Screen::Folders);
+    assert_eq!(app.folders[app.selected].id, folder.id);
+
+    app.dispatch(AppCommand::FolderBeginBind).await.unwrap();
+    assert_eq!(app.screen, Screen::FolderBind);
+    app.dispatch(AppCommand::FolderBind(0)).await.unwrap();
+    assert_eq!(app.folder_shortcuts.get(&0), Some(&folder.id));
+
+    app.dispatch(AppCommand::Open).await.unwrap();
+    assert_eq!(app.screen, Screen::FolderMessages);
+    assert_eq!(app.folder_messages.len(), 1);
+    app.dispatch(AppCommand::Open).await.unwrap();
+    assert_eq!(app.screen, Screen::Reader);
+    wait_for_reader_metadata(&mut app).await;
+    app.dispatch(AppCommand::Back).await.unwrap();
+    assert_eq!(app.screen, Screen::FolderMessages);
+    app.dispatch(AppCommand::Back).await.unwrap();
+    assert_eq!(app.screen, Screen::Folders);
+
+    app.dispatch(AppCommand::FolderRename).await.unwrap();
+    app.folder_editor.as_mut().unwrap().name = "Receipts".into();
+    app.dispatch(AppCommand::FolderSave).await.unwrap();
+    assert_eq!(
+        backend.folders().get(folder.id).await.unwrap().name,
+        "Receipts"
+    );
+
+    app.dispatch(AppCommand::FolderDelete).await.unwrap();
+    app.folder_delete_editor.as_mut().unwrap().typed_name = "receipts".into();
+    app.dispatch(AppCommand::FolderConfirmDelete).await.unwrap();
+    assert_eq!(app.screen, Screen::FolderDeleteConfirm);
+    assert!(backend.folders().get(folder.id).await.is_ok());
+    app.folder_delete_editor.as_mut().unwrap().typed_name = "Receipts".into();
+    app.dispatch(AppCommand::FolderConfirmDelete).await.unwrap();
+    assert_eq!(app.screen, Screen::Folders);
+    assert!(backend.folders().get(folder.id).await.is_err());
+    assert!(!app.folder_shortcuts.values().any(|id| *id == folder.id));
+}

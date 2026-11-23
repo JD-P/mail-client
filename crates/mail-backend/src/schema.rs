@@ -11,7 +11,7 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 version INTEGER NOT NULL
             );
             INSERT INTO schema_meta(version)
-                SELECT 25 WHERE NOT EXISTS (SELECT 1 FROM schema_meta);
+                SELECT 26 WHERE NOT EXISTS (SELECT 1 FROM schema_meta);
 
             CREATE TABLE IF NOT EXISTS accounts (
                 id TEXT PRIMARY KEY,
@@ -130,6 +130,13 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 uid_next INTEGER,
                 created_at INTEGER NOT NULL,
                 UNIQUE(account_id, remote_name)
+            );
+
+            CREATE TABLE IF NOT EXISTS folder_shortcuts (
+                digit INTEGER PRIMARY KEY CHECK(digit IN (0, 5, 6, 7, 8, 9)),
+                folder_id TEXT NOT NULL UNIQUE REFERENCES folders(id) ON DELETE CASCADE,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS threads (
@@ -1543,7 +1550,23 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
             .await?;
         version = 25;
     }
-    if version != 25 {
+    if version == 25 {
+        connection
+            .execute_batch(
+                r#"
+                CREATE TABLE IF NOT EXISTS folder_shortcuts (
+                    digit INTEGER PRIMARY KEY CHECK(digit IN (0, 5, 6, 7, 8, 9)),
+                    folder_id TEXT NOT NULL UNIQUE REFERENCES folders(id) ON DELETE CASCADE,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL
+                );
+                UPDATE schema_meta SET version = 26;
+                "#,
+            )
+            .await?;
+        version = 26;
+    }
+    if version != 26 {
         return Err(crate::BackendError::InvalidInput(format!(
             "unsupported database schema version {version}"
         )));
@@ -1896,7 +1919,7 @@ mod tests {
             .await
             .unwrap();
         let row = rows.next().await.unwrap().unwrap();
-        assert_eq!(row.get::<i64>(0).unwrap(), 25);
+        assert_eq!(row.get::<i64>(0).unwrap(), 26);
         assert_eq!(row.get::<String>(1).unwrap(), r#"{"received_at":123}"#);
         drop(rows);
 
@@ -1939,7 +1962,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap(),
-            25
+            26
         );
         drop(rows);
 
@@ -2076,7 +2099,7 @@ mod tests {
             .await
             .unwrap();
         let row = rows.next().await.unwrap().unwrap();
-        assert_eq!(row.get::<i64>(0).unwrap(), 25);
+        assert_eq!(row.get::<i64>(0).unwrap(), 26);
         assert_eq!(row.get::<String>(1).unwrap(), "CaseSensitive@example.test");
         assert!(row.get::<bool>(2).unwrap());
         assert!(row.get::<bool>(3).unwrap());
@@ -2125,7 +2148,7 @@ mod tests {
             .await
             .unwrap();
         let row = rows.next().await.unwrap().unwrap();
-        assert_eq!(row.get::<i64>(0).unwrap(), 25);
+        assert_eq!(row.get::<i64>(0).unwrap(), 26);
         assert_eq!(row.get::<String>(1).unwrap(), "action");
         assert_eq!(row.get::<String>(2).unwrap(), "manual");
         assert_eq!(row.get::<Option<String>>(3).unwrap(), None);
@@ -2181,7 +2204,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap(),
-            25
+            26
         );
         drop(rows);
         let mut rows = connection
@@ -2194,6 +2217,57 @@ mod tests {
         }
         assert!(columns.contains("hydration_completed_messages"));
         assert!(columns.contains("hydration_total_messages"));
+    }
+
+    #[tokio::test]
+    async fn version_twenty_five_adds_durable_folder_shortcuts() {
+        let profile = tempfile::tempdir().unwrap();
+        let path = profile.path().join("mail.db");
+        let database = turso::Builder::new_local(path.to_str().unwrap())
+            .experimental_index_method(true)
+            .build()
+            .await
+            .unwrap();
+        let connection = database.connect().unwrap();
+        connection
+            .execute_batch(
+                r#"
+                PRAGMA foreign_keys = ON;
+                CREATE TABLE schema_meta (version INTEGER NOT NULL);
+                INSERT INTO schema_meta VALUES (25);
+                CREATE TABLE folders (
+                    id TEXT PRIMARY KEY,
+                    account_id TEXT,
+                    name TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    remote_name TEXT,
+                    created_at INTEGER NOT NULL
+                );
+                INSERT INTO folders(id, name, kind, created_at)
+                VALUES ('folder-one', 'One', 'local', 1);
+                "#,
+            )
+            .await
+            .unwrap();
+
+        migrate(&connection).await.unwrap();
+        connection
+            .execute(
+                "INSERT INTO folder_shortcuts(digit, folder_id, created_at, updated_at) VALUES (5, 'folder-one', 1, 1)",
+                (),
+            )
+            .await
+            .unwrap();
+        let mut rows = connection
+            .query(
+                "SELECT schema_meta.version, folder_shortcuts.folder_id FROM schema_meta, folder_shortcuts",
+                (),
+            )
+            .await
+            .unwrap();
+        let row = rows.next().await.unwrap().unwrap();
+        assert_eq!(row.get::<i64>(0).unwrap(), 26);
+        assert_eq!(row.get::<String>(1).unwrap(), "folder-one");
     }
 
     #[tokio::test]
@@ -2286,7 +2360,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap(),
-            25
+            26
         );
     }
 }

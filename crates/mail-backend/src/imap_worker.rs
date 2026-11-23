@@ -8,9 +8,10 @@
 
 use crate::{
     backend::DownloadAttemptGuard, AccountId, Backend, BackendConfig, BackendError,
-    CredentialProvider, DkimDnsResolver, ImapAccountEngine, ImapAccountEngineConfig,
-    ImapAccountSyncReport, ImapAccountSyncState, ImapAccountSyncStatus, ImapCredential,
-    ImapMailboxSyncState, MessageContentStatus, MessageId, Result, SecretValue, StorageUsage,
+    CredentialProvider, DkimDnsResolver, Folder, FolderId, ImapAccountEngine,
+    ImapAccountEngineConfig, ImapAccountSyncReport, ImapAccountSyncState, ImapAccountSyncStatus,
+    ImapCredential, ImapMailboxSyncState, MessageContentStatus, MessageId, Result, SecretValue,
+    StorageUsage,
 };
 use futures_util::future::BoxFuture;
 use serde::{Deserialize, Serialize};
@@ -27,7 +28,7 @@ use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 use zeroize::{Zeroize, Zeroizing};
 
-const WORKER_PROTOCOL_VERSION: u32 = 2;
+const WORKER_PROTOCOL_VERSION: u32 = 3;
 const MAX_WORKER_REQUEST_BYTES: usize = 2 * 1024 * 1024;
 const MAX_WORKER_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_WORKER_ERROR_CHARS: usize = 4 * 1024;
@@ -126,6 +127,66 @@ impl IsolatedImapAccountEngine {
 
     pub async fn mailbox_states(&self, account_id: AccountId) -> Result<Vec<ImapMailboxSyncState>> {
         self.engine.mailbox_states(account_id).await
+    }
+
+    pub async fn create_mailbox(
+        &self,
+        account_id: AccountId,
+        remote_name: String,
+    ) -> Result<Folder> {
+        let cursor = self.backend.current_change_cursor().await?;
+        let outcome = self
+            .execute(account_id, WorkerOperation::CreateMailbox { remote_name })
+            .await;
+        self.backend.publish_worker_changes(cursor).await?;
+        match outcome {
+            Ok(WorkerResult::Folder(folder)) => Ok(folder),
+            Ok(_) => Err(BackendError::Imap(
+                "isolated IMAP worker returned the wrong result type".into(),
+            )),
+            Err(error) => Err(error.into_backend_error()),
+        }
+    }
+
+    pub async fn rename_mailbox(
+        &self,
+        account_id: AccountId,
+        folder_id: FolderId,
+        new_remote_name: String,
+    ) -> Result<Folder> {
+        let cursor = self.backend.current_change_cursor().await?;
+        let outcome = self
+            .execute(
+                account_id,
+                WorkerOperation::RenameMailbox {
+                    folder_id,
+                    new_remote_name,
+                },
+            )
+            .await;
+        self.backend.publish_worker_changes(cursor).await?;
+        match outcome {
+            Ok(WorkerResult::Folder(folder)) => Ok(folder),
+            Ok(_) => Err(BackendError::Imap(
+                "isolated IMAP worker returned the wrong result type".into(),
+            )),
+            Err(error) => Err(error.into_backend_error()),
+        }
+    }
+
+    pub async fn delete_mailbox(&self, account_id: AccountId, folder_id: FolderId) -> Result<()> {
+        let cursor = self.backend.current_change_cursor().await?;
+        let outcome = self
+            .execute(account_id, WorkerOperation::DeleteMailbox { folder_id })
+            .await;
+        self.backend.publish_worker_changes(cursor).await?;
+        match outcome {
+            Ok(WorkerResult::Done) => Ok(()),
+            Ok(_) => Err(BackendError::Imap(
+                "isolated IMAP worker returned the wrong result type".into(),
+            )),
+            Err(error) => Err(error.into_backend_error()),
+        }
     }
 
     pub async fn sync_once(&self, account_id: AccountId) -> Result<ImapAccountSyncReport> {
@@ -592,7 +653,19 @@ struct WorkerLimits {
 #[derive(Serialize, Deserialize)]
 enum WorkerOperation {
     SyncOnce,
-    FetchMessageContent { message_id: MessageId },
+    FetchMessageContent {
+        message_id: MessageId,
+    },
+    CreateMailbox {
+        remote_name: String,
+    },
+    RenameMailbox {
+        folder_id: FolderId,
+        new_remote_name: String,
+    },
+    DeleteMailbox {
+        folder_id: FolderId,
+    },
     WaitForChange,
 }
 
@@ -600,6 +673,8 @@ enum WorkerOperation {
 enum WorkerResult {
     Sync(ImapAccountSyncReport),
     Content(MessageContentStatus),
+    Folder(Folder),
+    Done,
     Waited,
 }
 
@@ -904,6 +979,21 @@ async fn run_worker_request(mut request: WorkerRequest) -> Result<WorkerResult> 
             .fetch_message_content(message_id)
             .await
             .map(WorkerResult::Content),
+        WorkerOperation::CreateMailbox { remote_name } => engine
+            .create_mailbox(request.account_id, remote_name)
+            .await
+            .map(WorkerResult::Folder),
+        WorkerOperation::RenameMailbox {
+            folder_id,
+            new_remote_name,
+        } => engine
+            .rename_mailbox(request.account_id, folder_id, new_remote_name)
+            .await
+            .map(WorkerResult::Folder),
+        WorkerOperation::DeleteMailbox { folder_id } => engine
+            .delete_mailbox(request.account_id, folder_id)
+            .await
+            .map(|()| WorkerResult::Done),
         WorkerOperation::WaitForChange => engine
             .wait_for_change(request.account_id, &CancellationToken::new())
             .await

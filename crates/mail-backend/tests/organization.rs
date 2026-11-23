@@ -535,3 +535,46 @@ async fn accounts_and_local_folders_can_be_updated_and_removed() {
     assert!(backend.accounts().get(account.id).await.is_err());
     assert!(backend.messages().get(account_local_message).await.is_err());
 }
+
+#[tokio::test]
+async fn folder_shortcuts_replace_existing_bindings_without_confirmation_state() {
+    let profile = tempfile::tempdir().unwrap();
+    let backend = Backend::open(BackendConfig::new(profile.path()))
+        .await
+        .unwrap();
+    let first = backend
+        .folders()
+        .add(NewFolder {
+            account_id: None,
+            name: "First".into(),
+            kind: FolderKind::Local,
+            remote_name: None,
+        })
+        .await
+        .unwrap();
+    let second = backend
+        .folders()
+        .add(NewFolder {
+            account_id: None,
+            name: "Second".into(),
+            kind: FolderKind::Local,
+            remote_name: None,
+        })
+        .await
+        .unwrap();
+
+    backend.folders().bind_shortcut(5, first.id).await.unwrap();
+    backend.folders().bind_shortcut(6, second.id).await.unwrap();
+    backend.folders().bind_shortcut(5, second.id).await.unwrap();
+
+    assert_eq!(
+        backend.folders().shortcuts().await.unwrap(),
+        [lizard_mail_backend::FolderShortcut {
+            digit: 5,
+            folder_id: second.id,
+        }]
+    );
+    assert!(backend.folders().bind_shortcut(4, first.id).await.is_err());
+    backend.folders().remove(second.id).await.unwrap();
+    assert!(backend.folders().shortcuts().await.unwrap().is_empty());
+}

@@ -1,14 +1,15 @@
 use crate::app::{
-    AccountAuthentication, AccountField, ComposeField, ContactField, MailApp, Screen,
+    AccountAuthentication, AccountField, ComposeField, ContactField, FolderEditorMode, MailApp,
+    Screen,
 };
 use crate::{LinkKind, LinkReference, RenderedPage};
 use chrono::{DateTime, Datelike, Local, Utc};
 use lizard_mail_backend::{
     AuthenticationMethodKind, AuthenticationMethodResult, AuthenticationResultsTrust,
-    DkimAuthenticationStatus, DkimSignatureStatus, FindingSeverity, FindingTargetKind,
+    DkimAuthenticationStatus, DkimSignatureStatus, FindingSeverity, FindingTargetKind, FolderKind,
     HeuristicFinding, ImapSecurity, InboxClass, Message, MessageContentAvailability, MessageLink,
-    OpenPgpBindingState, OpenPgpEncryptionStatus, OpenPgpSignatureStatus, RelationshipKind,
-    RemoteContentPolicy, ThreadWorkStatus, WarmRoute, WorkflowView,
+    MessageSummary, OpenPgpBindingState, OpenPgpEncryptionStatus, OpenPgpSignatureStatus,
+    RelationshipKind, RemoteContentPolicy, ThreadWorkStatus, WarmRoute, WorkflowView,
 };
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -34,7 +35,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &MailApp) {
     let areas = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),
+            Constraint::Length(4),
             Constraint::Min(8),
             Constraint::Length(2),
         ])
@@ -52,6 +53,10 @@ pub fn draw(frame: &mut Frame<'_>, app: &MailApp) {
         Screen::Compose => draw_compose(frame, app, areas[1]),
         Screen::SearchInput => draw_search_input(frame, app, areas[1]),
         Screen::SearchResults => draw_search_results(frame, app, areas[1]),
+        Screen::Folders | Screen::FolderBind => draw_folders(frame, app, areas[1]),
+        Screen::FolderMessages => draw_folder_messages(frame, app, areas[1]),
+        Screen::FolderEdit => draw_folder_editor(frame, app, areas[1]),
+        Screen::FolderDeleteConfirm => draw_folder_delete_confirm(frame, app, areas[1]),
         Screen::Contacts => draw_contacts(frame, app, areas[1]),
         Screen::ContactEdit => draw_contact_editor(frame, app, areas[1]),
         Screen::Help => draw_help(frame, areas[1]),
@@ -62,7 +67,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &MailApp) {
 fn draw_header(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
     let accent = accent(app);
     let title = format!(" LIZARD MAIL · {} ", screen_title(app));
-    let navigation = header_navigation();
+    let navigation = header_navigation(app);
     frame.render_widget(
         Paragraph::new(navigation).block(
             Block::default()
@@ -74,7 +79,7 @@ fn draw_header(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
     );
 }
 
-fn header_navigation() -> Line<'static> {
+fn primary_navigation() -> Line<'static> {
     Line::from(vec![
         Span::styled("1", Style::default().fg(WARM).add_modifier(Modifier::BOLD)),
         Span::raw(" Action  "),
@@ -86,8 +91,56 @@ fn header_navigation() -> Line<'static> {
         Span::styled("3", Style::default().fg(COLD).add_modifier(Modifier::BOLD)),
         Span::raw(" Cold  "),
         Span::styled("4", Style::default().fg(SPAM).add_modifier(Modifier::BOLD)),
-        Span::raw(" Spam  L Later  / Search  C Contacts  A Accounts  ? Help"),
+        Span::raw(" Spam  F Folders  L Later  / Search  C Contacts  A Accounts  ? Help"),
     ])
+}
+
+fn header_navigation(app: &MailApp) -> Text<'static> {
+    let mut shortcuts = Vec::new();
+    for digit in [5, 6, 7, 8, 9, 0] {
+        if !shortcuts.is_empty() {
+            shortcuts.push(Span::raw("  "));
+        }
+        shortcuts.push(Span::styled(
+            digit.to_string(),
+            Style::default()
+                .fg(Color::Gray)
+                .add_modifier(Modifier::BOLD),
+        ));
+        shortcuts.push(Span::raw(" "));
+        shortcuts.push(Span::raw(folder_shortcut_label(app, digit)));
+    }
+    Text::from(vec![primary_navigation(), Line::from(shortcuts)])
+}
+
+fn folder_shortcut_label(app: &MailApp, digit: u8) -> String {
+    app.folder_shortcuts
+        .get(&digit)
+        .and_then(|id| app.folders.iter().find(|folder| folder.id == *id))
+        .map_or_else(|| "—".into(), |folder| truncate_columns(&folder.name, 8))
+}
+
+fn truncate_columns(value: &str, maximum: usize) -> String {
+    let value = safe_single_line_text(value);
+    let width = value
+        .chars()
+        .map(|character| character.width().unwrap_or(0))
+        .sum::<usize>();
+    if width <= maximum {
+        return value;
+    }
+    let mut result = String::new();
+    let mut used = 0usize;
+    for character in value.chars() {
+        let character_width = character.width().unwrap_or(0);
+        if used.saturating_add(character_width) > maximum {
+            break;
+        }
+        used = used.saturating_add(character_width);
+        result.push(character);
+    }
+    result.push('…');
+    result
 }
 
 fn draw_accounts(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
@@ -618,8 +671,23 @@ fn draw_search_results(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
         );
         return;
     }
-    let items = app
-        .search_results
+    let title = format!(
+        "Search results · {}{} · {:?}",
+        app.search_results.len(),
+        if app.search_has_more { "+" } else { "" },
+        safe_single_line_text(&app.search_query)
+    );
+    draw_message_results(frame, app, area, &app.search_results, title);
+}
+
+fn draw_message_results(
+    frame: &mut Frame<'_>,
+    app: &MailApp,
+    area: Rect,
+    messages: &[MessageSummary],
+    title: String,
+) {
+    let items = messages
         .iter()
         .map(|message| {
             let (class_label, class_color) = search_result_identity(message.inbox_class);
@@ -655,12 +723,6 @@ fn draw_search_results(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
             .style(Style::default().fg(class_color))
         })
         .collect::<Vec<_>>();
-    let title = format!(
-        "Search results · {}{} · {:?}",
-        app.search_results.len(),
-        if app.search_has_more { "+" } else { "" },
-        safe_single_line_text(&app.search_query)
-    );
     let mut state = ListState::default().with_selected(Some(app.selected));
     frame.render_stateful_widget(
         List::new(items)
@@ -673,6 +735,179 @@ fn draw_search_results(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
             .highlight_symbol("› "),
         area,
         &mut state,
+    );
+}
+
+fn draw_folders(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
+    if app.folders.is_empty() {
+        frame.render_widget(
+            Paragraph::new(
+                "No folders are available yet. Press n to create one, or synchronize an account to discover its server folders.",
+            )
+            .block(Block::default().title("Folders").borders(Borders::ALL))
+            .wrap(Wrap { trim: false }),
+            area,
+        );
+        return;
+    }
+    let items = app
+        .folders
+        .iter()
+        .map(|folder| {
+            let account = folder
+                .account_id
+                .and_then(|id| app.accounts.iter().find(|account| account.id == id))
+                .map(|account| safe_single_line_text(&account.name))
+                .unwrap_or_else(|| "Local".into());
+            let shortcut = app
+                .folder_shortcuts
+                .iter()
+                .find_map(|(digit, id)| (*id == folder.id).then_some(*digit))
+                .map_or_else(String::new, |digit| format!(" [{digit}]"));
+            let count = app
+                .folder_states
+                .get(&folder.id)
+                .and_then(|state| state.exists_count)
+                .map_or_else(String::new, |count| format!(" · {count} messages"));
+            let unavailable = app
+                .folder_states
+                .get(&folder.id)
+                .is_some_and(|state| !state.selectable || !state.remote_present);
+            let suffix = if unavailable { " · unavailable" } else { "" };
+            ListItem::new(Text::from(vec![
+                Line::from(vec![
+                    Span::styled(
+                        safe_single_line_text(&folder.name),
+                        Style::default().add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(shortcut, Style::default().fg(Color::Gray)),
+                ]),
+                Line::styled(
+                    format!("  {account}{count}{suffix}"),
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ]))
+        })
+        .collect::<Vec<_>>();
+    let title = if app.screen == Screen::FolderBind {
+        "Bind selected folder — press 5, 6, 7, 8, 9, or 0"
+    } else {
+        "Folders"
+    };
+    let mut state = ListState::default().with_selected(Some(app.selected));
+    frame.render_stateful_widget(
+        List::new(items)
+            .block(Block::default().title(title).borders(Borders::ALL))
+            .highlight_style(
+                Style::default()
+                    .bg(Color::Gray)
+                    .fg(Color::Black)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .highlight_symbol("› "),
+        area,
+        &mut state,
+    );
+}
+
+fn draw_folder_messages(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
+    let folder_name = app
+        .current_folder_id
+        .and_then(|id| app.folders.iter().find(|folder| folder.id == id))
+        .map(|folder| safe_single_line_text(&folder.name))
+        .unwrap_or_else(|| "Folder".into());
+    if app.folder_messages.is_empty() {
+        frame.render_widget(
+            Paragraph::new("This folder contains no locally known messages.")
+                .block(Block::default().title(folder_name).borders(Borders::ALL)),
+            area,
+        );
+        return;
+    }
+    let title = format!(
+        "{} · {}{} messages",
+        folder_name,
+        app.folder_messages.len(),
+        if app.folder_messages_has_more {
+            "+"
+        } else {
+            ""
+        }
+    );
+    draw_message_results(frame, app, area, &app.folder_messages, title);
+}
+
+fn draw_folder_editor(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
+    let Some(editor) = &app.folder_editor else {
+        frame.render_widget(Paragraph::new("No folder is being edited"), area);
+        return;
+    };
+    let action = match editor.mode {
+        FolderEditorMode::Create => "Create folder",
+        FolderEditorMode::Rename => "Rename folder",
+    };
+    let location = match (editor.kind, editor.account_id) {
+        (FolderKind::Local, _) => "Local folder".into(),
+        (FolderKind::Remote, Some(account_id)) => app
+            .accounts
+            .iter()
+            .find(|account| account.id == account_id)
+            .map_or_else(
+                || "Remote IMAP folder".into(),
+                |account| format!("Remote folder on {}", safe_single_line_text(&account.name)),
+            ),
+        (FolderKind::Remote, None) => "Remote IMAP folder".into(),
+    };
+    frame.render_widget(
+        Paragraph::new(Text::from(vec![
+            Line::styled(location, Style::default().fg(Color::DarkGray)),
+            Line::raw(""),
+            Line::styled(
+                safe_single_line_text(&editor.name),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+        ]))
+        .block(
+            Block::default()
+                .title(action)
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Gray)),
+        )
+        .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
+fn draw_folder_delete_confirm(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
+    let Some(editor) = &app.folder_delete_editor else {
+        frame.render_widget(Paragraph::new("No folder is selected for deletion"), area);
+        return;
+    };
+    frame.render_widget(
+        Paragraph::new(Text::from(vec![
+            Line::styled(
+                "This deletes the folder. Remote folders are also deleted from the IMAP server.",
+                Style::default().fg(DANGER).add_modifier(Modifier::BOLD),
+            ),
+            Line::raw("Messages may remain wherever another server folder still contains them."),
+            Line::raw(""),
+            Line::raw(format!(
+                "Type {} to confirm:",
+                safe_single_line_text(&editor.expected_name)
+            )),
+            Line::styled(
+                safe_single_line_text(&editor.typed_name),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+        ]))
+        .block(
+            Block::default()
+                .title("Delete folder")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(DANGER)),
+        )
+        .wrap(Wrap { trim: false }),
+        area,
     );
 }
 
@@ -2672,6 +2907,7 @@ fn draw_help(frame: &mut Frame<'_>, area: Rect) {
             "1 Warm Action · 2 Warm FYI · 3 Cold · 4 Spam · L Waiting · Z Snoozed · D Done",
         ),
         Line::raw("/ Search · C Contacts · A Accounts · ? Help · q Quit · Esc Back"),
+        Line::raw("F Folders · 5/6/7/8/9/0 Open assigned folders"),
         Line::raw(""),
         Line::styled(
             "Queues and reader",
@@ -2713,6 +2949,10 @@ fn draw_help(frame: &mut Frame<'_>, area: Rect) {
         Line::raw(
             "Editor: change name/addresses · Space cycles policy choices · Ctrl-S save",
         ),
+        Line::raw(""),
+        Line::styled("Folders", Style::default().add_modifier(Modifier::BOLD)),
+        Line::raw("Enter Open · b then 5–0 bind shortcut · n New · r Rename · d Delete"),
+        Line::raw("Esc returns from a message to its folder, then to the folder list"),
     ]);
     frame.render_widget(
         Paragraph::new(text)
@@ -2769,6 +3009,13 @@ fn draw_footer(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
         }
         Screen::SearchInput => "type query · Enter search · Esc cancel",
         Screen::SearchResults => "j/k move · Enter open exact match · / edit query · Esc back",
+        Screen::Folders => {
+            "j/k move · Enter open · b bind shortcut · n new · r rename · d delete · Esc back"
+        }
+        Screen::FolderBind => "press 5/6/7/8/9/0 to bind · Esc cancel",
+        Screen::FolderMessages => "j/k move · Enter open exact message · Esc folders",
+        Screen::FolderEdit => "type folder name · Enter save · Esc cancel",
+        Screen::FolderDeleteConfirm => "type exact folder name · Enter delete · Esc cancel",
         Screen::Onboarding => "j/k move · y accept · n reject · e edit · Enter inspect/edit",
         Screen::OnboardingEdit => {
             "type name · Ctrl-R route · Ctrl-K kind · Enter save · Esc cancel"
@@ -2840,6 +3087,10 @@ fn accent(app: &MailApp) -> Color {
             .unwrap_or(Color::Gray),
         Screen::Compose => WARM,
         Screen::SearchInput | Screen::SearchResults => Color::Gray,
+        Screen::FolderDeleteConfirm => DANGER,
+        Screen::Folders | Screen::FolderBind | Screen::FolderMessages | Screen::FolderEdit => {
+            Color::Gray
+        }
         Screen::AccountEdit => COLD,
         Screen::ContactEdit => WARM,
         Screen::AccountDeleteConfirm => DANGER,
@@ -2874,6 +3125,7 @@ fn screen_title(app: &MailApp) -> &'static str {
         Screen::Queue(WorkflowView::Done) => "DONE / HISTORY",
         Screen::Reader => match app.previous_screen {
             Screen::SearchResults => "SEARCH / MATCHED MESSAGE",
+            Screen::FolderMessages => "FOLDER / MESSAGE",
             Screen::Queue(WorkflowView::WarmAction) => "WARM / ACTION / CONVERSATION",
             Screen::Queue(WorkflowView::WarmFyi) => "WARM / FYI / CONVERSATION",
             _ => app
@@ -2890,6 +3142,11 @@ fn screen_title(app: &MailApp) -> &'static str {
         Screen::Compose => "WARM / REPLY",
         Screen::SearchInput => "SEARCH / QUERY",
         Screen::SearchResults => "SEARCH / RESULTS",
+        Screen::Folders => "FOLDERS",
+        Screen::FolderBind => "FOLDERS / BIND SHORTCUT",
+        Screen::FolderMessages => "FOLDER / MESSAGES",
+        Screen::FolderEdit => "FOLDERS / EDIT",
+        Screen::FolderDeleteConfirm => "FOLDERS / CONFIRM DELETION",
         Screen::Contacts => "CONTACTS",
         Screen::ContactEdit => "CONTACTS / EDIT RELATIONSHIP",
         Screen::Help => "HELP",
@@ -2955,7 +3212,7 @@ mod tests {
 
     #[test]
     fn navigation_places_amber_fyi_between_warm_and_cold() {
-        let navigation = header_navigation();
+        let navigation = primary_navigation();
         let text = navigation
             .spans
             .iter()
@@ -2979,6 +3236,13 @@ mod tests {
             .unwrap();
         assert_eq!(shortcut.style.fg, Some(FYI_HINT));
         assert_eq!(accent_for_workflow(WorkflowView::WarmFyi), WARM);
+    }
+
+    #[test]
+    fn folder_shortcut_labels_keep_eight_columns_then_show_an_ellipsis() {
+        assert_eq!(truncate_columns("Receipts and statements", 8), "Receipts…");
+        assert_eq!(truncate_columns("Inbox", 8), "Inbox");
+        assert_eq!(truncate_columns("界界界界界", 8), "界界界界…");
     }
 
     #[test]

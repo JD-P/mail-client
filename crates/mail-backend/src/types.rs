@@ -353,6 +353,12 @@ pub struct NewFolder {
     pub remote_name: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct FolderShortcut {
+    pub digit: u8,
+    pub folder_id: FolderId,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct RemoteMessageIdentity {
     pub account_id: AccountId,

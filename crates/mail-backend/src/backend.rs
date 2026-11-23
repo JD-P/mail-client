@@ -8,7 +8,7 @@ use crate::schema;
 use crate::search_index::{QueuedSearchDocument, SearchDocument, SearchIndex};
 use crate::{
     Account, AccountId, AccountKind, Attachment, BackendConfig, BackendError, BackendEvent,
-    Contact, ContactAddress, ContactId, ContentState, Folder, FolderId, FolderKind,
+    Contact, ContactAddress, ContactId, ContentState, Folder, FolderId, FolderKind, FolderShortcut,
     ImapFetchedHeaders, ImapFetchedMessage, ImapSettings, InboxClass, IngestMessage,
     LocalSpamAssessment, Message, MessageContentAvailability, MessageContentStatus, MessageFilter,
     MessageId, MessageInstance, MessageLink, MessageLinkSource, MessageSort, MessageSummary,
@@ -3335,6 +3335,59 @@ impl Folders {
         self.remove_local_state(id, "folder_removed").await
     }
 
+    pub async fn shortcuts(&self) -> Result<Vec<FolderShortcut>> {
+        let connection = self.0.inner.connection.lock().await;
+        let mut rows = connection
+            .query(
+                "SELECT digit, folder_id FROM folder_shortcuts ORDER BY CASE digit WHEN 5 THEN 0 WHEN 6 THEN 1 WHEN 7 THEN 2 WHEN 8 THEN 3 WHEN 9 THEN 4 ELSE 5 END",
+                (),
+            )
+            .await?;
+        let mut shortcuts = Vec::new();
+        while let Some(row) = rows.next().await? {
+            let digit = u8::try_from(row.get::<i64>(0)?).map_err(|_| {
+                BackendError::InvalidInput("database contains an invalid folder shortcut".into())
+            })?;
+            validate_folder_shortcut_digit(digit)?;
+            shortcuts.push(FolderShortcut {
+                digit,
+                folder_id: parse_id(row.get::<String>(1)?, "folder")?,
+            });
+        }
+        Ok(shortcuts)
+    }
+
+    pub async fn bind_shortcut(&self, digit: u8, folder_id: FolderId) -> Result<FolderShortcut> {
+        validate_folder_shortcut_digit(digit)?;
+        self.get(folder_id).await?;
+        let now = Utc::now().timestamp();
+        let mut connection = self.0.inner.connection.lock().await;
+        let transaction = connection.transaction().await?;
+        transaction
+            .execute(
+                "DELETE FROM folder_shortcuts WHERE digit = ?1 OR folder_id = ?2",
+                (i64::from(digit), folder_id.to_string()),
+            )
+            .await?;
+        transaction
+            .execute(
+                "INSERT INTO folder_shortcuts(digit, folder_id, created_at, updated_at) VALUES (?1, ?2, ?3, ?3)",
+                (i64::from(digit), folder_id.to_string(), now),
+            )
+            .await?;
+        let event = insert_event(
+            &transaction,
+            now,
+            "folder_shortcut_bound",
+            folder_id.to_string(),
+            json!({"folder_id": folder_id, "digit": digit}),
+        )
+        .await?;
+        transaction.commit().await?;
+        let _ = self.0.inner.events.send(event);
+        Ok(FolderShortcut { digit, folder_id })
+    }
+
     pub async fn create_remote<T>(
         &self,
         session: &mut async_imap::Session<T>,
@@ -3574,6 +3627,16 @@ impl Folders {
         self.0.flush_search_projection().await?;
         let _ = self.0.inner.events.send(event);
         Ok(())
+    }
+}
+
+fn validate_folder_shortcut_digit(digit: u8) -> Result<()> {
+    if matches!(digit, 0 | 5..=9) {
+        Ok(())
+    } else {
+        Err(BackendError::InvalidInput(
+            "folder shortcuts must use 5, 6, 7, 8, 9, or 0".into(),
+        ))
     }
 }
 

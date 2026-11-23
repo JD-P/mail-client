@@ -5,7 +5,7 @@ use crate::backend::{
 use crate::imap::imap_fetch_state;
 use crate::imap_mutation::normalize_mutable_flags;
 use crate::{
-    Account, AccountId, AccountKind, Backend, BackendError, FolderId, ImapMutation,
+    Account, AccountId, AccountKind, Backend, BackendError, Folder, FolderId, ImapMutation,
     ImapMutationConflictKind, ImapMutationOperation, ImapMutationStatus, ImapSecurity,
     MessageContentAvailability, MessageContentStatus, MessageId, OfflineDownloadProgress,
     RemoteMessageIdentity, Result,
@@ -483,6 +483,73 @@ impl ImapAccountEngine {
             }
         }
         result
+    }
+
+    pub async fn create_mailbox(
+        &self,
+        account_id: AccountId,
+        remote_name: String,
+    ) -> Result<Folder> {
+        let account = self.load_imap_account(account_id).await?;
+        let (mut session, _) = self.connect_and_authenticate(&account).await?;
+        let result = timeout(
+            self.config.command_timeout,
+            self.backend
+                .folders()
+                .create_remote(&mut session, account_id, remote_name),
+        )
+        .await;
+        let _ = timeout(self.config.command_timeout, session.logout()).await;
+        result.map_err(|_| BackendError::Imap("creating the remote mailbox timed out".into()))?
+    }
+
+    pub async fn rename_mailbox(
+        &self,
+        account_id: AccountId,
+        folder_id: FolderId,
+        new_remote_name: String,
+    ) -> Result<Folder> {
+        self.require_folder_account(account_id, folder_id).await?;
+        let account = self.load_imap_account(account_id).await?;
+        let (mut session, _) = self.connect_and_authenticate(&account).await?;
+        let result = timeout(
+            self.config.command_timeout,
+            self.backend
+                .folders()
+                .rename_remote(&mut session, folder_id, new_remote_name),
+        )
+        .await;
+        let _ = timeout(self.config.command_timeout, session.logout()).await;
+        result.map_err(|_| BackendError::Imap("renaming the remote mailbox timed out".into()))?
+    }
+
+    pub async fn delete_mailbox(&self, account_id: AccountId, folder_id: FolderId) -> Result<()> {
+        self.require_folder_account(account_id, folder_id).await?;
+        let account = self.load_imap_account(account_id).await?;
+        let (mut session, _) = self.connect_and_authenticate(&account).await?;
+        let result = timeout(
+            self.config.command_timeout,
+            self.backend
+                .folders()
+                .delete_remote(&mut session, folder_id),
+        )
+        .await;
+        let _ = timeout(self.config.command_timeout, session.logout()).await;
+        result.map_err(|_| BackendError::Imap("deleting the remote mailbox timed out".into()))?
+    }
+
+    async fn require_folder_account(
+        &self,
+        account_id: AccountId,
+        folder_id: FolderId,
+    ) -> Result<()> {
+        let folder = self.backend.folders().get(folder_id).await?;
+        if folder.account_id != Some(account_id) {
+            return Err(BackendError::InvalidInput(
+                "remote mailbox does not belong to the selected account".into(),
+            ));
+        }
+        Ok(())
     }
 
     /// Continuously synchronizes an account until cancellation, using IDLE for
