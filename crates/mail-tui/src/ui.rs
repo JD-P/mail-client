@@ -7,9 +7,10 @@ use chrono::{DateTime, Datelike, Local, Utc};
 use lizard_mail_backend::{
     AuthenticationMethodKind, AuthenticationMethodResult, AuthenticationResultsTrust,
     DkimAuthenticationStatus, DkimSignatureStatus, FindingSeverity, FindingTargetKind, FolderKind,
-    HeuristicFinding, ImapSecurity, InboxClass, Message, MessageContentAvailability, MessageLink,
-    MessageSummary, OpenPgpBindingState, OpenPgpEncryptionStatus, OpenPgpSignatureStatus,
-    RelationshipKind, RemoteContentPolicy, ThreadWorkStatus, WarmRoute, WorkflowView,
+    HeuristicFinding, ImapOrganizationSync, ImapSecurity, InboxClass, Message,
+    MessageContentAvailability, MessageLink, MessageSummary, OpenPgpBindingState,
+    OpenPgpEncryptionStatus, OpenPgpSignatureStatus, RelationshipKind, RemoteContentPolicy,
+    ThreadWorkStatus, WarmRoute, WorkflowView,
 };
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -198,6 +199,28 @@ fn draw_accounts(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
                     detail.push_str(&format!(" · {}", safe_single_line_text(error)));
                 }
                 lines.push(Line::raw(detail));
+                let (organization, style) = match state.organization_sync {
+                    ImapOrganizationSync::Unknown => (
+                        "  Organization: Checking provider support",
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                    ImapOrganizationSync::Synchronized => (
+                        "  Organization: Syncs through this mail provider",
+                        Style::default(),
+                    ),
+                    ImapOrganizationSync::Partial => (
+                        "  Organization: Some folders sync; others are this device only",
+                        Style::default(),
+                    ),
+                    ImapOrganizationSync::LocalOnly => {
+                        ("  Organization: This device only", Style::default())
+                    }
+                    ImapOrganizationSync::Error => (
+                        "  Organization: Synchronization needs attention",
+                        Style::default().fg(DANGER),
+                    ),
+                };
+                lines.push(Line::styled(organization, style));
             }
             lines.push(Line::raw(
                 if let Some(smtp) = app.smtp_accounts.get(&account.id) {
@@ -405,7 +428,21 @@ fn draw_queue(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
         Screen::Queue(workflow) => workflow,
         _ => return,
     };
-    let queue_area = draw_workflow_banner(frame, workflow, area);
+    let tiered = matches!(workflow, WorkflowView::WarmAction | WorkflowView::WarmFyi);
+    let active_count = if tiered {
+        app.threads
+            .iter()
+            .filter(|thread| thread.work_state.status != ThreadWorkStatus::Done)
+            .count()
+    } else {
+        app.threads.len()
+    };
+    let done_count = if tiered {
+        app.threads.len().saturating_sub(active_count)
+    } else {
+        0
+    };
+    let queue_area = draw_workflow_banner(frame, workflow, active_count, area);
     if app.threads.is_empty() {
         let message = match workflow {
             WorkflowView::WarmAction => "No active obligations. Warm inbox zero.",
@@ -439,11 +476,14 @@ fn draw_queue(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
                 ThreadWorkStatus::Snoozed => " [snoozed]",
                 ThreadWorkStatus::Done => " [done]",
             };
+            let done = tiered && thread.work_state.status == ThreadWorkStatus::Done;
+            let row_accent = if done { Color::DarkGray } else { accent(app) };
             let received = format_queue_timestamp(thread.latest_received_at);
             let address = thread.latest_from_address.as_deref();
-            if let Some(contact) = address.and_then(|address| app.contact_name(address)) {
+            let item = if let Some(contact) = address.and_then(|address| app.contact_name(address))
+            {
                 ListItem::new(Line::from(vec![
-                    Span::styled(format!("{unread} "), Style::default().fg(accent(app))),
+                    Span::styled(format!("{unread} "), Style::default().fg(row_accent)),
                     Span::styled(
                         format!("{received}  "),
                         Style::default().fg(Color::DarkGray),
@@ -471,7 +511,7 @@ fn draw_queue(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
                                 } else {
                                     "  ".to_owned()
                                 },
-                                Style::default().fg(accent(app)),
+                                Style::default().fg(row_accent),
                             ),
                             Span::styled(segment, Style::default().add_modifier(Modifier::BOLD)),
                         ])
@@ -497,13 +537,39 @@ fn draw_queue(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
                     Span::raw(format!("{subject}{state}")),
                 ]));
                 ListItem::new(Text::from(lines))
+            };
+            if done {
+                item.style(
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::DIM),
+                )
+            } else {
+                item
             }
         })
         .collect::<Vec<_>>();
+    let mut items = items;
+    if done_count > 0 {
+        items.insert(
+            active_count,
+            ListItem::new(Line::styled(
+                format!("──────── DONE · {done_count} ────────"),
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::BOLD),
+            )),
+        );
+    }
     let mut state = ListState::default().with_selected(Some(app.selected));
+    if done_count > 0 && app.selected >= active_count {
+        state.select(Some(app.selected.saturating_add(1)));
+    }
     let title = match workflow {
-        WorkflowView::WarmAction => format!("ACTION · {} conversations", app.threads.len()),
-        WorkflowView::WarmFyi => format!("FYI · {} conversations", app.threads.len()),
+        WorkflowView::WarmAction => {
+            format!("ACTION · {active_count} active · {done_count} done")
+        }
+        WorkflowView::WarmFyi => format!("FYI · {active_count} active · {done_count} done"),
         _ => format!("{} conversations", app.threads.len()),
     };
     frame.render_stateful_widget(
@@ -521,11 +587,20 @@ fn draw_queue(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
     );
 }
 
-fn draw_workflow_banner(frame: &mut Frame<'_>, workflow: WorkflowView, area: Rect) -> Rect {
+fn draw_workflow_banner(
+    frame: &mut Frame<'_>,
+    workflow: WorkflowView,
+    active_count: usize,
+    area: Rect,
+) -> Rect {
     let (label, explanation, label_style) = match workflow {
         WorkflowView::WarmAction => (
             "ACTION",
-            "People you know may be asking something of you · reply, schedule, snooze, or mark done",
+            if active_count == 0 {
+                "No active obligations · completed conversations remain below"
+            } else {
+                "People you know may be asking something of you · reply, schedule, snooze, or mark done"
+            },
             Style::default()
                 .bg(WARM)
                 .fg(Color::Black)
@@ -533,10 +608,12 @@ fn draw_workflow_banner(frame: &mut Frame<'_>, workflow: WorkflowView, area: Rec
         ),
         WorkflowView::WarmFyi => (
             "FYI",
-            "Informational mail from people you know · no response is expected",
-            Style::default()
-                .fg(FYI_HINT)
-                .add_modifier(Modifier::BOLD),
+            if active_count == 0 {
+                "No unfinished FYI mail · completed conversations remain below"
+            } else {
+                "Informational mail from people you know · no response is expected"
+            },
+            Style::default().fg(FYI_HINT).add_modifier(Modifier::BOLD),
         ),
         _ => return area,
     };
@@ -2923,7 +3000,7 @@ fn draw_help(frame: &mut Frame<'_>, area: Rect) {
             "a Make Cold conversation actionable once · O Read through security warning with restrictions",
         ),
         Line::raw(
-            "> Action → FYI · < FYI → Action · M Preview this-and-similar → FYI",
+            "> Action → FYI · < FYI → Action · M Preview this-and-similar → FYI · u Reopen Done",
         ),
         Line::raw(""),
         Line::styled(
@@ -2983,10 +3060,10 @@ fn draw_footer(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
             "j/k move · Enter inspect safely · d done · / search · ? help"
         }
         Screen::Queue(WorkflowView::WarmAction) => {
-            "j/k move · > move to FYI · M similar→FYI · d done · s snooze · / search"
+            "j/k move · > move to FYI · M similar→FYI · d done · u reopen · s snooze · / search"
         }
         Screen::Queue(WorkflowView::WarmFyi) => {
-            "j/k move · < move to Action · M similar→FYI · d done · s snooze · / search"
+            "j/k move · < move to Action · M similar→FYI · d done · u reopen · s snooze · / search"
         }
         Screen::Queue(_) => "j/k move · Enter inspect · d done · w waiting · s snooze · / search",
         Screen::Reader if app.reader_is_blocked() => {

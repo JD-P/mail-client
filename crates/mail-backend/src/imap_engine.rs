@@ -166,6 +166,20 @@ pub enum ImapMailboxCompleteness {
     Complete,
 }
 
+/// Whether Lizard organization metadata can follow this account through
+/// permanent private IMAP keywords. Unsupported is a stable provider
+/// capability, not an operational error.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImapOrganizationSync {
+    #[default]
+    Unknown,
+    Synchronized,
+    Partial,
+    LocalOnly,
+    Error,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ImapAccountSyncState {
     pub account_id: AccountId,
@@ -176,6 +190,8 @@ pub struct ImapAccountSyncState {
     pub next_retry_at: Option<i64>,
     pub failure_count: u32,
     pub last_error: Option<String>,
+    #[serde(default)]
+    pub organization_sync: ImapOrganizationSync,
     /// Durable progress for the current or most recent full-copy hydration.
     #[serde(default)]
     pub hydration_completed_messages: u64,
@@ -189,6 +205,10 @@ pub struct ImapMailboxSyncState {
     pub remote_name: String,
     pub delimiter: Option<String>,
     pub attributes: Vec<String>,
+    #[serde(default)]
+    pub permanent_flags: Vec<String>,
+    #[serde(default)]
+    pub custom_keywords_supported: Option<bool>,
     pub selectable: bool,
     pub remote_present: bool,
     pub uid_validity: Option<u32>,
@@ -306,6 +326,7 @@ impl ImapAccountEngine {
 
     pub async fn state(&self, account_id: AccountId) -> Result<ImapAccountSyncState> {
         let connection = self.backend.inner.connection.lock().await;
+        let organization_sync = organization_sync_on(&connection, account_id).await?;
         let mut rows = connection
             .query(
                 "SELECT capabilities_json, status, last_attempt_at, last_success_at, next_retry_at, failure_count, last_error, hydration_completed_messages, hydration_total_messages FROM imap_account_state WHERE account_id = ?1",
@@ -322,6 +343,7 @@ impl ImapAccountEngine {
                 next_retry_at: None,
                 failure_count: 0,
                 last_error: None,
+                organization_sync,
                 hydration_completed_messages: 0,
                 hydration_total_messages: 0,
             });
@@ -337,6 +359,7 @@ impl ImapAccountEngine {
                 BackendError::InvalidInput("database contains invalid IMAP failure count".into())
             })?,
             last_error: row.get(6)?,
+            organization_sync,
             hydration_completed_messages: u64::try_from(row.get::<i64>(7)?).map_err(|_| {
                 BackendError::InvalidInput("database contains invalid hydration progress".into())
             })?,
@@ -415,7 +438,7 @@ impl ImapAccountEngine {
         let connection = self.backend.inner.connection.lock().await;
         let mut rows = connection
             .query(
-                "SELECT f.id, f.remote_name, s.delimiter, s.attributes_json, s.selectable, s.remote_present, f.uid_validity, f.uid_next, s.highest_modseq, s.exists_count, s.completeness, s.last_attempt_at, s.last_success_at, s.last_error FROM folders f JOIN imap_mailbox_state s ON s.folder_id = f.id WHERE f.account_id = ?1 ORDER BY f.remote_name, f.id",
+                "SELECT f.id, f.remote_name, s.delimiter, s.attributes_json, s.permanent_flags_json, s.custom_keywords_supported, s.selectable, s.remote_present, f.uid_validity, f.uid_next, s.highest_modseq, s.exists_count, s.completeness, s.last_attempt_at, s.last_success_at, s.last_error FROM folders f JOIN imap_mailbox_state s ON s.folder_id = f.id WHERE f.account_id = ?1 ORDER BY f.remote_name, f.id",
                 (account_id.to_string(),),
             )
             .await?;
@@ -428,19 +451,21 @@ impl ImapAccountEngine {
                 })?,
                 delimiter: row.get(2)?,
                 attributes: serde_json::from_str(&row.get::<String>(3)?)?,
-                selectable: row.get(4)?,
-                remote_present: row.get(5)?,
-                uid_validity: database_u32(row.get(6)?, "folders.uid_validity")?,
-                uid_next: database_u32(row.get(7)?, "folders.uid_next")?,
+                permanent_flags: serde_json::from_str(&row.get::<String>(4)?)?,
+                custom_keywords_supported: row.get(5)?,
+                selectable: row.get(6)?,
+                remote_present: row.get(7)?,
+                uid_validity: database_u32(row.get(8)?, "folders.uid_validity")?,
+                uid_next: database_u32(row.get(9)?, "folders.uid_next")?,
                 highest_mod_sequence: database_u64(
-                    row.get(8)?,
+                    row.get(10)?,
                     "imap_mailbox_state.highest_modseq",
                 )?,
-                exists_count: database_u32(row.get(9)?, "imap_mailbox_state.exists_count")?,
-                completeness: parse_completeness(&row.get::<String>(10)?)?,
-                last_attempt_at: row.get(11)?,
-                last_success_at: row.get(12)?,
-                last_error: row.get(13)?,
+                exists_count: database_u32(row.get(11)?, "imap_mailbox_state.exists_count")?,
+                completeness: parse_completeness(&row.get::<String>(12)?)?,
+                last_attempt_at: row.get(13)?,
+                last_success_at: row.get(14)?,
+                last_error: row.get(15)?,
             });
         }
         Ok(states)
@@ -652,7 +677,13 @@ impl ImapAccountEngine {
             )
             .await
             .is_ok();
-        let mutations = self
+        crate::portable_state::materialize_projections(
+            &self.backend,
+            account_id,
+            self.config.mutation_batch_size,
+        )
+        .await?;
+        let mut mutations = self
             .process_mutations(&mut session, account_id, &capabilities)
             .await?;
         let mut folders = Vec::new();
@@ -686,6 +717,21 @@ impl ImapAccountEngine {
                 }
             }
         }
+        // Mailbox selection reveals PERMANENTFLAGS. Import existing private
+        // keywords first, then publish local changes through the same durable,
+        // conflict-aware mutation outbox used by ordinary flag changes.
+        crate::portable_state::materialize_projections(
+            &self.backend,
+            account_id,
+            self.config.mutation_batch_size,
+        )
+        .await?;
+        let projected = self
+            .process_mutations(&mut session, account_id, &capabilities)
+            .await?;
+        mutations.attempted += projected.attempted;
+        mutations.applied += projected.applied;
+        mutations.conflicts += projected.conflicts;
         let mut offline_downloaded_messages = 0usize;
         let mut offline_download_failures = 0usize;
         if self.config.offline_download_batch_size > 0 {
@@ -1814,6 +1860,17 @@ impl ImapAccountEngine {
                 mailbox.remote_name
             ))
         })?;
+        let permanent_flags = selected
+            .permanent_flags
+            .iter()
+            .cloned()
+            .map(crate::imap::flag_text)
+            .collect::<Vec<_>>();
+        let custom_keywords_supported = Some(
+            permanent_flags
+                .iter()
+                .any(|flag| flag.eq_ignore_ascii_case("\\*")),
+        );
         let same_epoch = target.uid_validity == Some(uid_validity);
         let mut removed_instances = 0;
         if !same_epoch && !known.is_empty() {
@@ -1894,13 +1951,19 @@ impl ImapAccountEngine {
             .sync()
             .pull_imap_folder(session, account_id, mailbox.folder_id)
             .await?;
-        self.store_mailbox_success(
-            mailbox.folder_id,
-            selected.highest_modseq,
-            selected.exists,
-            attempt_at,
-        )
-        .await?;
+        let keyword_capability_changed = self
+            .store_mailbox_success(
+                mailbox.folder_id,
+                selected.highest_modseq,
+                selected.exists,
+                &permanent_flags,
+                custom_keywords_supported,
+                attempt_at,
+            )
+            .await?;
+        if keyword_capability_changed {
+            crate::portable_state::reconcile_folder(&self.backend, mailbox.folder_id).await?;
+        }
         Ok(ImapFolderSyncReport {
             folder_id: mailbox.folder_id,
             fetched_messages: pulled.message_ids.len(),
@@ -2185,21 +2248,38 @@ impl ImapAccountEngine {
         folder_id: FolderId,
         highest_mod_sequence: Option<u64>,
         exists: u32,
+        permanent_flags: &[String],
+        custom_keywords_supported: Option<bool>,
         now: i64,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let connection = self.backend.inner.connection.lock().await;
+        let mut rows = connection
+            .query(
+                "SELECT custom_keywords_supported FROM imap_mailbox_state WHERE folder_id = ?1",
+                (folder_id.to_string(),),
+            )
+            .await?;
+        let previous = rows
+            .next()
+            .await?
+            .map(|row| row.get::<Option<bool>>(0))
+            .transpose()?
+            .flatten();
+        drop(rows);
         connection
             .execute(
-                "UPDATE imap_mailbox_state SET highest_modseq = ?1, exists_count = ?2, sync_status = 'idle', completeness = 'complete', last_success_at = ?3, last_error = NULL WHERE folder_id = ?4",
+                "UPDATE imap_mailbox_state SET highest_modseq = ?1, exists_count = ?2, permanent_flags_json = ?3, custom_keywords_supported = ?4, sync_status = 'idle', completeness = 'complete', last_success_at = ?5, last_error = NULL WHERE folder_id = ?6",
                 turso::params![
                     highest_mod_sequence.map(|value| value as i64),
                     i64::from(exists),
+                    serde_json::to_string(permanent_flags)?,
+                    custom_keywords_supported,
                     now,
                     folder_id.to_string(),
                 ],
             )
             .await?;
-        Ok(())
+        Ok(custom_keywords_supported.is_some() && previous != custom_keywords_supported)
     }
 
     async fn store_mailbox_failure(&self, folder_id: FolderId, error: &str) -> Result<()> {
@@ -2281,6 +2361,7 @@ impl ImapAccountEngine {
         connection: &turso::Connection,
         account_id: AccountId,
     ) -> Result<ImapAccountSyncState> {
+        let organization_sync = organization_sync_on(connection, account_id).await?;
         let mut rows = connection
             .query(
                 "SELECT capabilities_json, status, last_attempt_at, last_success_at, next_retry_at, failure_count, last_error, hydration_completed_messages, hydration_total_messages FROM imap_account_state WHERE account_id = ?1",
@@ -2297,6 +2378,7 @@ impl ImapAccountEngine {
                 next_retry_at: None,
                 failure_count: 0,
                 last_error: None,
+                organization_sync,
                 hydration_completed_messages: 0,
                 hydration_total_messages: 0,
             });
@@ -2312,6 +2394,7 @@ impl ImapAccountEngine {
                 BackendError::InvalidInput("database contains invalid IMAP failure count".into())
             })?,
             last_error: row.get(6)?,
+            organization_sync,
             hydration_completed_messages: u64::try_from(row.get::<i64>(7)?).map_err(|_| {
                 BackendError::InvalidInput("database contains invalid hydration progress".into())
             })?,
@@ -2451,6 +2534,55 @@ fn same_flags(left: &[String], right: &[String]) -> bool {
         values
     };
     normalize(left) == normalize(right)
+}
+
+async fn organization_sync_on(
+    connection: &turso::Connection,
+    account_id: AccountId,
+) -> Result<ImapOrganizationSync> {
+    let mut rows = connection
+        .query(
+            r#"SELECT
+                COALESCE(SUM(CASE WHEN s.custom_keywords_supported = 1 THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN s.custom_keywords_supported = 0 THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN s.custom_keywords_supported IS NULL THEN 1 ELSE 0 END), 0),
+                EXISTS(
+                    SELECT 1
+                    FROM portable_keyword_projection p
+                    JOIN folders pf ON pf.id = p.folder_id
+                    JOIN imap_mutations pm ON pm.id = p.mutation_id
+                    WHERE pf.account_id = ?1 AND pm.status = 'conflict'
+                ) OR EXISTS(
+                    SELECT 1 FROM imap_mutations pm
+                    WHERE pm.account_id = ?1 AND pm.status = 'conflict'
+                      AND pm.operation_json LIKE '%$LizardV1%'
+                )
+            FROM folders f
+            JOIN imap_mailbox_state s ON s.folder_id = f.id
+            WHERE f.account_id = ?1 AND s.selectable = 1 AND s.remote_present = 1"#,
+            (account_id.to_string(),),
+        )
+        .await?;
+    let row = rows.next().await?.ok_or_else(|| {
+        BackendError::InvalidInput("database did not return IMAP keyword capability state".into())
+    })?;
+    let supported = row.get::<i64>(0)?;
+    let unsupported = row.get::<i64>(1)?;
+    let unknown = row.get::<i64>(2)?;
+    let has_error = row.get::<bool>(3)?;
+    Ok(if has_error {
+        ImapOrganizationSync::Error
+    } else if unknown > 0 {
+        ImapOrganizationSync::Unknown
+    } else if supported > 0 && unsupported > 0 {
+        ImapOrganizationSync::Partial
+    } else if supported > 0 {
+        ImapOrganizationSync::Synchronized
+    } else if unsupported > 0 {
+        ImapOrganizationSync::LocalOnly
+    } else {
+        ImapOrganizationSync::Unknown
+    })
 }
 
 fn format_flag_list(flags: &[String]) -> String {

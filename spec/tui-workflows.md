@@ -33,8 +33,8 @@ outgoing mail, folders, rules, settings, and contextual help.
 
 | Screen | Functions | What it implies the user wants |
 |---|---|---|
-| **Warm — Action** | Shows active conversations from relationships permitted to create obligations, plus Cold conversations explicitly made actionable once. Supports Done, Reply, Calendar, Waiting, Snooze, Delete, Move, Mute, chronological view, sender grouping, and priority view. | “Show me what I currently owe people and help me resolve it efficiently.” |
-| **Warm — FYI** | Shows known-sender mail that does not enter the obligation queue: newsletters, receipts, notifications, social mail, marketing, and contacts whose messages are not presumed actionable. Supports rapid dismissal, deletion, promotion to Action, and similar-mail rule creation. | “I recognize these senders, but their mail should not become work unless I say so.” |
+| **Warm — Action** | Shows active conversations from relationships permitted to create obligations, plus Cold conversations explicitly made actionable once. Completed conversations remain below a visible Done divider instead of disappearing; active and completed tiers are each newest-first. Supports Done, Reply, Calendar, Waiting, Snooze, Delete, Move, Mute, chronological view, sender grouping, and priority view. | “Show me what I currently owe people and help me resolve it efficiently.” |
+| **Warm — FYI** | Shows known-sender mail that does not enter the obligation queue: newsletters, receipts, notifications, social mail, marketing, and contacts whose messages are not presumed actionable. Completed conversations remain below a visible Done divider using the same two-tier ordering as Action. Supports rapid dismissal, deletion, promotion to Action, and similar-mail rule creation. | “I recognize these senders, but their mail should not become work unless I say so.” |
 | **Cold — Review** | Shows unknown senders with the address first and “claims to be NAME.” Remote content begins blocked. Primary actions are Dismiss, Malicious, Add Contact, Make Actionable Once, Delete, and Create Rule. | “Help me determine who this is and whether I want any relationship with them.” |
 | **Spam — Quarantine** | Shows probable spam in an inert preview. Supports Rescue, Delete Now, Explain Classification, and Empty Spam. Displays automatic deletion dates. | “Assume this is garbage, but let me recover mistakes before retention deletes them.” |
 | **Waiting** | Shows conversations where the user has explicitly acted and is waiting for somebody else. A new relevant reply returns the conversation to Warm — Action. | “Keep track of delegated or blocked work without leaving it in my immediate queue.” |
@@ -42,6 +42,9 @@ outgoing mail, folders, rules, settings, and contextual help.
 | **Done** | Shows recently completed conversations with their resolution history. Supports Reopen and Undo. | “Let me verify what I completed and recover from accidental resolution.” |
 
 Warm — Action has a meaningful inbox-zero state: no active obligations remain.
+Inbox zero does not make the screen empty; completed history remains available
+below the Done divider. Marking a conversation Done in the reader advances to
+the next active conversation and returns to the queue after the last active item.
 Cold does not shame the user for accumulating unknown mail; it emphasizes review
 sessions and decisions made. Spam has no inbox-zero objective; retention handles
 it.
@@ -79,7 +82,7 @@ These are short transitions rather than permanent navigation destinations.
 | **Delete** | Moves mail to Trash and removes it from the active workflow without claiming the obligation was completed. |
 | **Make Actionable Once** | Moves one Cold conversation into Warm — Action without creating a contact or granting the sender future obligation permission. The permission is scoped to the conversation, stored only in the local profile, and never accepted from IMAP/JMAP keywords or remote folders. |
 | **Move to Action / Move to FYI** | Corrects the route of one known-sender conversation in either direction. This explicit correction outranks relationship defaults and learned routing rules. Unknown-sender mail cannot be placed in FYI without first establishing a contact; it may instead use Make Actionable Once. |
-| **Reopen** | Returns a Done conversation to Warm — Action. |
+| **Reopen** | Returns a Done conversation to the active tier of its Action or FYI route. |
 
 Explicit compound commands such as Reply and Done or Create Event and Done may
 exist for speed, but must remain deliberate user actions.

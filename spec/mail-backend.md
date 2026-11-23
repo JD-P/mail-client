@@ -228,7 +228,7 @@ version.
 
 ### Cross-client workflow metadata
 
-Lizard should use ordinary IMAP state for the user-authored organization that
+Lizard uses ordinary IMAP state for the user-authored organization that
 people reasonably expect to follow an account between computers. Subject to
 server capability and size limits, the IMAP adapter will map the following to a
 versioned private keyword namespace:
@@ -240,16 +240,37 @@ versioned private keyword namespace:
 - priority; and
 - an explicit Action/FYI override for a known-sender conversation.
 
+Implemented workflow keywords use the reserved `$LizardV1` namespace:
+`$LizardV1Done`, `$LizardV1Waiting`, `$LizardV1Snooze<unix-time>`,
+`$LizardV1MessageSnooze<unix-time>`, `$LizardV1Mute`,
+`$LizardV1PriorityLow`, `$LizardV1PriorityHigh`, `$LizardV1RouteAction`, and
+`$LizardV1RouteFyi`. Lizard preserves unrelated flags and keywords exactly.
+The durable projection uses the same mutation outbox, conditional STORE and
+conflict evidence as other server-side flag changes.
+
+On first synchronization, Lizard imports existing private keywords only after
+the selected mailbox has advertised `PERMANENTFLAGS` containing `\*`; it never
+publishes local defaults before that import. Conversation completion is encoded
+on every eligible inbound message. Done and Waiting therefore require complete
+coverage; a new untagged inbound message safely reactivates the conversation.
+Contradictory single-valued remote states are left unchanged for explicit
+resolution rather than selected arbitrarily. A cancelled projection accepts
+and reimports the observed remote state.
+
 The encoding must be reversible, bounded and legal as an IMAP keyword. User tag
 names require an ASCII-safe encoding rather than assuming arbitrary Unicode is
 legal in a flag. Single-valued fields such as work state and priority must reject
 or surface contradictory remote values instead of silently selecting one. A
-conversation-level value is projected to its eligible remote message instances;
-the eventual implementation must specify multi-mailbox and multi-account
-conflict resolution before enabling writes. Servers that do not advertise
-permanent arbitrary keywords retain this state locally and expose the loss of
-cross-client synchronization as an account capability, not as a silent partial
-success.
+conversation-level value is projected to every eligible remote message instance.
+Equivalent copies are merged by message identity, unrelated provider flags are
+preserved, and contradictory private values remain inert instead of winning by
+mailbox order. Each mailbox advertises its capability independently, so an
+account may have a supported/local-only mixed state. Servers that do not advertise
+permanent arbitrary keywords retain this state locally. Capability reporting is
+neutral and non-modal: account details say `Organization: This device only`;
+the client does not repeatedly notify the user about a provider limitation they
+cannot repair. Mixed accounts report partial synchronization, while actual
+mutation conflicts remain visible errors.
 
 Remote workflow metadata is user organization, never security evidence. No
 keyword may create a contact, establish sender identity, change Warm/Cold/Spam
@@ -1174,8 +1195,9 @@ a fail-closed conservative bound until a delayed exact census completes.
 7. Change-stream API and official CLI/GUI integration.
 8. Broader SMTP interoperability and provider-native send adapters (drafts,
    SMTP submission and IMAP mutations are implemented).
-9. Portable user tags and workflow metadata over versioned IMAP keywords,
-   with explicit capability reporting and conflict behavior.
+9. Portable user tags over the implemented versioned IMAP workflow-keyword
+   transport. Workflow metadata, capability reporting, conflict behavior and
+   quiet local-only fallback are implemented; general user-tag CRUD remains.
 10. POP3 and import/export adapters.
 11. A capability-driven JMAP adapter reusing the existing backend model,
     including portable workflow keywords. This is explicitly deferred; IMAP

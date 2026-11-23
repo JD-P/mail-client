@@ -11,7 +11,7 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 version INTEGER NOT NULL
             );
             INSERT INTO schema_meta(version)
-                SELECT 26 WHERE NOT EXISTS (SELECT 1 FROM schema_meta);
+                SELECT 27 WHERE NOT EXISTS (SELECT 1 FROM schema_meta);
 
             CREATE TABLE IF NOT EXISTS accounts (
                 id TEXT PRIMARY KEY,
@@ -529,6 +529,8 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 folder_id TEXT PRIMARY KEY REFERENCES folders(id) ON DELETE CASCADE,
                 delimiter TEXT,
                 attributes_json TEXT NOT NULL DEFAULT '[]',
+                permanent_flags_json TEXT NOT NULL DEFAULT '[]',
+                custom_keywords_supported INTEGER,
                 selectable INTEGER NOT NULL DEFAULT 1,
                 remote_present INTEGER NOT NULL DEFAULT 1,
                 highest_modseq INTEGER,
@@ -567,6 +569,17 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 detail TEXT NOT NULL,
                 created_at INTEGER NOT NULL,
                 resolved_at INTEGER
+            );
+
+            CREATE TABLE IF NOT EXISTS portable_keyword_projection (
+                message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+                folder_id TEXT NOT NULL REFERENCES folders(id) ON DELETE CASCADE,
+                uid_validity INTEGER NOT NULL,
+                imap_uid INTEGER NOT NULL,
+                desired_keywords_json TEXT NOT NULL,
+                mutation_id TEXT REFERENCES imap_mutations(id) ON DELETE SET NULL,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY(folder_id, uid_validity, imap_uid)
             );
 
             CREATE TABLE IF NOT EXISTS smtp_accounts (
@@ -787,6 +800,16 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
                 ON imap_mutations(account_id, status, created_at, id);
             CREATE INDEX IF NOT EXISTS imap_mutation_conflicts_active
                 ON imap_mutation_conflicts(mutation_id, resolved_at, created_at);
+            CREATE INDEX IF NOT EXISTS portable_keyword_projection_folder
+                ON portable_keyword_projection(folder_id, updated_at, message_id);
+            CREATE TRIGGER IF NOT EXISTS portable_keyword_projection_instance_delete
+            AFTER DELETE ON message_instances
+            BEGIN
+                DELETE FROM portable_keyword_projection
+                WHERE folder_id = OLD.folder_id
+                  AND uid_validity = OLD.uid_validity
+                  AND imap_uid = OLD.imap_uid;
+            END;
             CREATE INDEX IF NOT EXISTS submissions_due
                 ON submissions(status, next_attempt_at, created_at, id);
             CREATE INDEX IF NOT EXISTS calendar_collections_account
@@ -1566,7 +1589,51 @@ pub(crate) async fn migrate(connection: &turso::Connection) -> Result<()> {
             .await?;
         version = 26;
     }
-    if version != 26 {
+    if version == 26 {
+        let mut rows = connection
+            .query("PRAGMA table_info(imap_mailbox_state)", ())
+            .await?;
+        let mut mailbox_columns = HashSet::new();
+        while let Some(row) = rows.next().await? {
+            mailbox_columns.insert(row.get::<String>(1)?);
+        }
+        drop(rows);
+        if !mailbox_columns.contains("permanent_flags_json") {
+            connection
+                .execute(
+                    "ALTER TABLE imap_mailbox_state ADD COLUMN permanent_flags_json TEXT NOT NULL DEFAULT '[]'",
+                    (),
+                )
+                .await?;
+        }
+        if !mailbox_columns.contains("custom_keywords_supported") {
+            connection
+                .execute(
+                    "ALTER TABLE imap_mailbox_state ADD COLUMN custom_keywords_supported INTEGER",
+                    (),
+                )
+                .await?;
+        }
+        connection
+            .execute_batch(
+                r#"
+                CREATE TABLE IF NOT EXISTS portable_keyword_projection (
+                    message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+                    folder_id TEXT NOT NULL REFERENCES folders(id) ON DELETE CASCADE,
+                    uid_validity INTEGER NOT NULL,
+                    imap_uid INTEGER NOT NULL,
+                    desired_keywords_json TEXT NOT NULL,
+                    mutation_id TEXT REFERENCES imap_mutations(id) ON DELETE SET NULL,
+                    updated_at INTEGER NOT NULL,
+                    PRIMARY KEY(folder_id, uid_validity, imap_uid)
+                );
+                UPDATE schema_meta SET version = 27;
+                "#,
+            )
+            .await?;
+        version = 27;
+    }
+    if version != 27 {
         return Err(crate::BackendError::InvalidInput(format!(
             "unsupported database schema version {version}"
         )));
@@ -1919,7 +1986,7 @@ mod tests {
             .await
             .unwrap();
         let row = rows.next().await.unwrap().unwrap();
-        assert_eq!(row.get::<i64>(0).unwrap(), 26);
+        assert_eq!(row.get::<i64>(0).unwrap(), 27);
         assert_eq!(row.get::<String>(1).unwrap(), r#"{"received_at":123}"#);
         drop(rows);
 
@@ -1962,7 +2029,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap(),
-            26
+            27
         );
         drop(rows);
 
@@ -2099,7 +2166,7 @@ mod tests {
             .await
             .unwrap();
         let row = rows.next().await.unwrap().unwrap();
-        assert_eq!(row.get::<i64>(0).unwrap(), 26);
+        assert_eq!(row.get::<i64>(0).unwrap(), 27);
         assert_eq!(row.get::<String>(1).unwrap(), "CaseSensitive@example.test");
         assert!(row.get::<bool>(2).unwrap());
         assert!(row.get::<bool>(3).unwrap());
@@ -2148,7 +2215,7 @@ mod tests {
             .await
             .unwrap();
         let row = rows.next().await.unwrap().unwrap();
-        assert_eq!(row.get::<i64>(0).unwrap(), 26);
+        assert_eq!(row.get::<i64>(0).unwrap(), 27);
         assert_eq!(row.get::<String>(1).unwrap(), "action");
         assert_eq!(row.get::<String>(2).unwrap(), "manual");
         assert_eq!(row.get::<Option<String>>(3).unwrap(), None);
@@ -2204,7 +2271,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap(),
-            26
+            27
         );
         drop(rows);
         let mut rows = connection
@@ -2266,8 +2333,66 @@ mod tests {
             .await
             .unwrap();
         let row = rows.next().await.unwrap().unwrap();
-        assert_eq!(row.get::<i64>(0).unwrap(), 26);
+        assert_eq!(row.get::<i64>(0).unwrap(), 27);
         assert_eq!(row.get::<String>(1).unwrap(), "folder-one");
+    }
+
+    #[tokio::test]
+    async fn version_twenty_six_adds_portable_keyword_state() {
+        let profile = tempfile::tempdir().unwrap();
+        let path = profile.path().join("mail.db");
+        let database = turso::Builder::new_local(path.to_str().unwrap())
+            .experimental_index_method(true)
+            .build()
+            .await
+            .unwrap();
+        let connection = database.connect().unwrap();
+        connection
+            .execute_batch(
+                r#"
+                CREATE TABLE schema_meta (version INTEGER NOT NULL);
+                INSERT INTO schema_meta VALUES (26);
+                CREATE TABLE imap_mailbox_state (
+                    folder_id TEXT PRIMARY KEY,
+                    delimiter TEXT,
+                    attributes_json TEXT NOT NULL DEFAULT '[]',
+                    selectable INTEGER NOT NULL DEFAULT 1,
+                    remote_present INTEGER NOT NULL DEFAULT 1,
+                    highest_modseq INTEGER,
+                    exists_count INTEGER,
+                    sync_status TEXT NOT NULL DEFAULT 'not_started',
+                    completeness TEXT NOT NULL DEFAULT 'not_started',
+                    last_attempt_at INTEGER,
+                    last_success_at INTEGER,
+                    last_error TEXT
+                );
+                "#,
+            )
+            .await
+            .unwrap();
+
+        migrate(&connection).await.unwrap();
+        let mut rows = connection
+            .query("PRAGMA table_info(imap_mailbox_state)", ())
+            .await
+            .unwrap();
+        let mut columns = HashSet::new();
+        while let Some(row) = rows.next().await.unwrap() {
+            columns.insert(row.get::<String>(1).unwrap());
+        }
+        assert!(columns.contains("permanent_flags_json"));
+        assert!(columns.contains("custom_keywords_supported"));
+        drop(rows);
+        let mut rows = connection
+            .query(
+                "SELECT schema_meta.version, count(*) FROM schema_meta, sqlite_schema WHERE sqlite_schema.type = 'table' AND sqlite_schema.name = 'portable_keyword_projection'",
+                (),
+            )
+            .await
+            .unwrap();
+        let row = rows.next().await.unwrap().unwrap();
+        assert_eq!(row.get::<i64>(0).unwrap(), 27);
+        assert_eq!(row.get::<i64>(1).unwrap(), 1);
     }
 
     #[tokio::test]
@@ -2360,7 +2485,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap(),
-            26
+            27
         );
     }
 }

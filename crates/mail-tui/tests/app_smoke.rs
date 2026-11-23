@@ -675,7 +675,9 @@ async fn done_and_manual_routing_advance_without_leaving_the_source_inbox() {
 
     app.dispatch(AppCommand::MoveToFyi).await.unwrap();
     assert_eq!(app.screen, Screen::Queue(WorkflowView::WarmAction));
-    assert!(app.threads.is_empty());
+    assert_eq!(app.threads.len(), 1);
+    assert_eq!(app.threads[0].id, original[0]);
+    assert_eq!(app.threads[0].work_state.status, ThreadWorkStatus::Done);
 
     app.dispatch(AppCommand::WarmFyi).await.unwrap();
     assert_eq!(app.threads.len(), 2);
@@ -694,6 +696,27 @@ async fn done_and_manual_routing_advance_without_leaving_the_source_inbox() {
     app.dispatch(AppCommand::MoveToAction).await.unwrap();
     assert_eq!(app.screen, Screen::Queue(WorkflowView::WarmFyi));
     assert_eq!(app.threads.len(), 1);
+
+    app.dispatch(AppCommand::WarmAction).await.unwrap();
+    app.selected = app
+        .threads
+        .iter()
+        .position(|thread| thread.id == original[0])
+        .unwrap();
+    assert_eq!(
+        app.threads[app.selected].work_state.status,
+        ThreadWorkStatus::Done
+    );
+    app.dispatch(AppCommand::Reopen).await.unwrap();
+    assert_eq!(
+        backend
+            .threads()
+            .work_state(original[0])
+            .await
+            .unwrap()
+            .status,
+        ThreadWorkStatus::Active
+    );
 }
 
 #[tokio::test]

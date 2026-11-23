@@ -143,6 +143,23 @@ impl ImapMutations {
         self.queue(
             message_id,
             source_folder_id,
+            None,
+            QueueRequest::Exact(ImapMutationOperation::SetFlags { flags }),
+        )
+        .await
+    }
+
+    pub(crate) async fn set_flags_exact(
+        &self,
+        message_id: MessageId,
+        source: RemoteMessageIdentity,
+        flags: Vec<String>,
+    ) -> Result<ImapMutation> {
+        let flags = normalize_mutable_flags(flags)?;
+        self.queue(
+            message_id,
+            source.folder_id,
+            Some(source),
             QueueRequest::Exact(ImapMutationOperation::SetFlags { flags }),
         )
         .await
@@ -157,6 +174,7 @@ impl ImapMutations {
         self.queue(
             message_id,
             source_folder_id,
+            None,
             QueueRequest::PatchSystemFlag {
                 flag: "\\Seen",
                 present: read,
@@ -174,6 +192,7 @@ impl ImapMutations {
         self.queue(
             message_id,
             source_folder_id,
+            None,
             QueueRequest::PatchSystemFlag {
                 flag: "\\Flagged",
                 present: starred,
@@ -191,6 +210,7 @@ impl ImapMutations {
         self.queue(
             message_id,
             source_folder_id,
+            None,
             QueueRequest::Exact(ImapMutationOperation::Copy {
                 destination_folder_id,
             }),
@@ -207,6 +227,7 @@ impl ImapMutations {
         self.queue(
             message_id,
             source_folder_id,
+            None,
             QueueRequest::Exact(ImapMutationOperation::Move {
                 destination_folder_id,
             }),
@@ -236,6 +257,7 @@ impl ImapMutations {
         self.queue(
             message_id,
             source_folder_id,
+            None,
             QueueRequest::Exact(ImapMutationOperation::Delete),
         )
         .await
@@ -389,13 +411,18 @@ impl ImapMutations {
         &self,
         message_id: MessageId,
         source_folder_id: FolderId,
+        exact_source: Option<RemoteMessageIdentity>,
         request: QueueRequest,
     ) -> Result<ImapMutation> {
         let _search_guard = self.0.inner.search_sync.write().await;
         let now = Utc::now().timestamp();
         let mut connection = self.0.inner.connection.lock().await;
         let transaction = connection.transaction().await?;
-        let source = load_instance_on(&transaction, message_id, source_folder_id).await?;
+        let source = if let Some(source) = exact_source {
+            load_exact_instance_on(&transaction, message_id, &source).await?
+        } else {
+            load_instance_on(&transaction, message_id, source_folder_id).await?
+        };
         let operation = match request {
             QueueRequest::Exact(operation) => operation,
             QueueRequest::PatchSystemFlag { flag, present } => {
@@ -917,6 +944,50 @@ async fn load_instance_on(
         ));
     }
     Ok(identity)
+}
+
+async fn load_exact_instance_on(
+    connection: &turso::Connection,
+    message_id: MessageId,
+    expected: &RemoteMessageIdentity,
+) -> Result<RemoteMessageIdentity> {
+    let mut rows = connection
+        .query(
+            "SELECT account_id, mod_sequence, flags_json FROM message_instances WHERE message_id = ?1 AND folder_id = ?2 AND uid_validity = ?3 AND imap_uid = ?4",
+            turso::params![
+                message_id.to_string(),
+                expected.folder_id.to_string(),
+                i64::from(expected.uid_validity),
+                i64::from(expected.uid),
+            ],
+        )
+        .await?;
+    let Some(row) = rows.next().await? else {
+        return Err(BackendError::NotFound {
+            entity: "remote message instance",
+            id: format!(
+                "{}@{}:{}/{}",
+                message_id, expected.folder_id, expected.uid_validity, expected.uid
+            ),
+        });
+    };
+    let account_id = parse_account_id(row.get::<String>(0)?)?;
+    if account_id != expected.account_id {
+        return Err(BackendError::Conflict(
+            "remote message instance changed accounts before it could be updated".into(),
+        ));
+    }
+    Ok(RemoteMessageIdentity {
+        account_id,
+        folder_id: expected.folder_id,
+        uid_validity: expected.uid_validity,
+        uid: expected.uid,
+        mod_sequence: row
+            .get::<Option<i64>>(1)?
+            .map(|value| database_u64(value, "MODSEQ"))
+            .transpose()?,
+        flags: serde_json::from_str(&row.get::<String>(2)?)?,
+    })
 }
 
 async fn validate_destination_on(

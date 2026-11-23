@@ -393,6 +393,7 @@ pub enum AppCommand {
     Accounts,
     Help,
     MarkDone,
+    Reopen,
     MarkWaiting,
     SnoozeOneDay,
     MakeActionableOnce,
@@ -744,6 +745,10 @@ impl MailApp {
                 self.screen = Screen::Help;
             }
             AppCommand::MarkDone => self.set_selected_work_state(ThreadWorkStatus::Done).await?,
+            AppCommand::Reopen => {
+                self.set_selected_work_state(ThreadWorkStatus::Active)
+                    .await?
+            }
             AppCommand::MarkWaiting => {
                 self.set_selected_work_state(ThreadWorkStatus::Waiting)
                     .await?
@@ -2882,6 +2887,22 @@ impl MailApp {
 
     async fn set_selected_work_state(&mut self, status: ThreadWorkStatus) -> Result<()> {
         let was_reader = self.screen == Screen::Reader;
+        let current_status = match self.screen {
+            Screen::Reader => self
+                .current_thread
+                .as_ref()
+                .map(|thread| thread.summary.work_state.status),
+            Screen::Queue(_) => self
+                .selected_thread()
+                .map(|thread| thread.work_state.status),
+            _ => None,
+        };
+        if status == ThreadWorkStatus::Active
+            && current_status.is_some_and(|current| current != ThreadWorkStatus::Done)
+        {
+            self.status = Some("Conversation is already active".into());
+            return Ok(());
+        }
         let id = match self.screen {
             Screen::Reader => self.current_thread.as_ref().map(|thread| thread.summary.id),
             Screen::Queue(_) => self.selected_thread().map(|thread| thread.id),
@@ -2894,8 +2915,9 @@ impl MailApp {
                 .await?;
             self.status = Some(match status {
                 ThreadWorkStatus::Done => "Conversation marked done".into(),
+                ThreadWorkStatus::Active => "Conversation reopened".into(),
                 ThreadWorkStatus::Waiting => "Conversation moved to Waiting".into(),
-                _ => "Conversation work state changed".into(),
+                ThreadWorkStatus::Snoozed => "Conversation work state changed".into(),
             });
             if was_reader && status == ThreadWorkStatus::Done {
                 self.remove_current_reader_and_advance(id).await?;
@@ -3054,6 +3076,35 @@ impl MailApp {
             self.reset_reader_scroll();
             self.clear_reader_html();
             self.start_reader_load(result.thread_id);
+            return Ok(());
+        }
+        if matches!(
+            self.previous_screen,
+            Screen::Queue(WorkflowView::WarmAction | WorkflowView::WarmFyi)
+        ) {
+            let origin = self.previous_screen;
+            let next_index = self.selected;
+            self.cancel_reader_tasks();
+            self.screen = origin;
+            self.current_thread = None;
+            self.security_override = false;
+            self.reset_reader_scroll();
+            self.clear_reader_html();
+            self.refresh().await?;
+            let active_count = self
+                .threads
+                .iter()
+                .take_while(|thread| thread.work_state.status != ThreadWorkStatus::Done)
+                .count();
+            if next_index < active_count {
+                self.selected = next_index;
+                let next_id = self.threads[next_index].id;
+                self.previous_screen = origin;
+                self.screen = Screen::Reader;
+                self.start_reader_load(next_id);
+            } else {
+                self.selected = active_count.saturating_sub(1);
+            }
             return Ok(());
         }
         let removed_index = self
@@ -3822,6 +3873,7 @@ mod tests {
             next_retry_at: None,
             failure_count: 0,
             last_error: None,
+            organization_sync: lizard_mail_backend::ImapOrganizationSync::Unknown,
             hydration_completed_messages: 17,
             hydration_total_messages: 2_345,
         };

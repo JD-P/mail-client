@@ -351,6 +351,7 @@ fn command_for(screen: Screen, key: KeyEvent) -> Option<AppCommand> {
         KeyCode::Char('A') => Some(AppCommand::Accounts),
         KeyCode::Char('?') => Some(AppCommand::Help),
         KeyCode::Char('d') => Some(AppCommand::MarkDone),
+        KeyCode::Char('u') => Some(AppCommand::Reopen),
         KeyCode::Char('w') => Some(AppCommand::MarkWaiting),
         KeyCode::Char('s') => Some(AppCommand::SnoozeOneDay),
         KeyCode::Char('/') => Some(AppCommand::SearchStart),
@@ -571,6 +572,10 @@ mod tests {
         assert!(matches!(
             command_for(Screen::Queue(WorkflowView::WarmAction), key('f')),
             Some(AppCommand::Folders)
+        ));
+        assert!(matches!(
+            command_for(Screen::Queue(WorkflowView::WarmAction), key('u')),
+            Some(AppCommand::Reopen)
         ));
     }
 

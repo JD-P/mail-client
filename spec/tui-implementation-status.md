@@ -7,6 +7,10 @@ not implemented merely because it is described there.
 ## Implemented
 
 - Durable conversation work states: active, waiting, snoozed, and done.
+- Action and FYI retain completed conversations beneath a visible Done divider.
+  Active conversations sort first and newest-first; Done conversations form a
+  second newest-first tier. Reader completion advances through active work and
+  `u` reopens a selected completed conversation.
 - Independent per-message read state and per-conversation work state.
 - Relationship policy with Action/FYI routing and obligation permission.
 - Warm — Action, Warm — FYI, Cold — Review, Spam — Quarantine, Waiting,
@@ -76,6 +80,14 @@ not implemented merely because it is described there.
 - Local and remote folder creation, rename, and deletion from the terminal.
   Remote mutations run in the disposable isolated IMAP worker; deletion
   requires typing the exact folder name before it can reach the server.
+- Cross-client IMAP keyword synchronization for Done, Waiting, Snooze, Mute,
+  Priority, and manual known-sender Action/FYI overrides. State is imported
+  before local defaults are published, changes use the durable conflict-aware
+  mutation outbox, and new untagged replies reactivate completed threads.
+  Accounts without permanent custom-keyword support quietly retain this state
+  locally and show the neutral account detail “Organization: This device only.”
+  Remote keywords cannot establish contact trust, Warm/Cold/Spam status, or
+  Actionable Once permission.
 
 ## Partially implemented
 
@@ -94,8 +106,9 @@ not implemented merely because it is described there.
 
 ## Not yet wired into the terminal client
 
-- Cross-client IMAP keyword synchronization for user tags, Done, Waiting,
-  Snooze, Mute, Priority, and known-sender Action/FYI overrides.
+- User-created tag synchronization through private IMAP keywords. Portable
+  workflow fields are implemented; the general tag CRUD model and terminal
+  tag-management screen remain pending.
 - JMAP account transport. It is specified as deferred work and is not part of
   the current implementation phase.
 - Sender grouping and priority variants of Warm — Action.

@@ -30,6 +30,7 @@ mod mime_api;
 mod onboarding;
 mod openpgp;
 mod organization;
+mod portable_state;
 mod query;
 mod schema;
 mod search_index;
@@ -62,7 +63,8 @@ pub use imap::imap_fetch_message;
 pub use imap_engine::{
     CredentialProvider, ImapAccountEngine, ImapAccountEngineConfig, ImapAccountSyncReport,
     ImapAccountSyncState, ImapAccountSyncStatus, ImapCredential, ImapFolderSyncReport,
-    ImapMailboxCompleteness, ImapMailboxSyncState, ImapMutationSyncReport, SecretValue,
+    ImapMailboxCompleteness, ImapMailboxSyncState, ImapMutationSyncReport, ImapOrganizationSync,
+    SecretValue,
 };
 pub use imap_mutation::ImapMutations;
 pub use imap_worker::{ImapSyncIsolationConfig, IsolatedImapAccountEngine};

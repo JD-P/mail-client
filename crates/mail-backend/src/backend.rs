@@ -2407,6 +2407,16 @@ impl Backend {
                     .await?;
                 refresh_provider_spam_evidence_in_transaction(&transaction, message.id, remote)
                     .await?;
+                if let Some(event) = crate::portable_state::reconcile_ingested_on(
+                    &transaction,
+                    message.id,
+                    remote.folder_id,
+                    Utc::now().timestamp(),
+                )
+                .await?
+                {
+                    events.push(event);
+                }
             }
             crate::spam::classify_message_on(&transaction, message.id, Utc::now().timestamp())
                 .await?;
@@ -4074,6 +4084,7 @@ impl Messages {
             transaction.rollback().await?;
             return Err(not_found("message", id));
         }
+        crate::portable_state::stage_message_on(&transaction, id, now).await?;
         let event = insert_event(&transaction, now, event_kind, id.to_string(), payload).await?;
         transaction.commit().await?;
         let _ = self.0.inner.events.send(event);
@@ -6442,6 +6453,8 @@ pub(crate) async fn refresh_remote_in_transaction(
         )
         .await?;
     refresh_provider_spam_evidence_in_transaction(connection, id, remote).await?;
+    let _ =
+        crate::portable_state::reconcile_ingested_on(connection, id, remote.folder_id, now).await?;
     enqueue_search_on(connection, id).await?;
     let event = insert_event(
         connection,

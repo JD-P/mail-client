@@ -158,39 +158,62 @@ impl Threads {
                 .into(),
             );
         }
+        let tiered_workflow = matches!(
+            filter.workflow,
+            Some(WorkflowView::WarmAction | WorkflowView::WarmFyi)
+        );
+        let done_tier = if tiered_workflow {
+            "CASE WHEN COALESCE((SELECT tws.status FROM thread_work_state tws WHERE tws.thread_id = m.thread_id), 'active') = 'done' THEN 1 ELSE 0 END"
+        } else {
+            "0"
+        };
         let mut sql = format!(
-            "SELECT m.thread_id, MAX(m.received_at) AS latest FROM messages m WHERE {} GROUP BY m.thread_id",
+            "SELECT m.thread_id, MAX(m.received_at) AS latest, {done_tier} AS done_tier FROM messages m WHERE {} GROUP BY m.thread_id",
             clauses.join(" AND ")
         );
         if let Some(cursor) = cursor {
             match filter.sort {
                 MessageSort::ReceivedNewest => {
-                    sql.push_str(" HAVING latest < ? OR (latest = ? AND m.thread_id < ?)");
+                    sql.push_str(" HAVING done_tier > ? OR (done_tier = ? AND (latest < ? OR (latest = ? AND m.thread_id < ?)))");
                 }
                 MessageSort::ReceivedOldest => {
-                    sql.push_str(" HAVING latest > ? OR (latest = ? AND m.thread_id > ?)");
+                    sql.push_str(" HAVING done_tier > ? OR (done_tier = ? AND (latest > ? OR (latest = ? AND m.thread_id > ?)))");
                 }
             }
+            parameters.push(Value::Integer(i64::from(cursor.done_tier)));
+            parameters.push(Value::Integer(i64::from(cursor.done_tier)));
             parameters.push(Value::Integer(cursor.latest_received_at));
             parameters.push(Value::Integer(cursor.latest_received_at));
             parameters.push(Value::Text(cursor.thread_id.to_string()));
         }
         sql.push_str(match filter.sort {
-            MessageSort::ReceivedNewest => " ORDER BY latest DESC, m.thread_id DESC LIMIT ?",
-            MessageSort::ReceivedOldest => " ORDER BY latest ASC, m.thread_id ASC LIMIT ?",
+            MessageSort::ReceivedNewest => {
+                " ORDER BY done_tier ASC, latest DESC, m.thread_id DESC LIMIT ?"
+            }
+            MessageSort::ReceivedOldest => {
+                " ORDER BY done_tier ASC, latest ASC, m.thread_id ASC LIMIT ?"
+            }
         });
         parameters.push(Value::Integer((page_size + 1) as i64));
         let mut rows = connection.query(sql, params_from_iter(parameters)).await?;
         let mut ids = Vec::new();
         while let Some(row) = rows.next().await? {
-            ids.push((parse_thread_id(row.get(0)?)?, row.get::<i64>(1)?));
+            ids.push((
+                parse_thread_id(row.get(0)?)?,
+                row.get::<i64>(1)?,
+                row.get::<i64>(2)? != 0,
+            ));
         }
         let has_more = ids.len() > page_size;
         ids.truncate(page_size);
-        let items = load_summaries_on(&connection, &ids).await?;
+        let summary_ids = ids
+            .iter()
+            .map(|(id, latest, _)| (*id, *latest))
+            .collect::<Vec<_>>();
+        let items = load_summaries_on(&connection, &summary_ids).await?;
         let next_cursor = if has_more {
             ids.last()
-                .map(|(id, latest)| encode_cursor(*id, *latest))
+                .map(|(id, latest, done_tier)| encode_cursor(*id, *latest, *done_tier))
                 .transpose()?
         } else {
             None
@@ -257,6 +280,7 @@ impl Threads {
                 turso::params![id.to_string(), work_status_text(status), snoozed_until, now,],
             )
             .await?;
+        crate::portable_state::stage_thread_on(&transaction, id, now).await?;
         let event = insert_event(
             &transaction,
             now,
@@ -396,6 +420,7 @@ impl Threads {
                 ],
             )
             .await?;
+        crate::portable_state::stage_thread_on(&transaction, id, now).await?;
         let event = insert_event(
             &transaction,
             now,
@@ -949,13 +974,14 @@ async fn load_work_state_on(connection: &Connection, id: ThreadId) -> Result<Thr
 
 fn workflow_predicate(view: WorkflowView) -> String {
     const ACTIVE: &str = "COALESCE((SELECT tws.status FROM thread_work_state tws WHERE tws.thread_id = m.thread_id), 'active') = 'active'";
+    const ACTIVE_OR_DONE: &str = "COALESCE((SELECT tws.status FROM thread_work_state tws WHERE tws.thread_id = m.thread_id), 'active') IN ('active', 'done')";
     const HAS_INBOUND: &str = "EXISTS (SELECT 1 FROM messages inbound WHERE inbound.thread_id = m.thread_id AND inbound.from_address IS NOT NULL AND trim(inbound.from_address) != '' AND NOT EXISTS (SELECT 1 FROM account_identities own_identity WHERE own_identity.email_address = inbound.from_address COLLATE NOCASE))";
     match view {
         WorkflowView::WarmAction => format!(
-            "NOT ({SPAM_PREDICATE}) AND ({WARM_PREDICATE} OR COALESCE((SELECT tws.actionable_once FROM thread_work_state tws WHERE tws.thread_id = m.thread_id), 0) = 1 OR (SELECT tws.route_override FROM thread_work_state tws WHERE tws.thread_id = m.thread_id) = 'action') AND {ACTIVE} AND {HAS_INBOUND} AND (COALESCE((SELECT tws.actionable_once FROM thread_work_state tws WHERE tws.thread_id = m.thread_id), 0) = 1 OR (SELECT tws.route_override FROM thread_work_state tws WHERE tws.thread_id = m.thread_id) = 'action' OR ((SELECT tws.route_override FROM thread_work_state tws WHERE tws.thread_id = m.thread_id) IS NULL AND EXISTS (SELECT 1 FROM messages tm JOIN contact_addresses ca ON ca.address = tm.from_address COLLATE NOCASE JOIN contact_relationships cr ON cr.contact_id = ca.contact_id WHERE tm.thread_id = m.thread_id AND cr.may_create_obligations = 1)))"
+            "NOT ({SPAM_PREDICATE}) AND ({WARM_PREDICATE} OR COALESCE((SELECT tws.actionable_once FROM thread_work_state tws WHERE tws.thread_id = m.thread_id), 0) = 1 OR (SELECT tws.route_override FROM thread_work_state tws WHERE tws.thread_id = m.thread_id) = 'action') AND {ACTIVE_OR_DONE} AND {HAS_INBOUND} AND (COALESCE((SELECT tws.actionable_once FROM thread_work_state tws WHERE tws.thread_id = m.thread_id), 0) = 1 OR (SELECT tws.route_override FROM thread_work_state tws WHERE tws.thread_id = m.thread_id) = 'action' OR ((SELECT tws.route_override FROM thread_work_state tws WHERE tws.thread_id = m.thread_id) IS NULL AND EXISTS (SELECT 1 FROM messages tm JOIN contact_addresses ca ON ca.address = tm.from_address COLLATE NOCASE JOIN contact_relationships cr ON cr.contact_id = ca.contact_id WHERE tm.thread_id = m.thread_id AND cr.may_create_obligations = 1)))"
         ),
         WorkflowView::WarmFyi => format!(
-            "{WARM_PREDICATE} AND {ACTIVE} AND {HAS_INBOUND} AND COALESCE((SELECT tws.actionable_once FROM thread_work_state tws WHERE tws.thread_id = m.thread_id), 0) = 0 AND ((SELECT tws.route_override FROM thread_work_state tws WHERE tws.thread_id = m.thread_id) = 'fyi' OR ((SELECT tws.route_override FROM thread_work_state tws WHERE tws.thread_id = m.thread_id) IS NULL AND EXISTS (SELECT 1 FROM messages tm JOIN contact_addresses ca ON ca.address = tm.from_address COLLATE NOCASE JOIN contact_relationships cr ON cr.contact_id = ca.contact_id WHERE tm.thread_id = m.thread_id AND cr.may_create_obligations = 0) AND NOT EXISTS (SELECT 1 FROM messages tm JOIN contact_addresses ca ON ca.address = tm.from_address COLLATE NOCASE JOIN contact_relationships cr ON cr.contact_id = ca.contact_id WHERE tm.thread_id = m.thread_id AND cr.may_create_obligations = 1)))"
+            "{WARM_PREDICATE} AND {ACTIVE_OR_DONE} AND {HAS_INBOUND} AND COALESCE((SELECT tws.actionable_once FROM thread_work_state tws WHERE tws.thread_id = m.thread_id), 0) = 0 AND ((SELECT tws.route_override FROM thread_work_state tws WHERE tws.thread_id = m.thread_id) = 'fyi' OR ((SELECT tws.route_override FROM thread_work_state tws WHERE tws.thread_id = m.thread_id) IS NULL AND EXISTS (SELECT 1 FROM messages tm JOIN contact_addresses ca ON ca.address = tm.from_address COLLATE NOCASE JOIN contact_relationships cr ON cr.contact_id = ca.contact_id WHERE tm.thread_id = m.thread_id AND cr.may_create_obligations = 0) AND NOT EXISTS (SELECT 1 FROM messages tm JOIN contact_addresses ca ON ca.address = tm.from_address COLLATE NOCASE JOIN contact_relationships cr ON cr.contact_id = ca.contact_id WHERE tm.thread_id = m.thread_id AND cr.may_create_obligations = 1)))"
         ),
         WorkflowView::ColdReview => format!(
             "{COLD_PREDICATE} AND {ACTIVE} AND {HAS_INBOUND} AND COALESCE((SELECT tws.actionable_once FROM thread_work_state tws WHERE tws.thread_id = m.thread_id), 0) = 0 AND COALESCE((SELECT tws.route_override FROM thread_work_state tws WHERE tws.thread_id = m.thread_id), '') != 'action'"
@@ -1161,12 +1187,15 @@ fn parse_message_id(value: String) -> Result<MessageId> {
 struct ThreadCursor {
     latest_received_at: i64,
     thread_id: ThreadId,
+    #[serde(default)]
+    done_tier: bool,
 }
 
-fn encode_cursor(thread_id: ThreadId, latest_received_at: i64) -> Result<String> {
+fn encode_cursor(thread_id: ThreadId, latest_received_at: i64, done_tier: bool) -> Result<String> {
     Ok(URL_SAFE_NO_PAD.encode(serde_json::to_vec(&ThreadCursor {
         latest_received_at,
         thread_id,
+        done_tier,
     })?))
 }
 

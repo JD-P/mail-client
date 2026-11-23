@@ -2,7 +2,8 @@ use lizard_mail_backend::{
     AccountKind, Backend, BackendConfig, ContactAddress, ContactRelationship, FolderKind,
     ImapSecurity, ImapSettings, IngestMessage, NewAccount, NewContact, NewContactRelationship,
     NewFolder, RelationshipKind, RemoteContentPolicy, RemoteMessageIdentity, RouteOverrideSource,
-    ThreadFilter, ThreadWorkStatus, WarmRoute, WorkflowView, DEFAULT_SIMILARITY_CUTOFF_MILLIS,
+    ThreadFilter, ThreadWorkStatus, UserClassification, WarmRoute, WorkflowView,
+    DEFAULT_SIMILARITY_CUTOFF_MILLIS,
 };
 
 fn message(from_name: &str, from: &str, id: &str, subject: &str) -> Vec<u8> {
@@ -220,6 +221,20 @@ async fn onboarding_seeds_relationships_and_workflow_views_remain_independent() 
         .await
         .unwrap();
     assert_eq!(done.items.len(), 1);
+    let fyi_after_done = backend
+        .threads()
+        .list(ThreadFilter {
+            workflow: Some(WorkflowView::WarmFyi),
+            ..ThreadFilter::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(fyi_after_done.items.len(), 1);
+    assert_eq!(fyi_after_done.items[0].id, maya_thread);
+    assert_eq!(
+        fyi_after_done.items[0].work_state.status,
+        ThreadWorkStatus::Done
+    );
 
     let mallory = backend
         .ingest(IngestMessage::local(message(
@@ -261,6 +276,113 @@ async fn onboarding_seeds_relationships_and_workflow_views_remain_independent() 
     assert_eq!(action.items.len(), 1);
     assert_eq!(action.items[0].id, mallory_thread);
     assert!(action.items[0].work_state.actionable_once);
+}
+
+#[tokio::test]
+async fn warm_workflows_page_active_before_done_then_sort_each_tier_by_date() {
+    let profile = tempfile::tempdir().unwrap();
+    let backend = Backend::open(BackendConfig::new(profile.path()))
+        .await
+        .unwrap();
+    let contact = backend
+        .contacts()
+        .add(NewContact {
+            display_name: "Ada".into(),
+            addresses: vec![ContactAddress {
+                address: "ada@example.test".into(),
+                accepted_name: Some("Ada".into()),
+            }],
+        })
+        .await
+        .unwrap();
+    backend
+        .contacts()
+        .set_relationship(
+            contact.id,
+            ContactRelationship {
+                contact_id: contact.id,
+                kind: RelationshipKind::Person,
+                warm_route: WarmRoute::Action,
+                may_create_obligations: true,
+                notify: true,
+                remote_content: RemoteContentPolicy::Ask,
+                updated_at: 0,
+            },
+        )
+        .await
+        .unwrap();
+
+    let mut threads = Vec::new();
+    for (index, received_at) in [1_700_000_001, 1_700_000_002, 1_700_000_003]
+        .into_iter()
+        .enumerate()
+    {
+        let mut request = IngestMessage::local(message(
+            "Ada",
+            "ada@example.test",
+            &format!("tier-{index}@example.test"),
+            &format!("Independent task {index}"),
+        ));
+        request.received_at = Some(received_at);
+        request.user_classification = Some(UserClassification::NotSpam);
+        let message_id = backend.ingest(request).await.unwrap();
+        let summary = backend.messages().get(message_id).await.unwrap().summary;
+        assert_eq!(summary.inbox_class, lizard_mail_backend::InboxClass::Warm);
+        threads.push(summary.thread_id);
+    }
+    backend
+        .threads()
+        .set_work_state(threads[2], ThreadWorkStatus::Done, None)
+        .await
+        .unwrap();
+
+    let all_threads = backend
+        .threads()
+        .list(ThreadFilter::default())
+        .await
+        .unwrap();
+    let warm_threads = backend
+        .threads()
+        .list(ThreadFilter {
+            inbox_class: Some(lizard_mail_backend::InboxClass::Warm),
+            ..ThreadFilter::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(all_threads.items.len(), 3, "all={all_threads:?}");
+    assert_eq!(warm_threads.items.len(), 3, "warm={warm_threads:?}");
+
+    let mut cursor = None;
+    let mut observed = Vec::new();
+    loop {
+        let page = backend
+            .threads()
+            .list(ThreadFilter {
+                workflow: Some(WorkflowView::WarmAction),
+                page_size: 1,
+                cursor,
+                ..ThreadFilter::default()
+            })
+            .await
+            .unwrap();
+        observed.extend(
+            page.items
+                .into_iter()
+                .map(|item| (item.id, item.latest_received_at, item.work_state.status)),
+        );
+        cursor = page.next_cursor;
+        if cursor.is_none() {
+            break;
+        }
+    }
+    assert_eq!(
+        observed,
+        vec![
+            (threads[1], 1_700_000_002, ThreadWorkStatus::Active),
+            (threads[0], 1_700_000_001, ThreadWorkStatus::Active),
+            (threads[2], 1_700_000_003, ThreadWorkStatus::Done),
+        ]
+    );
 }
 
 #[tokio::test]
