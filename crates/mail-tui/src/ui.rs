@@ -1,4 +1,6 @@
-use crate::app::{AccountAuthentication, AccountField, ContactField, MailApp, Screen};
+use crate::app::{
+    AccountAuthentication, AccountField, ComposeField, ContactField, MailApp, Screen,
+};
 use crate::{LinkKind, LinkReference, RenderedPage};
 use chrono::{DateTime, Datelike, Local, Utc};
 use lizard_mail_backend::{
@@ -47,6 +49,9 @@ pub fn draw(frame: &mut Frame<'_>, app: &MailApp) {
         Screen::SimilarityPreview => draw_similarity_preview(frame, app, areas[1]),
         Screen::Queue(_) => draw_queue(frame, app, areas[1]),
         Screen::Reader => draw_reader(frame, app, areas[1]),
+        Screen::Compose => draw_compose(frame, app, areas[1]),
+        Screen::SearchInput => draw_search_input(frame, app, areas[1]),
+        Screen::SearchResults => draw_search_results(frame, app, areas[1]),
         Screen::Contacts => draw_contacts(frame, app, areas[1]),
         Screen::ContactEdit => draw_contact_editor(frame, app, areas[1]),
         Screen::Help => draw_help(frame, areas[1]),
@@ -81,7 +86,7 @@ fn header_navigation() -> Line<'static> {
         Span::styled("3", Style::default().fg(COLD).add_modifier(Modifier::BOLD)),
         Span::raw(" Cold  "),
         Span::styled("4", Style::default().fg(SPAM).add_modifier(Modifier::BOLD)),
-        Span::raw(" Spam  L Later  C Contacts  A Accounts  ? Help"),
+        Span::raw(" Spam  L Later  / Search  C Contacts  A Accounts  ? Help"),
     ])
 }
 
@@ -141,6 +146,18 @@ fn draw_accounts(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
                 }
                 lines.push(Line::raw(detail));
             }
+            lines.push(Line::raw(
+                if let Some(smtp) = app.smtp_accounts.get(&account.id) {
+                    format!(
+                        "  Sending: {}:{} · {:?}",
+                        safe_single_line_text(&smtp.settings.host),
+                        smtp.settings.port,
+                        smtp.settings.security
+                    )
+                } else {
+                    "  Sending: not configured (receive only)".into()
+                },
+            ));
             ListItem::new(Text::from(lines))
         })
         .collect::<Vec<_>>();
@@ -176,9 +193,9 @@ fn draw_account_editor(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
         .constraints([Constraint::Length(7), Constraint::Min(7)])
         .split(area);
     let introduction = if editor.account_id.is_none() {
-        "Connect an existing mailbox. Lizard makes headers usable first, then downloads and verifies a full local copy in bounded batches inside an isolated process. Ordinary plaintext IMAP is not supported."
+        "Connect an existing mailbox. IMAP receives mail; optional SMTP settings send replies using the same username and credential. Lizard only permits encrypted TLS or STARTTLS connections."
     } else {
-        "Update this account's IMAP connection. Leave the secret unchanged to retain the stored credential. Saving tests the new settings with an isolated synchronization."
+        "Update receiving and sending. Leave the secret unchanged to retain the stored credential. Leave SMTP server blank for a receive-only account."
     };
     frame.render_widget(
         Paragraph::new(introduction)
@@ -232,6 +249,27 @@ fn draw_account_editor(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
                 safe_single_line_text(&editor.trusted_authserv_ids)
             },
         ),
+        (
+            "SMTP server (optional)",
+            if editor.smtp_host.trim().is_empty() {
+                "Not configured — replies remain as drafts".into()
+            } else {
+                safe_single_line_text(&editor.smtp_host)
+            },
+        ),
+        ("SMTP port", safe_single_line_text(&editor.smtp_port)),
+        (
+            "SMTP transport security",
+            match editor.smtp_security {
+                lizard_mail_backend::SmtpSecurity::ImplicitTls => {
+                    "TLS from connection start (usually port 465)"
+                }
+                lizard_mail_backend::SmtpSecurity::StartTls => {
+                    "STARTTLS upgrade (usually port 587)"
+                }
+            }
+            .into(),
+        ),
     ];
     let items = fields
         .into_iter()
@@ -254,6 +292,9 @@ fn draw_account_editor(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
         AccountField::Authentication => 5,
         AccountField::Secret => 6,
         AccountField::AuthservIds => 7,
+        AccountField::SmtpHost => 8,
+        AccountField::SmtpPort => 9,
+        AccountField::SmtpSecurity => 10,
     };
     let mut state = ListState::default().with_selected(Some(selected));
     frame.render_stateful_widget(
@@ -464,6 +505,179 @@ fn draw_workflow_banner(frame: &mut Frame<'_>, workflow: WorkflowView, area: Rec
         chunks[0],
     );
     chunks[1]
+}
+
+fn draw_compose(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
+    let Some(editor) = &app.compose_editor else {
+        frame.render_widget(Paragraph::new("No reply draft is open"), area);
+        return;
+    };
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(4),
+            Constraint::Length(4),
+            Constraint::Length(3),
+            Constraint::Min(5),
+        ])
+        .split(area);
+    draw_compose_field(
+        frame,
+        chunks[0],
+        "To — verify this address before sending",
+        &editor.to,
+        editor.selected_field == ComposeField::To,
+    );
+    draw_compose_field(
+        frame,
+        chunks[1],
+        "Cc",
+        &editor.cc,
+        editor.selected_field == ComposeField::Cc,
+    );
+    draw_compose_field(
+        frame,
+        chunks[2],
+        "Subject",
+        &editor.subject,
+        editor.selected_field == ComposeField::Subject,
+    );
+    draw_compose_field(
+        frame,
+        chunks[3],
+        "Plain-text reply",
+        &editor.body,
+        editor.selected_field == ComposeField::Body,
+    );
+}
+
+fn draw_search_input(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
+    let query = app
+        .search_editor
+        .as_ref()
+        .map(|editor| editor.query.as_str())
+        .unwrap_or_default();
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(6), Constraint::Min(5)])
+        .split(area);
+    frame.render_widget(
+        Paragraph::new(safe_single_line_text(query))
+            .block(
+                Block::default()
+                    .title("Search all locally indexed mail")
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(COLD)),
+            )
+            .wrap(Wrap { trim: false }),
+        chunks[0],
+    );
+    frame.render_widget(
+        Paragraph::new(Text::from(vec![
+            Line::raw("Type words or Gmail-style operators, then press Enter."),
+            Line::raw(""),
+            Line::raw("Examples:"),
+            Line::raw("  from:alice@example.com subject:\"project update\""),
+            Line::raw("  has:attachment after:2026-01-01"),
+            Line::raw("  (invoice OR receipt) -from:marketing@example.com"),
+            Line::raw(""),
+            Line::raw(
+                "Search is local. Results may be incomplete while mail is still downloading.",
+            ),
+        ]))
+        .block(Block::default().title("Query help").borders(Borders::ALL))
+        .wrap(Wrap { trim: false }),
+        chunks[1],
+    );
+}
+
+fn draw_search_results(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
+    if app.search_results.is_empty() {
+        frame.render_widget(
+            Paragraph::new(format!(
+                "No messages matched {:?}. Press / to edit the query.",
+                safe_single_line_text(&app.search_query)
+            ))
+            .block(
+                Block::default()
+                    .title("Search results")
+                    .borders(Borders::ALL),
+            )
+            .wrap(Wrap { trim: false }),
+            area,
+        );
+        return;
+    }
+    let items = app
+        .search_results
+        .iter()
+        .map(|message| {
+            let address = message.from_address.as_deref().unwrap_or("unknown sender");
+            let sender = app.contact_name(address).map_or_else(
+                || safe_single_line_text(address),
+                |name| {
+                    format!(
+                        "{} <{}>",
+                        safe_single_line_text(name),
+                        safe_single_line_text(address)
+                    )
+                },
+            );
+            ListItem::new(Text::from(vec![
+                Line::from(vec![
+                    Span::styled(
+                        safe_single_line_text(message.subject.as_deref().unwrap_or("(no subject)")),
+                        Style::default().add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw(format!("  {}", format_queue_timestamp(message.received_at))),
+                ]),
+                Line::raw(format!("  From: {sender}")),
+            ]))
+        })
+        .collect::<Vec<_>>();
+    let title = format!(
+        "Search results · {}{} · {:?}",
+        app.search_results.len(),
+        if app.search_has_more { "+" } else { "" },
+        safe_single_line_text(&app.search_query)
+    );
+    let mut state = ListState::default().with_selected(Some(app.selected));
+    frame.render_stateful_widget(
+        List::new(items)
+            .block(Block::default().title(title).borders(Borders::ALL))
+            .highlight_style(
+                Style::default()
+                    .bg(COLD)
+                    .fg(Color::Black)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .highlight_symbol("› "),
+        area,
+        &mut state,
+    );
+}
+
+fn draw_compose_field(frame: &mut Frame<'_>, area: Rect, label: &str, value: &str, selected: bool) {
+    let title = if selected {
+        format!("› {label}")
+    } else {
+        label.to_owned()
+    };
+    frame.render_widget(
+        Paragraph::new(safe_text(value))
+            .block(
+                Block::default()
+                    .title(title)
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(if selected {
+                        WARM
+                    } else {
+                        Color::DarkGray
+                    })),
+            )
+            .wrap(Wrap { trim: false }),
+        area,
+    );
 }
 
 fn draw_reader(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
@@ -2210,16 +2424,17 @@ fn draw_help(frame: &mut Frame<'_>, area: Rect) {
         Line::raw(
             "1 Warm Action · 2 Warm FYI · 3 Cold · 4 Spam · L Waiting · Z Snoozed · D Done",
         ),
-        Line::raw("C Contacts · A Accounts · ? Help · q Quit · Esc Back"),
+        Line::raw("/ Search · C Contacts · A Accounts · ? Help · q Quit · Esc Back"),
         Line::raw(""),
         Line::styled(
             "Queues and reader",
             Style::default().add_modifier(Modifier::BOLD),
         ),
-        Line::raw("Queue: j/k Move · Enter Open · d Done · w Waiting · s Snooze one day"),
+        Line::raw("Queue: j/k Move · Enter Open · d Done · w Waiting · s Snooze one day · / Search"),
         Line::raw(
             "Reader: ↑/↓ Previous/next email · j/k Scroll · PgUp/PgDn Page · g/G Top/bottom",
         ),
+        Line::raw("r Reply · R Reply all · reply editor: Ctrl-S save · Ctrl-D send"),
         Line::raw(
             "a Make Cold conversation actionable once · O Read through security warning with restrictions",
         ),
@@ -2274,28 +2489,38 @@ fn draw_footer(frame: &mut Frame<'_>, app: &MailApp, area: Rect) {
             "j/k inspect matches · y/Enter save rule · + stricter · - broader · n/Esc cancel"
         }
         Screen::Queue(WorkflowView::ColdReview) => {
-            "j/k move · Enter inspect · a actionable once · d done · s snooze · ? help"
+            "j/k move · Enter inspect · a actionable once · d done · s snooze · / search"
         }
         Screen::Queue(WorkflowView::SpamQuarantine) => {
-            "j/k move · Enter inspect safely · d done · ? help"
+            "j/k move · Enter inspect safely · d done · / search · ? help"
         }
         Screen::Queue(WorkflowView::WarmAction) => {
-            "j/k move · > move to FYI · M similar→FYI · d done · w waiting · s snooze"
+            "j/k move · > move to FYI · M similar→FYI · d done · s snooze · / search"
         }
         Screen::Queue(WorkflowView::WarmFyi) => {
-            "j/k move · < move to Action · M similar→FYI · d done · w waiting · s snooze"
+            "j/k move · < move to Action · M similar→FYI · d done · s snooze · / search"
         }
-        Screen::Queue(_) => "j/k move · Enter inspect · d done · w waiting · s snooze · ? help",
+        Screen::Queue(_) => "j/k move · Enter inspect · d done · w waiting · s snooze · / search",
         Screen::Reader if app.reader_is_blocked() => {
-            "↑/↓ previous/next email · j/k scroll · PgUp/PgDn page · Esc back · O read restricted"
+            "↑/↓ previous/next · j/k scroll · Esc back · O inspect before reply · r reply"
+        }
+        Screen::Reader if app.previous_screen == Screen::SearchResults => {
+            "↑/↓ previous/next result · j/k scroll · r reply · R reply all · / search · Esc results"
         }
         Screen::Reader if app.previous_screen == Screen::Queue(WorkflowView::WarmAction) => {
-            "↑/↓ previous/next email · j/k scroll · PgUp/PgDn page · > move to FYI · Esc back"
+            "↑/↓ previous/next · j/k scroll · r reply · R reply all · > move to FYI · Esc back"
         }
         Screen::Reader if app.previous_screen == Screen::Queue(WorkflowView::WarmFyi) => {
-            "↑/↓ previous/next email · j/k scroll · PgUp/PgDn page · < move to Action · Esc back"
+            "↑/↓ previous/next · j/k scroll · r reply · R reply all · < move to Action · Esc back"
         }
-        Screen::Reader => "↑/↓ previous/next email · j/k scroll · PgUp/PgDn page · Esc back",
+        Screen::Reader => {
+            "↑/↓ previous/next · j/k scroll · PgUp/PgDn page · r reply · R reply all · Esc back"
+        }
+        Screen::Compose => {
+            "Tab/↑/↓ fields · Enter newline/next · Ctrl-S save draft · Ctrl-D send · Esc save/close"
+        }
+        Screen::SearchInput => "type query · Enter search · Esc cancel",
+        Screen::SearchResults => "j/k move · Enter open exact match · / edit query · Esc back",
         Screen::Onboarding => "j/k move · y accept · n reject · e edit · Enter inspect/edit",
         Screen::OnboardingEdit => {
             "type name · Ctrl-R route · Ctrl-K kind · Enter save · Esc cancel"
@@ -2365,6 +2590,8 @@ fn accent(app: &MailApp) -> Color {
                 InboxClass::Spam => SPAM,
             })
             .unwrap_or(Color::Gray),
+        Screen::Compose => WARM,
+        Screen::SearchInput | Screen::SearchResults => COLD,
         Screen::AccountEdit => COLD,
         Screen::ContactEdit => WARM,
         Screen::AccountDeleteConfirm => DANGER,
@@ -2385,7 +2612,7 @@ fn accent_for_workflow(workflow: WorkflowView) -> Color {
 fn screen_title(app: &MailApp) -> &'static str {
     match app.screen {
         Screen::Accounts => "ACCOUNTS",
-        Screen::AccountEdit => "ACCOUNT / IMAP CONNECTION",
+        Screen::AccountEdit => "ACCOUNT / MAIL CONNECTIONS",
         Screen::AccountDeleteConfirm => "ACCOUNT / CONFIRM REMOVAL",
         Screen::Onboarding => "ONBOARDING / CONTACT SUGGESTIONS",
         Screen::OnboardingEdit => "ONBOARDING / EDIT RELATIONSHIP",
@@ -2398,6 +2625,7 @@ fn screen_title(app: &MailApp) -> &'static str {
         Screen::Queue(WorkflowView::Snoozed) => "LATER / SNOOZED",
         Screen::Queue(WorkflowView::Done) => "DONE / HISTORY",
         Screen::Reader => match app.previous_screen {
+            Screen::SearchResults => "SEARCH / MATCHED MESSAGE",
             Screen::Queue(WorkflowView::WarmAction) => "WARM / ACTION / CONVERSATION",
             Screen::Queue(WorkflowView::WarmFyi) => "WARM / FYI / CONVERSATION",
             _ => app
@@ -2411,6 +2639,9 @@ fn screen_title(app: &MailApp) -> &'static str {
                 })
                 .unwrap_or("CONVERSATION"),
         },
+        Screen::Compose => "WARM / REPLY",
+        Screen::SearchInput => "SEARCH / QUERY",
+        Screen::SearchResults => "SEARCH / RESULTS",
         Screen::Contacts => "CONTACTS",
         Screen::ContactEdit => "CONTACTS / EDIT RELATIONSHIP",
         Screen::Help => "HELP",

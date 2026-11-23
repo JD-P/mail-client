@@ -1,12 +1,14 @@
 use chrono::{Duration, Utc};
 use lizard_mail_backend::{
     Account, AccountId, AccountKind, Backend, BackendError, Contact, ContactAddress, ContactId,
-    ContactRelationship, ContactSuggestion, FindingPresentation, FindingSeverity,
+    ContactRelationship, ContactSuggestion, Draft, FindingPresentation, FindingSeverity,
     ImapAccountEngineConfig, ImapAccountSyncReport, ImapAccountSyncState, ImapCredential,
-    ImapSecurity, MessageContentAvailability, MessageId, NewAccount, NewContact,
-    NewContactRelationship, RelationshipKind, RemoteContentPolicy, Result, SecretValue,
-    SimilarityPreview, Thread, ThreadFilter, ThreadId, ThreadSummary, ThreadWorkStatus, WarmRoute,
-    WorkflowView, DEFAULT_SIMILARITY_CUTOFF_MILLIS,
+    ImapSecurity, MessageContentAvailability, MessageId, MessageSummary, NewAccount, NewContact,
+    NewContactRelationship, RelationshipKind, RemoteContentPolicy, ReplyAudience, Result,
+    SearchRequest, SecretValue, SendingLimits, SimilarityPreview, SmtpAccount, SmtpAuthMethod,
+    SmtpEngineConfig, SmtpSecurity, SmtpSettings, SubmissionId, SubmissionStatus, Thread,
+    ThreadFilter, ThreadId, ThreadSummary, ThreadWorkStatus, WarmRoute, WorkflowView,
+    DEFAULT_SIMILARITY_CUTOFF_MILLIS,
 };
 use std::{
     cell::Cell,
@@ -15,6 +17,7 @@ use std::{
     time::{Duration as StdDuration, Instant},
 };
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 use zeroize::Zeroizing;
 
 use crate::{IsolatedHtmlRenderer, RenderedPage};
@@ -34,6 +37,9 @@ pub enum Screen {
     SimilarityPreview,
     Queue(WorkflowView),
     Reader,
+    Compose,
+    SearchInput,
+    SearchResults,
     Contacts,
     ContactEdit,
     Help,
@@ -66,10 +72,13 @@ pub enum AccountField {
     Authentication,
     Secret,
     AuthservIds,
+    SmtpHost,
+    SmtpPort,
+    SmtpSecurity,
 }
 
 impl AccountField {
-    const ALL: [Self; 8] = [
+    const ALL: [Self; 11] = [
         Self::Name,
         Self::Username,
         Self::Host,
@@ -78,6 +87,9 @@ impl AccountField {
         Self::Authentication,
         Self::Secret,
         Self::AuthservIds,
+        Self::SmtpHost,
+        Self::SmtpPort,
+        Self::SmtpSecurity,
     ];
 }
 
@@ -90,11 +102,16 @@ pub struct AccountEditor {
     pub security: ImapSecurity,
     pub authentication: AccountAuthentication,
     pub trusted_authserv_ids: String,
+    pub smtp_host: String,
+    pub smtp_port: String,
+    pub smtp_security: SmtpSecurity,
     pub selected_field: AccountField,
     pub secret_entered: bool,
     secret: Zeroizing<String>,
     original_authentication: Option<AccountAuthentication>,
     credential_ref: Option<String>,
+    original_smtp_settings: Option<SmtpSettings>,
+    original_smtp_credential_ref: Option<String>,
 }
 
 impl AccountEditor {
@@ -108,15 +125,24 @@ impl AccountEditor {
             security: ImapSecurity::ImplicitTls,
             authentication: AccountAuthentication::Password,
             trusted_authserv_ids: String::new(),
+            smtp_host: String::new(),
+            smtp_port: "465".into(),
+            smtp_security: SmtpSecurity::ImplicitTls,
             selected_field: AccountField::Username,
             secret_entered: false,
             secret: Zeroizing::new(String::new()),
             original_authentication: None,
             credential_ref: None,
+            original_smtp_settings: None,
+            original_smtp_credential_ref: None,
         }
     }
 
-    fn from_account(account: &Account, authentication: AccountAuthentication) -> Result<Self> {
+    fn from_account(
+        account: &Account,
+        authentication: AccountAuthentication,
+        smtp: Option<&SmtpAccount>,
+    ) -> Result<Self> {
         let settings = account
             .imap
             .as_ref()
@@ -130,11 +156,22 @@ impl AccountEditor {
             security: settings.security,
             authentication,
             trusted_authserv_ids: account.trusted_authserv_ids.join(", "),
+            smtp_host: smtp
+                .map(|smtp| smtp.settings.host.clone())
+                .unwrap_or_default(),
+            smtp_port: smtp
+                .map(|smtp| smtp.settings.port.to_string())
+                .unwrap_or_else(|| "465".into()),
+            smtp_security: smtp
+                .map(|smtp| smtp.settings.security)
+                .unwrap_or(SmtpSecurity::ImplicitTls),
             selected_field: AccountField::Name,
             secret_entered: false,
             secret: Zeroizing::new(String::new()),
             original_authentication: Some(authentication),
             credential_ref: account.credential_ref.clone(),
+            original_smtp_settings: smtp.map(|smtp| smtp.settings.clone()),
+            original_smtp_credential_ref: smtp.map(|smtp| smtp.credential_ref.clone()),
         })
     }
 
@@ -147,6 +184,49 @@ impl AccountEditor {
             "required"
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ComposeField {
+    To,
+    Cc,
+    Subject,
+    Body,
+}
+
+impl ComposeField {
+    const ALL: [Self; 4] = [Self::To, Self::Cc, Self::Subject, Self::Body];
+}
+
+pub struct ComposeEditor {
+    pub draft: Draft,
+    pub to: String,
+    pub cc: String,
+    pub subject: String,
+    pub body: String,
+    pub selected_field: ComposeField,
+}
+
+pub struct SearchEditor {
+    pub query: String,
+}
+
+impl ComposeEditor {
+    fn new(draft: Draft) -> Self {
+        Self {
+            to: draft.content.to_addresses.join(", "),
+            cc: draft.content.cc_addresses.join(", "),
+            subject: draft.content.subject.clone(),
+            body: draft.content.body_text.clone(),
+            draft,
+            selected_field: ComposeField::Body,
+        }
+    }
+}
+
+struct SmtpWorkerTask {
+    cancellation: CancellationToken,
+    handle: JoinHandle<Result<()>>,
 }
 
 struct AccountSyncTask {
@@ -254,6 +334,14 @@ pub enum AppCommand {
     ReaderPageUp,
     ReaderScrollTop,
     ReaderScrollBottom,
+    Reply,
+    ReplyAll,
+    ComposeSave,
+    ComposeSend,
+    ComposeNewline,
+    SearchStart,
+    SearchSubmit,
+    SearchCancel,
     Open,
     Back,
     WarmAction,
@@ -311,7 +399,17 @@ pub struct MailApp {
     pub current_thread: Option<Thread>,
     pub accounts: Vec<Account>,
     pub account_states: HashMap<AccountId, ImapAccountSyncState>,
+    pub smtp_accounts: HashMap<AccountId, SmtpAccount>,
     pub account_editor: Option<AccountEditor>,
+    pub compose_editor: Option<ComposeEditor>,
+    pub search_editor: Option<SearchEditor>,
+    pub search_query: String,
+    pub search_results: Vec<MessageSummary>,
+    pub search_has_more: bool,
+    pub search_index_complete: bool,
+    pub search_content_complete: bool,
+    search_return_screen: Screen,
+    search_return_selected: usize,
     pub pending_account_delete: Option<AccountId>,
     pub onboarding_account: Option<AccountId>,
     pub suggestions: Vec<ContactSuggestion>,
@@ -336,6 +434,7 @@ pub struct MailApp {
     reader_thread_id: Option<ThreadId>,
     reader_load_task: Option<ReaderLoadTask>,
     reader_content_task: Option<ReaderContentTask>,
+    reader_target_message_id: Option<MessageId>,
     html_renderer: IsolatedHtmlRenderer,
     account_sync_task: Option<AccountSyncTask>,
     sync_queue: VecDeque<QueuedSync>,
@@ -343,6 +442,9 @@ pub struct MailApp {
     auto_sync_interval: StdDuration,
     last_auto_sync: Option<Instant>,
     last_sync_progress_refresh: Option<Instant>,
+    smtp_worker: Option<SmtpWorkerTask>,
+    pending_submission: Option<SubmissionId>,
+    last_submission_refresh: Option<Instant>,
     pub quit: bool,
 }
 
@@ -381,6 +483,27 @@ impl MailApp {
         } else {
             Screen::Onboarding
         };
+        let mut smtp_accounts = HashMap::new();
+        for account in &accounts {
+            match backend.sending().smtp_account(account.id).await {
+                Ok(smtp) => {
+                    smtp_accounts.insert(account.id, smtp);
+                }
+                Err(BackendError::NotFound { .. }) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        let smtp_config = SmtpEngineConfig {
+            polling_interval: StdDuration::from_secs(2),
+            ..SmtpEngineConfig::default()
+        };
+        let smtp_engine = backend.managed_smtp_engine(smtp_config).await?;
+        let smtp_cancellation = CancellationToken::new();
+        let worker_cancellation = smtp_cancellation.clone();
+        let smtp_worker = SmtpWorkerTask {
+            cancellation: smtp_cancellation,
+            handle: tokio::spawn(async move { smtp_engine.run(worker_cancellation).await }),
+        };
         let mut app = Self {
             backend,
             screen,
@@ -391,7 +514,17 @@ impl MailApp {
             account_editor: accounts.is_empty().then(AccountEditor::new),
             accounts,
             account_states: HashMap::new(),
+            smtp_accounts,
             pending_account_delete: None,
+            compose_editor: None,
+            search_editor: None,
+            search_query: String::new(),
+            search_results: Vec::new(),
+            search_has_more: false,
+            search_index_complete: true,
+            search_content_complete: true,
+            search_return_screen: Screen::Queue(WorkflowView::WarmAction),
+            search_return_selected: 0,
             onboarding_account,
             suggestions,
             onboarding_edit: None,
@@ -415,6 +548,7 @@ impl MailApp {
             reader_thread_id: None,
             reader_load_task: None,
             reader_content_task: None,
+            reader_target_message_id: None,
             html_renderer: IsolatedHtmlRenderer::default(),
             account_sync_task: None,
             sync_queue: VecDeque::new(),
@@ -422,6 +556,9 @@ impl MailApp {
             auto_sync_interval: DEFAULT_AUTO_SYNC_INTERVAL,
             last_auto_sync: None,
             last_sync_progress_refresh: None,
+            smtp_worker: Some(smtp_worker),
+            pending_submission: None,
+            last_submission_refresh: None,
             quit: false,
         };
         app.rebuild_contact_names();
@@ -457,7 +594,10 @@ impl MailApp {
                 }
             }
             Screen::Accounts => self.refresh_accounts().await?,
-            Screen::AccountEdit
+            Screen::Compose
+            | Screen::SearchInput
+            | Screen::SearchResults
+            | Screen::AccountEdit
             | Screen::AccountDeleteConfirm
             | Screen::Onboarding
             | Screen::OnboardingEdit
@@ -471,7 +611,12 @@ impl MailApp {
     pub async fn dispatch(&mut self, command: AppCommand) -> Result<()> {
         self.status = None;
         match command {
-            AppCommand::Quit => self.quit = true,
+            AppCommand::Quit => {
+                if let Some(worker) = &self.smtp_worker {
+                    worker.cancellation.cancel();
+                }
+                self.quit = true;
+            }
             AppCommand::Next => self.move_selection(1),
             AppCommand::Previous => self.move_selection(-1),
             AppCommand::ReaderNext => self.open_adjacent_reader(1),
@@ -482,6 +627,14 @@ impl MailApp {
             AppCommand::ReaderPageUp => self.page_reader(-1),
             AppCommand::ReaderScrollTop => self.reader_scroll = 0,
             AppCommand::ReaderScrollBottom => self.reader_scroll = self.reader_scroll_max.get(),
+            AppCommand::Reply => self.begin_reply(ReplyAudience::Sender).await?,
+            AppCommand::ReplyAll => self.begin_reply(ReplyAudience::All).await?,
+            AppCommand::ComposeSave => self.save_compose_draft(true).await?,
+            AppCommand::ComposeSend => self.send_compose().await?,
+            AppCommand::ComposeNewline => self.compose_newline(),
+            AppCommand::SearchStart => self.begin_search(),
+            AppCommand::SearchSubmit => self.submit_search().await?,
+            AppCommand::SearchCancel => self.cancel_search().await?,
             AppCommand::Back => self.go_back().await?,
             AppCommand::Open => self.open_selected().await?,
             AppCommand::WarmAction => self.switch_queue(WorkflowView::WarmAction).await?,
@@ -558,10 +711,81 @@ impl MailApp {
     /// when its interval has elapsed, and start the next queued account.
     pub async fn poll_background_tasks(&mut self) -> Result<()> {
         self.collect_finished_reader_tasks().await;
+        self.collect_smtp_worker().await;
+        self.refresh_pending_submission(Instant::now()).await?;
         self.refresh_running_sync_progress(Instant::now()).await?;
         self.collect_finished_sync().await?;
         self.schedule_auto_sync(Instant::now());
         self.start_next_queued_sync()
+    }
+
+    async fn collect_smtp_worker(&mut self) {
+        let Some(worker) = self.smtp_worker.take() else {
+            return;
+        };
+        if !worker.handle.is_finished() {
+            self.smtp_worker = Some(worker);
+            return;
+        }
+        match worker.handle.await {
+            Ok(Ok(())) if self.quit => {}
+            Ok(Ok(())) => self.status = Some("Outgoing-mail worker stopped".into()),
+            Ok(Err(error)) => {
+                self.status = Some(format!("Outgoing-mail worker failed: {error}"));
+            }
+            Err(error) if error.is_cancelled() && self.quit => {}
+            Err(error) => self.status = Some(format!("Outgoing-mail worker failed: {error}")),
+        }
+    }
+
+    async fn refresh_pending_submission(&mut self, now: Instant) -> Result<()> {
+        let Some(submission_id) = self.pending_submission else {
+            self.last_submission_refresh = None;
+            return Ok(());
+        };
+        if self
+            .last_submission_refresh
+            .is_some_and(|last| now.duration_since(last) < StdDuration::from_secs(1))
+        {
+            return Ok(());
+        }
+        self.last_submission_refresh = Some(now);
+        let submission = self.backend.outbox().get(submission_id).await?;
+        match submission.status {
+            SubmissionStatus::Pending | SubmissionStatus::InFlight => {
+                self.status = Some("Sending reply…".into());
+            }
+            SubmissionStatus::RetryScheduled => {
+                self.status = Some(format!(
+                    "Reply could not be sent yet; retry scheduled{}",
+                    submission
+                        .last_error
+                        .as_deref()
+                        .map(|error| format!(": {error}"))
+                        .unwrap_or_default()
+                ));
+            }
+            SubmissionStatus::Sent => {
+                self.status = Some("Reply sent".into());
+                self.pending_submission = None;
+            }
+            SubmissionStatus::Failed | SubmissionStatus::Ambiguous => {
+                self.status = Some(format!(
+                    "Reply delivery failed{}",
+                    submission
+                        .last_error
+                        .as_deref()
+                        .map(|error| format!(": {error}"))
+                        .unwrap_or_default()
+                ));
+                self.pending_submission = None;
+            }
+            SubmissionStatus::Cancelled => {
+                self.status = Some("Reply delivery was cancelled".into());
+                self.pending_submission = None;
+            }
+        }
+        Ok(())
     }
 
     async fn refresh_running_sync_progress(&mut self, now: Instant) -> Result<()> {
@@ -675,10 +899,20 @@ impl MailApp {
             task.handle.abort();
         }
         let backend = self.backend.clone();
+        let target_message_id = self.reader_target_message_id;
         self.reader_thread_id = Some(thread_id);
         self.reader_load_task = Some(ReaderLoadTask {
             thread_id,
-            handle: tokio::spawn(async move { backend.threads().get_latest(thread_id).await }),
+            handle: tokio::spawn(async move {
+                let mut thread = backend.threads().get_latest(thread_id).await?;
+                if let Some(message_id) = target_message_id {
+                    if thread.messages.last().map(|message| message.summary.id) != Some(message_id)
+                    {
+                        thread.messages = vec![backend.messages().get(message_id).await?];
+                    }
+                }
+                Ok(thread)
+            }),
         });
     }
 
@@ -687,6 +921,7 @@ impl MailApp {
             task.handle.abort();
         }
         let backend = self.backend.clone();
+        let target_message_id = self.reader_target_message_id;
         self.reader_content_task = Some(ReaderContentTask {
             thread_id,
             handle: tokio::spawn(async move {
@@ -694,7 +929,13 @@ impl MailApp {
                     .managed_imap_account_engine(ImapAccountEngineConfig::default())?
                     .fetch_message_content(message_id)
                     .await?;
-                backend.threads().get_latest(thread_id).await
+                let mut thread = backend.threads().get_latest(thread_id).await?;
+                if let Some(target) = target_message_id {
+                    if thread.messages.last().map(|message| message.summary.id) != Some(target) {
+                        thread.messages = vec![backend.messages().get(target).await?];
+                    }
+                }
+                Ok(thread)
             }),
         });
     }
@@ -1109,9 +1350,257 @@ impl MailApp {
         self.refresh_accounts().await
     }
 
+    fn begin_search(&mut self) {
+        if self.screen == Screen::SearchInput {
+            return;
+        }
+        if self.screen != Screen::SearchResults
+            && !(self.screen == Screen::Reader && self.previous_screen == Screen::SearchResults)
+        {
+            self.search_return_selected = self.selected;
+        }
+        self.search_return_screen = match self.screen {
+            Screen::Reader if self.previous_screen == Screen::SearchResults => {
+                self.search_return_screen
+            }
+            Screen::Reader => Screen::Reader,
+            Screen::SearchResults => self.search_return_screen,
+            screen => screen,
+        };
+        self.search_editor = Some(SearchEditor {
+            query: self.search_query.clone(),
+        });
+        self.screen = Screen::SearchInput;
+        self.status = Some(
+            "Search supports Gmail-style fields such as from:, to:, subject:, has:attachment, and after:"
+                .into(),
+        );
+    }
+
+    async fn submit_search(&mut self) -> Result<()> {
+        let Some(editor) = self.search_editor.take() else {
+            return Ok(());
+        };
+        let query = editor.query.trim().to_owned();
+        if query.is_empty() {
+            self.status = Some("Enter at least one search term".into());
+            self.search_editor = Some(editor);
+            return Ok(());
+        }
+        if let Err(error) = self.execute_search(query).await {
+            self.search_editor = Some(editor);
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    async fn execute_search(&mut self, query: String) -> Result<()> {
+        let page = self
+            .backend
+            .search()
+            .search(SearchRequest {
+                query: query.clone(),
+                page_size: 200,
+                cursor: None,
+            })
+            .await?;
+        self.search_query = query;
+        self.search_has_more = page.next_cursor.is_some();
+        self.search_results = page.items;
+        self.search_index_complete = page.index_results_complete;
+        self.search_content_complete = page.content_results_complete;
+        self.search_editor = None;
+        if self.search_return_screen == Screen::Reader {
+            self.search_return_screen = self.previous_screen;
+        }
+        self.screen = Screen::SearchResults;
+        self.selected = 0;
+        let count = self.search_results.len();
+        let mut status = if self.search_has_more {
+            format!("Showing the first {count} results; refine the query to narrow them")
+        } else {
+            format!("{count} search results")
+        };
+        if !self.search_index_complete {
+            status.push_str("; the search index is still catching up");
+        } else if !self.search_content_complete {
+            status.push_str("; some message bodies are not downloaded");
+        }
+        self.status = Some(status);
+        Ok(())
+    }
+
+    async fn cancel_search(&mut self) -> Result<()> {
+        self.search_editor = None;
+        self.screen = self.search_return_screen;
+        self.selected = self.search_return_selected;
+        self.refresh().await
+    }
+
+    async fn begin_reply(&mut self, audience: ReplyAudience) -> Result<()> {
+        if self.screen != Screen::Reader {
+            return Ok(());
+        }
+        if self.reader_is_blocked() && !self.security_override {
+            self.status = Some(
+                "Review the security warning and press O before choosing reply recipients".into(),
+            );
+            return Ok(());
+        }
+        let Some(message) = self
+            .current_thread
+            .as_ref()
+            .and_then(|thread| thread.messages.last())
+        else {
+            self.status = Some("Wait for the message to finish loading before replying".into());
+            return Ok(());
+        };
+        let account_id = message
+            .instances
+            .first()
+            .map(|instance| instance.account_id)
+            .or_else(|| (self.accounts.len() == 1).then(|| self.accounts[0].id));
+        let Some(account_id) = account_id else {
+            self.status = Some(
+                "Could not determine which account received this message; reply was not created"
+                    .into(),
+            );
+            return Ok(());
+        };
+        let existing = self
+            .backend
+            .drafts()
+            .editing_reply(account_id, message.summary.id)
+            .await?;
+        let resumed = existing.is_some();
+        let draft = match existing {
+            Some(draft) => draft,
+            None => {
+                self.backend
+                    .drafts()
+                    .create_reply(account_id, message.summary.id, audience)
+                    .await?
+            }
+        };
+        let recipient_summary = draft.content.to_addresses.join(", ");
+        self.compose_editor = Some(ComposeEditor::new(draft));
+        self.screen = Screen::Compose;
+        self.status = Some(if self.smtp_accounts.contains_key(&account_id) {
+            if resumed {
+                format!("Resumed saved reply to {recipient_summary}")
+            } else {
+                format!("Replying to {recipient_summary}")
+            }
+        } else {
+            format!(
+                "Draft created for {recipient_summary}; configure the SMTP server under Accounts before sending"
+            )
+        });
+        Ok(())
+    }
+
+    async fn save_compose_draft(&mut self, announce: bool) -> Result<()> {
+        let Some(mut editor) = self.compose_editor.take() else {
+            return Ok(());
+        };
+        let to_addresses = match parse_recipient_list(&editor.to) {
+            Ok(addresses) => addresses,
+            Err(error) => {
+                self.compose_editor = Some(editor);
+                return Err(error);
+            }
+        };
+        let cc_addresses = match parse_recipient_list(&editor.cc) {
+            Ok(addresses) => addresses,
+            Err(error) => {
+                self.compose_editor = Some(editor);
+                return Err(error);
+            }
+        };
+        let mut content = editor.draft.content.clone();
+        content.to_addresses = to_addresses;
+        content.cc_addresses = cc_addresses;
+        content.subject = editor.subject.clone();
+        content.body_text = editor.body.clone();
+        content.body_html = None;
+        match self
+            .backend
+            .drafts()
+            .save(editor.draft.id, editor.draft.revision, content)
+            .await
+        {
+            Ok(draft) => {
+                editor.draft = draft;
+                self.compose_editor = Some(editor);
+                if announce {
+                    self.status = Some("Draft saved".into());
+                }
+                Ok(())
+            }
+            Err(error) => {
+                self.compose_editor = Some(editor);
+                Err(error)
+            }
+        }
+    }
+
+    async fn send_compose(&mut self) -> Result<()> {
+        self.save_compose_draft(false).await?;
+        let Some(editor) = self.compose_editor.take() else {
+            return Ok(());
+        };
+        let submission = match self
+            .backend
+            .outbox()
+            .enqueue(
+                editor.draft.id,
+                editor.draft.revision,
+                SendingLimits::default(),
+            )
+            .await
+        {
+            Ok(submission) => submission,
+            Err(error) => {
+                self.compose_editor = Some(editor);
+                return Err(error);
+            }
+        };
+        self.pending_submission = Some(submission.id);
+        self.last_submission_refresh = None;
+        self.screen = Screen::Reader;
+        self.status = Some("Reply queued for encrypted SMTP submission".into());
+        Ok(())
+    }
+
+    fn compose_newline(&mut self) {
+        let Some(editor) = &mut self.compose_editor else {
+            return;
+        };
+        if editor.selected_field == ComposeField::Body {
+            if editor.body.len() < 10 * 1024 * 1024 {
+                editor.body.push('\n');
+            }
+        } else {
+            self.move_compose_field(1);
+        }
+    }
+
+    fn move_compose_field(&mut self, delta: isize) {
+        let Some(editor) = &mut self.compose_editor else {
+            return;
+        };
+        let index = ComposeField::ALL
+            .iter()
+            .position(|field| *field == editor.selected_field)
+            .unwrap_or(0);
+        let last = ComposeField::ALL.len().saturating_sub(1);
+        editor.selected_field = ComposeField::ALL[index.saturating_add_signed(delta).min(last)];
+    }
+
     async fn refresh_accounts(&mut self) -> Result<()> {
         self.accounts = self.backend.accounts().list().await?;
         self.account_states.clear();
+        self.smtp_accounts.clear();
         // Reading durable sync state does not touch the network or parse any
         // server input, so this does not bypass the isolated production sync
         // path used below.
@@ -1119,6 +1608,13 @@ impl MailApp {
             .backend
             .managed_imap_account_engine_in_process(ImapAccountEngineConfig::default())?;
         for account in &self.accounts {
+            match self.backend.sending().smtp_account(account.id).await {
+                Ok(smtp) => {
+                    self.smtp_accounts.insert(account.id, smtp);
+                }
+                Err(BackendError::NotFound { .. }) => {}
+                Err(error) => return Err(error),
+            }
             if account.kind == AccountKind::Imap {
                 let state = state_reader.state(account.id).await?;
                 self.account_states.insert(account.id, state);
@@ -1152,7 +1648,11 @@ impl MailApp {
             },
             None => AccountAuthentication::Password,
         };
-        self.account_editor = Some(AccountEditor::from_account(&account, authentication)?);
+        self.account_editor = Some(AccountEditor::from_account(
+            &account,
+            authentication,
+            self.smtp_accounts.get(&account.id),
+        )?);
         self.screen = Screen::AccountEdit;
         Ok(())
     }
@@ -1181,6 +1681,29 @@ impl MailApp {
             self.account_editor = Some(editor);
             return Ok(());
         }
+        let smtp_host = editor.smtp_host.trim().to_owned();
+        let smtp_settings = if smtp_host.is_empty() {
+            None
+        } else {
+            let smtp_port = match editor.smtp_port.parse::<u16>() {
+                Ok(port) if port > 0 => port,
+                _ => {
+                    self.status = Some("SMTP port must be a number from 1 through 65535".into());
+                    self.account_editor = Some(editor);
+                    return Ok(());
+                }
+            };
+            Some(SmtpSettings {
+                host: smtp_host,
+                port: smtp_port,
+                username: username.clone(),
+                security: editor.smtp_security,
+                auth: match editor.authentication {
+                    AccountAuthentication::Password => SmtpAuthMethod::Password,
+                    AccountAuthentication::OAuthAccessToken => SmtpAuthMethod::XOAuth2,
+                },
+            })
+        };
         let trusted_authserv_ids = match parse_trusted_authserv_ids(&editor.trusted_authserv_ids) {
             Ok(values) => values,
             Err(detail) => {
@@ -1214,7 +1737,7 @@ impl MailApp {
             imap: Some(lizard_mail_backend::ImapSettings {
                 host,
                 port,
-                username,
+                username: username.clone(),
                 security: editor.security,
             }),
         };
@@ -1284,6 +1807,36 @@ impl MailApp {
                 return Err(error);
             }
         };
+        let smtp_followed_imap_credential = editor.original_smtp_credential_ref.is_some()
+            && editor.original_smtp_credential_ref == editor.credential_ref;
+        let smtp_result = match (&smtp_settings, &editor.original_smtp_settings) {
+            (Some(settings), original)
+                if original.as_ref() != Some(settings)
+                    || (smtp_followed_imap_credential
+                        && editor.original_smtp_credential_ref != saved.credential_ref) =>
+            {
+                if let Some(credential_ref) = saved.credential_ref.clone() {
+                    self.backend
+                        .sending()
+                        .configure_smtp(saved.id, settings.clone(), credential_ref)
+                        .await
+                        .map(|_| ())
+                } else {
+                    Err(BackendError::InvalidInput(
+                        "the IMAP account has no reusable credential for SMTP".into(),
+                    ))
+                }
+            }
+            (None, Some(_)) => self.backend.sending().remove_smtp(saved.id).await,
+            _ => Ok(()),
+        };
+        if let Err(error) = smtp_result {
+            editor.account_id = Some(saved.id);
+            editor.credential_ref = saved.credential_ref;
+            editor.secret_entered = false;
+            self.account_editor = Some(editor);
+            return Err(error);
+        }
         self.screen = Screen::Accounts;
         self.account_editor = None;
         self.refresh_accounts().await?;
@@ -1383,7 +1936,9 @@ impl MailApp {
     }
 
     fn move_editor_field(&mut self, delta: isize) {
-        if let Some(editor) = &mut self.contact_editor {
+        if self.compose_editor.is_some() {
+            self.move_compose_field(delta);
+        } else if let Some(editor) = &mut self.contact_editor {
             let index = ContactField::ALL
                 .iter()
                 .position(|field| *field == editor.selected_field)
@@ -1435,6 +1990,22 @@ impl MailApp {
                     AccountAuthentication::OAuthAccessToken => AccountAuthentication::Password,
                 };
             }
+            AccountField::SmtpSecurity => {
+                editor.smtp_security = match editor.smtp_security {
+                    SmtpSecurity::ImplicitTls => {
+                        if editor.smtp_port == "465" {
+                            editor.smtp_port = "587".into();
+                        }
+                        SmtpSecurity::StartTls
+                    }
+                    SmtpSecurity::StartTls => {
+                        if editor.smtp_port == "587" {
+                            editor.smtp_port = "465".into();
+                        }
+                        SmtpSecurity::ImplicitTls
+                    }
+                };
+            }
             _ => {}
         }
     }
@@ -1482,7 +2053,7 @@ impl MailApp {
         if self.account_editor.as_ref().is_some_and(|editor| {
             matches!(
                 editor.selected_field,
-                AccountField::Security | AccountField::Authentication
+                AccountField::Security | AccountField::Authentication | AccountField::SmtpSecurity
             )
         }) {
             self.toggle_account_choice();
@@ -1492,6 +2063,27 @@ impl MailApp {
     }
 
     fn edit_backspace(&mut self) {
+        if let Some(editor) = &mut self.search_editor {
+            editor.query.pop();
+            return;
+        }
+        if let Some(editor) = &mut self.compose_editor {
+            match editor.selected_field {
+                ComposeField::To => {
+                    editor.to.pop();
+                }
+                ComposeField::Cc => {
+                    editor.cc.pop();
+                }
+                ComposeField::Subject => {
+                    editor.subject.pop();
+                }
+                ComposeField::Body => {
+                    editor.body.pop();
+                }
+            }
+            return;
+        }
         if let Some(edit) = &mut self.onboarding_edit {
             edit.display_name.pop();
             return;
@@ -1530,16 +2122,45 @@ impl MailApp {
             AccountField::AuthservIds => {
                 editor.trusted_authserv_ids.pop();
             }
+            AccountField::SmtpHost => {
+                editor.smtp_host.pop();
+            }
+            AccountField::SmtpPort => {
+                editor.smtp_port.pop();
+            }
             AccountField::Secret => {
                 editor.secret.pop();
                 editor.secret_entered = !editor.secret.is_empty();
             }
-            AccountField::Security | AccountField::Authentication => {}
+            AccountField::Security | AccountField::Authentication | AccountField::SmtpSecurity => {}
         }
     }
 
     fn edit_character(&mut self, character: char) {
         if character.is_control() {
+            return;
+        }
+        if let Some(editor) = &mut self.search_editor {
+            if editor.query.len() < 8 * 1024 {
+                editor.query.push(character);
+            }
+            return;
+        }
+        if let Some(editor) = &mut self.compose_editor {
+            match editor.selected_field {
+                ComposeField::To if editor.to.len() < 16 * 1024 => editor.to.push(character),
+                ComposeField::Cc if editor.cc.len() < 16 * 1024 => editor.cc.push(character),
+                ComposeField::Subject if editor.subject.len() < 998 => {
+                    editor.subject.push(character)
+                }
+                ComposeField::Body if editor.body.len() < 10 * 1024 * 1024 => {
+                    editor.body.push(character)
+                }
+                ComposeField::To
+                | ComposeField::Cc
+                | ComposeField::Subject
+                | ComposeField::Body => {}
+            }
             return;
         }
         if let Some(edit) = &mut self.onboarding_edit {
@@ -1587,6 +2208,14 @@ impl MailApp {
             {
                 editor.trusted_authserv_ids.push(character)
             }
+            AccountField::SmtpHost
+                if editor.smtp_host.len() < 253 && !character.is_whitespace() =>
+            {
+                editor.smtp_host.push(character)
+            }
+            AccountField::SmtpPort if editor.smtp_port.len() < 5 && character.is_ascii_digit() => {
+                editor.smtp_port.push(character)
+            }
             AccountField::Secret if editor.secret.len() < 16 * 1024 => {
                 editor.secret.push(character);
                 editor.secret_entered = true;
@@ -1598,11 +2227,50 @@ impl MailApp {
             | AccountField::Security
             | AccountField::Authentication
             | AccountField::AuthservIds
+            | AccountField::SmtpHost
+            | AccountField::SmtpPort
+            | AccountField::SmtpSecurity
             | AccountField::Secret => {}
         }
     }
 
     fn edit_paste(&mut self, value: &str) {
+        if self.search_editor.is_some() {
+            for character in value.chars() {
+                if !character.is_control() || character == '\t' {
+                    self.edit_character(if character == '\t' { ' ' } else { character });
+                }
+            }
+            return;
+        }
+        if let Some(field) = self
+            .compose_editor
+            .as_ref()
+            .map(|editor| editor.selected_field)
+        {
+            for character in value.chars() {
+                match field {
+                    ComposeField::Body if matches!(character, '\n' | '\t') => {
+                        if let Some(editor) = &mut self.compose_editor {
+                            if editor.body.len() < 10 * 1024 * 1024 {
+                                editor.body.push(character);
+                            }
+                        }
+                    }
+                    ComposeField::Body if character == '\r' => {}
+                    ComposeField::To | ComposeField::Cc | ComposeField::Subject
+                        if matches!(character, '\r' | '\n' | '\t') =>
+                    {
+                        if field != ComposeField::Subject {
+                            self.edit_character(',');
+                        }
+                    }
+                    _ if !character.is_control() => self.edit_character(character),
+                    _ => {}
+                }
+            }
+            return;
+        }
         let contact_addresses = self
             .contact_editor
             .as_ref()
@@ -1635,10 +2303,23 @@ impl MailApp {
                     self.previous_screen = self.screen;
                     self.screen = Screen::Reader;
                     self.current_thread = None;
+                    self.reader_target_message_id = None;
                     self.security_override = false;
                     self.reset_reader_scroll();
                     self.clear_reader_html();
                     self.start_reader_load(id);
+                }
+            }
+            Screen::SearchResults => {
+                if let Some(result) = self.search_results.get(self.selected).cloned() {
+                    self.previous_screen = Screen::SearchResults;
+                    self.screen = Screen::Reader;
+                    self.current_thread = None;
+                    self.reader_target_message_id = Some(result.id);
+                    self.security_override = false;
+                    self.reset_reader_scroll();
+                    self.clear_reader_html();
+                    self.start_reader_load(result.thread_id);
                 }
             }
             Screen::Onboarding => self.begin_suggestion_edit(),
@@ -1652,6 +2333,14 @@ impl MailApp {
     async fn go_back(&mut self) -> Result<()> {
         match self.screen {
             Screen::SimilarityPreview => self.cancel_similarity_preview(),
+            Screen::SearchInput => self.cancel_search().await?,
+            Screen::SearchResults => self.cancel_search().await?,
+            Screen::Compose => {
+                self.save_compose_draft(false).await?;
+                self.compose_editor = None;
+                self.screen = Screen::Reader;
+                self.status = Some("Draft saved".into());
+            }
             Screen::Reader | Screen::Contacts | Screen::Help | Screen::Accounts => {
                 if self.screen == Screen::Reader {
                     self.cancel_reader_tasks();
@@ -1814,6 +2503,29 @@ impl MailApp {
     }
 
     async fn remove_current_reader_and_advance(&mut self, id: ThreadId) -> Result<()> {
+        if self.previous_screen == Screen::SearchResults {
+            let selected = self.selected;
+            self.search_results
+                .retain(|message| message.thread_id != id);
+            if self.search_results.is_empty() {
+                self.cancel_reader_tasks();
+                self.screen = Screen::SearchResults;
+                self.current_thread = None;
+                self.selected = 0;
+                self.clear_reader_html();
+                return Ok(());
+            }
+            self.selected = selected.min(self.search_results.len().saturating_sub(1));
+            let result = self.search_results[self.selected].clone();
+            self.cancel_reader_tasks();
+            self.reader_target_message_id = Some(result.id);
+            self.current_thread = None;
+            self.security_override = false;
+            self.reset_reader_scroll();
+            self.clear_reader_html();
+            self.start_reader_load(result.thread_id);
+            return Ok(());
+        }
         let removed_index = self
             .threads
             .iter()
@@ -2091,6 +2803,7 @@ impl MailApp {
             Screen::Onboarding => self.suggestions.len(),
             Screen::Contacts => self.contacts.len(),
             Screen::Queue(_) => self.threads.len(),
+            Screen::SearchResults => self.search_results.len(),
             _ => 0,
         };
         if length == 0 {
@@ -2104,7 +2817,37 @@ impl MailApp {
     }
 
     fn open_adjacent_reader(&mut self, delta: isize) {
-        if self.screen != Screen::Reader || self.threads.is_empty() {
+        if self.screen != Screen::Reader {
+            return;
+        }
+        if self.previous_screen == Screen::SearchResults {
+            if self.search_results.is_empty() {
+                return;
+            }
+            let next = self
+                .selected
+                .saturating_add_signed(delta)
+                .min(self.search_results.len().saturating_sub(1));
+            if next == self.selected {
+                self.status = Some(if delta < 0 {
+                    "Already at the first search result".into()
+                } else {
+                    "Already at the last search result".into()
+                });
+                return;
+            }
+            self.selected = next;
+            let result = self.search_results[next].clone();
+            self.cancel_reader_tasks();
+            self.reader_target_message_id = Some(result.id);
+            self.current_thread = None;
+            self.security_override = false;
+            self.reset_reader_scroll();
+            self.clear_reader_html();
+            self.start_reader_load(result.thread_id);
+            return;
+        }
+        if self.threads.is_empty() {
             return;
         }
         let next = self
@@ -2166,6 +2909,7 @@ impl MailApp {
             Screen::Onboarding => self.suggestions.len(),
             Screen::Contacts => self.contacts.len(),
             Screen::Queue(_) => self.threads.len(),
+            Screen::SearchResults => self.search_results.len(),
             _ => 0,
         };
         self.selected = self.selected.min(length.saturating_sub(1));
@@ -2198,11 +2942,16 @@ impl MailApp {
             task.handle.abort();
         }
         self.reader_thread_id = None;
+        self.reader_target_message_id = None;
     }
 }
 
 impl Drop for MailApp {
     fn drop(&mut self) {
+        if let Some(worker) = self.smtp_worker.take() {
+            worker.cancellation.cancel();
+            worker.handle.abort();
+        }
         if let Some(task) = self.account_sync_task.take() {
             // The isolated engine configures its child with kill_on_drop, so
             // aborting the supervisor task cannot orphan a network worker.
@@ -2211,6 +2960,28 @@ impl Drop for MailApp {
         self.cancel_reader_tasks();
         self.clear_reader_html();
     }
+}
+
+fn parse_recipient_list(value: &str) -> Result<Vec<String>> {
+    let mut recipients = Vec::new();
+    for raw in value.split([',', ';']) {
+        let address = raw.trim();
+        if address.is_empty() {
+            continue;
+        }
+        if address.len() > 320 || address.chars().any(char::is_control) || !address.contains('@') {
+            return Err(BackendError::InvalidInput(format!(
+                "invalid recipient address: {address:?}"
+            )));
+        }
+        if !recipients
+            .iter()
+            .any(|existing: &String| existing.eq_ignore_ascii_case(address))
+        {
+            recipients.push(address.to_owned());
+        }
+    }
+    Ok(recipients)
 }
 
 fn parse_trusted_authserv_ids(value: &str) -> std::result::Result<Vec<String>, String> {

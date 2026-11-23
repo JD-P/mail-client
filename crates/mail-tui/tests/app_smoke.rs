@@ -1,8 +1,8 @@
 use chrono::Utc;
 use lizard_mail_backend::{
     AccountKind, Backend, BackendConfig, ContactAddress, FolderKind, ImapSecurity, ImapSettings,
-    IngestMessage, NewAccount, NewContact, NewFolder, RemoteMessageIdentity, ThreadWorkStatus,
-    WarmRoute, WorkflowView,
+    IngestMessage, NewAccount, NewContact, NewFolder, RemoteMessageIdentity, SmtpAuthMethod,
+    SmtpSecurity, SmtpSettings, ThreadWorkStatus, WarmRoute, WorkflowView,
 };
 use lizard_mail_tui::app::{AppCommand, MailApp, Screen};
 use lizard_mail_tui::{HtmlRenderIsolationConfig, IsolatedHtmlRenderer, Limits};
@@ -43,7 +43,7 @@ async fn empty_profile_opens_account_connection_onboarding() {
         .iter()
         .map(|cell| cell.symbol())
         .collect::<String>();
-    assert!(text.contains("ACCOUNT / IMAP CONNECTION"));
+    assert!(text.contains("ACCOUNT / MAIL CONNECTIONS"));
     assert!(text.contains("Connect an IMAP account"));
     assert!(text.contains("Email / username"));
     assert!(text.contains("TLS from connection start"));
@@ -76,6 +76,230 @@ async fn empty_profile_opens_account_connection_onboarding() {
         .as_deref()
         .unwrap()
         .starts_with("lizard-credential:v1:"));
+}
+
+#[tokio::test]
+async fn reader_creates_and_saves_a_threaded_reply_with_visible_recipients() {
+    let profile = tempfile::tempdir().unwrap();
+    let backend = Backend::open(BackendConfig::new(profile.path()))
+        .await
+        .unwrap();
+    let account = backend
+        .accounts()
+        .add_with_credential(
+            NewAccount {
+                name: "Personal".into(),
+                kind: AccountKind::Imap,
+                credential_ref: None,
+                imap: Some(ImapSettings {
+                    host: "imap.example.test".into(),
+                    port: 993,
+                    username: "reader@example.test".into(),
+                    security: ImapSecurity::ImplicitTls,
+                }),
+            },
+            lizard_mail_backend::ImapCredential::Password(lizard_mail_backend::SecretValue::new(
+                "password",
+            )),
+        )
+        .await
+        .unwrap();
+    let folder = backend
+        .folders()
+        .add(NewFolder {
+            account_id: Some(account.id),
+            name: "Inbox".into(),
+            kind: FolderKind::Remote,
+            remote_name: Some("INBOX".into()),
+        })
+        .await
+        .unwrap();
+    backend
+        .sending()
+        .configure_smtp(
+            account.id,
+            SmtpSettings {
+                host: "127.0.0.1".into(),
+                port: 9,
+                username: "reader@example.test".into(),
+                security: SmtpSecurity::ImplicitTls,
+                auth: SmtpAuthMethod::Password,
+            },
+            account.credential_ref.clone().unwrap(),
+        )
+        .await
+        .unwrap();
+    backend
+        .contacts()
+        .add(NewContact {
+            display_name: "Friendly Name".into(),
+            addresses: vec![ContactAddress {
+                address: "friend@example.test".into(),
+                accepted_name: Some("Friendly Name".into()),
+            }],
+        })
+        .await
+        .unwrap();
+    let mut message = IngestMessage::local(
+        concat!(
+            "From: Friendly Name <friend@example.test>\r\n",
+            "To: reader@example.test\r\n",
+            "Cc: colleague@example.test\r\n",
+            "Message-ID: <reply-source@example.test>\r\n",
+            "Subject: Project update\r\n\r\n",
+            "Can you review this?\r\n"
+        )
+        .as_bytes(),
+    );
+    message.remote = Some(RemoteMessageIdentity {
+        account_id: account.id,
+        folder_id: folder.id,
+        uid_validity: 1,
+        uid: 1,
+        mod_sequence: None,
+        flags: Vec::new(),
+    });
+    backend.ingest(message).await.unwrap();
+
+    let mut app = MailApp::open(backend.clone()).await.unwrap();
+    app.dispatch(AppCommand::Open).await.unwrap();
+    wait_for_reader_metadata(&mut app).await;
+    if app.reader_is_blocked() {
+        app.dispatch(AppCommand::RestrictedOpen).await.unwrap();
+    }
+    app.dispatch(AppCommand::ReplyAll).await.unwrap();
+    assert_eq!(app.screen, Screen::Compose);
+    let editor = app.compose_editor.as_mut().unwrap();
+    assert_eq!(editor.to, "friend@example.test");
+    assert_eq!(editor.cc, "colleague@example.test");
+    assert_eq!(editor.subject, "Re: Project update");
+    editor.body = "Yes — I will review it today.\n".into();
+    let draft_id = editor.draft.id;
+    app.dispatch(AppCommand::ComposeSave).await.unwrap();
+
+    let draft = backend.drafts().get(draft_id).await.unwrap();
+    assert_eq!(draft.content.to_addresses, ["friend@example.test"]);
+    assert_eq!(draft.content.cc_addresses, ["colleague@example.test"]);
+    assert_eq!(draft.content.body_text, "Yes — I will review it today.\n");
+    assert_eq!(
+        draft.content.in_reply_to.as_deref(),
+        Some("reply-source@example.test")
+    );
+    app.dispatch(AppCommand::Back).await.unwrap();
+    assert_eq!(app.screen, Screen::Reader);
+    app.dispatch(AppCommand::Reply).await.unwrap();
+    assert_eq!(app.screen, Screen::Compose);
+    assert_eq!(app.compose_editor.as_ref().unwrap().draft.id, draft_id);
+    assert_eq!(
+        app.compose_editor.as_ref().unwrap().body,
+        "Yes — I will review it today.\n"
+    );
+
+    let terminal_backend = TestBackend::new(120, 32);
+    let mut terminal = Terminal::new(terminal_backend).unwrap();
+    terminal
+        .draw(|frame| lizard_mail_tui::ui::draw(frame, &app))
+        .unwrap();
+    let text = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(text.contains("WARM / REPLY"));
+    assert!(text.contains("verify this address before sending"));
+    assert!(text.contains("friend@example.test"));
+    assert!(text.contains("Ctrl-D send"));
+
+    app.dispatch(AppCommand::ComposeSend).await.unwrap();
+    assert_eq!(app.screen, Screen::Reader);
+    assert_eq!(backend.outbox().list().await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn slash_search_opens_the_exact_matching_message_in_a_conversation() {
+    let profile = tempfile::tempdir().unwrap();
+    let backend = Backend::open(BackendConfig::new(profile.path()))
+        .await
+        .unwrap();
+    backend
+        .accounts()
+        .add(NewAccount {
+            name: "Local".into(),
+            kind: AccountKind::Local,
+            credential_ref: None,
+            imap: None,
+        })
+        .await
+        .unwrap();
+    backend
+        .contacts()
+        .add(NewContact {
+            display_name: "Friendly Name".into(),
+            addresses: vec![ContactAddress {
+                address: "friend@example.test".into(),
+                accepted_name: Some("Friendly Name".into()),
+            }],
+        })
+        .await
+        .unwrap();
+    let matched = backend
+        .ingest(IngestMessage::local(
+            concat!(
+                "From: Friendly Name <friend@example.test>\r\n",
+                "To: reader@example.test\r\n",
+                "Message-ID: <search-old@example.test>\r\n",
+                "Subject: Cobalt migration details\r\n\r\n",
+                "The unique needleword appears only in this older message.\r\n"
+            )
+            .as_bytes(),
+        ))
+        .await
+        .unwrap();
+    backend
+        .ingest(IngestMessage::local(
+            concat!(
+                "From: Friendly Name <friend@example.test>\r\n",
+                "To: reader@example.test\r\n",
+                "Message-ID: <search-new@example.test>\r\n",
+                "In-Reply-To: <search-old@example.test>\r\n",
+                "References: <search-old@example.test>\r\n",
+                "Subject: Re: Cobalt migration details\r\n\r\n",
+                "This newest reply deliberately omits the unique term.\r\n"
+            )
+            .as_bytes(),
+        ))
+        .await
+        .unwrap();
+
+    let mut app = MailApp::open(backend).await.unwrap();
+    app.dispatch(AppCommand::SearchStart).await.unwrap();
+    assert_eq!(app.screen, Screen::SearchInput);
+    app.dispatch(AppCommand::EditPaste(Zeroizing::new("needleword".into())))
+        .await
+        .unwrap();
+    app.dispatch(AppCommand::SearchSubmit).await.unwrap();
+    assert_eq!(app.screen, Screen::SearchResults);
+    assert_eq!(app.search_results.len(), 1);
+    assert_eq!(app.search_results[0].id, matched);
+
+    app.dispatch(AppCommand::Open).await.unwrap();
+    wait_for_reader_metadata(&mut app).await;
+    assert_eq!(
+        app.current_thread
+            .as_ref()
+            .unwrap()
+            .messages
+            .last()
+            .unwrap()
+            .summary
+            .id,
+        matched,
+        "opening search must show the matching message, not merely the newest message in its thread"
+    );
+    app.dispatch(AppCommand::Back).await.unwrap();
+    assert_eq!(app.screen, Screen::SearchResults);
 }
 
 #[tokio::test]
@@ -130,6 +354,49 @@ async fn accounts_menu_edits_syncs_and_confirms_destructive_removal() {
         .unwrap();
     assert_eq!(app.screen, Screen::AccountEdit);
     assert!(backend.accounts().list().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn account_editor_configures_encrypted_smtp_for_replies() {
+    let profile = tempfile::tempdir().unwrap();
+    let backend = Backend::open(BackendConfig::new(profile.path()))
+        .await
+        .unwrap();
+    let account = backend
+        .accounts()
+        .add_with_credential(
+            NewAccount {
+                name: "Personal".into(),
+                kind: AccountKind::Imap,
+                credential_ref: None,
+                imap: Some(ImapSettings {
+                    host: "127.0.0.1".into(),
+                    port: 993,
+                    username: "reader@example.test".into(),
+                    security: ImapSecurity::ImplicitTls,
+                }),
+            },
+            lizard_mail_backend::ImapCredential::Password(lizard_mail_backend::SecretValue::new(
+                "password",
+            )),
+        )
+        .await
+        .unwrap();
+    let mut app = MailApp::open(backend.clone()).await.unwrap();
+    app.dispatch(AppCommand::Accounts).await.unwrap();
+    app.dispatch(AppCommand::AccountEdit).await.unwrap();
+    let editor = app.account_editor.as_mut().unwrap();
+    editor.smtp_host = "smtp.example.test".into();
+    editor.smtp_port = "587".into();
+    editor.smtp_security = SmtpSecurity::StartTls;
+    app.dispatch(AppCommand::AccountSave).await.unwrap();
+
+    let smtp = backend.sending().smtp_account(account.id).await.unwrap();
+    assert_eq!(smtp.settings.host, "smtp.example.test");
+    assert_eq!(smtp.settings.port, 587);
+    assert_eq!(smtp.settings.security, SmtpSecurity::StartTls);
+    assert_eq!(smtp.settings.username, "reader@example.test");
+    assert_eq!(smtp.credential_ref, account.credential_ref.unwrap());
 }
 
 #[tokio::test]

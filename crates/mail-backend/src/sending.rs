@@ -330,6 +330,34 @@ impl Drafts {
         load_draft_on(&connection, id).await
     }
 
+    /// Return the newest still-editable reply to one exact source message.
+    ///
+    /// This lets a frontend resume an autosaved reply without scanning sent
+    /// draft history or loading attachments for unrelated drafts.
+    pub async fn editing_reply(
+        &self,
+        account_id: AccountId,
+        parent_message_id: MessageId,
+    ) -> Result<Option<Draft>> {
+        let connection = self.0.inner.connection.lock().await;
+        let mut rows = connection
+            .query(
+                "SELECT id FROM drafts WHERE account_id = ?1 AND parent_message_id = ?2 AND status = 'editing' ORDER BY updated_at DESC, id LIMIT 1",
+                (account_id.to_string(), parent_message_id.to_string()),
+            )
+            .await?;
+        let id = rows
+            .next()
+            .await?
+            .map(|row| parse_id(row.get::<String>(0)?, "draft"))
+            .transpose()?;
+        drop(rows);
+        match id {
+            Some(id) => load_draft_on(&connection, id).await.map(Some),
+            None => Ok(None),
+        }
+    }
+
     pub async fn list(&self) -> Result<Vec<Draft>> {
         let connection = self.0.inner.connection.lock().await;
         let mut rows = connection

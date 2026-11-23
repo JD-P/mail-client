@@ -68,7 +68,11 @@ async fn run(
             Event::Paste(value)
                 if matches!(
                     app.screen,
-                    Screen::AccountEdit | Screen::OnboardingEdit | Screen::ContactEdit
+                    Screen::AccountEdit
+                        | Screen::OnboardingEdit
+                        | Screen::ContactEdit
+                        | Screen::Compose
+                        | Screen::SearchInput
                 ) =>
             {
                 Some(AppCommand::EditPaste(Zeroizing::new(value)))
@@ -88,6 +92,36 @@ fn command_for(screen: Screen, key: KeyEvent) -> Option<AppCommand> {
     if matches!(key.code, KeyCode::Char('c' | 'C')) && key.modifiers.contains(KeyModifiers::CONTROL)
     {
         return Some(AppCommand::Quit);
+    }
+    if screen == Screen::SearchInput {
+        return match (key.code, key.modifiers) {
+            (KeyCode::Esc, _) => Some(AppCommand::SearchCancel),
+            (KeyCode::Enter, _) => Some(AppCommand::SearchSubmit),
+            (KeyCode::Backspace, _) => Some(AppCommand::EditBackspace),
+            (KeyCode::Char(character), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+                Some(AppCommand::EditCharacter(character))
+            }
+            _ => None,
+        };
+    }
+    if screen == Screen::Compose {
+        return match (key.code, key.modifiers) {
+            (KeyCode::Esc, _) => Some(AppCommand::Back),
+            (KeyCode::Tab | KeyCode::Down, _) => Some(AppCommand::EditNextField),
+            (KeyCode::BackTab | KeyCode::Up, _) => Some(AppCommand::EditPreviousField),
+            (KeyCode::Char('s' | 'S'), modifiers) if modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(AppCommand::ComposeSave)
+            }
+            (KeyCode::Char('d' | 'D'), modifiers) if modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(AppCommand::ComposeSend)
+            }
+            (KeyCode::Enter, _) => Some(AppCommand::ComposeNewline),
+            (KeyCode::Backspace, _) => Some(AppCommand::EditBackspace),
+            (KeyCode::Char(character), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+                Some(AppCommand::EditCharacter(character))
+            }
+            _ => None,
+        };
     }
     if screen == Screen::AccountEdit {
         return match (key.code, key.modifiers) {
@@ -199,6 +233,8 @@ fn command_for(screen: Screen, key: KeyEvent) -> Option<AppCommand> {
             KeyCode::PageDown | KeyCode::Char(' ') => Some(AppCommand::ReaderPageDown),
             KeyCode::Home | KeyCode::Char('g') => Some(AppCommand::ReaderScrollTop),
             KeyCode::End | KeyCode::Char('G') => Some(AppCommand::ReaderScrollBottom),
+            KeyCode::Char('r') => Some(AppCommand::Reply),
+            KeyCode::Char('R') => Some(AppCommand::ReplyAll),
             _ => None,
         };
         if command.is_some() {
@@ -225,6 +261,7 @@ fn command_for(screen: Screen, key: KeyEvent) -> Option<AppCommand> {
         KeyCode::Char('d') => Some(AppCommand::MarkDone),
         KeyCode::Char('w') => Some(AppCommand::MarkWaiting),
         KeyCode::Char('s') => Some(AppCommand::SnoozeOneDay),
+        KeyCode::Char('/') => Some(AppCommand::SearchStart),
         KeyCode::Char('a') => Some(AppCommand::MakeActionableOnce),
         KeyCode::Char('>') => Some(AppCommand::MoveToFyi),
         KeyCode::Char('<') => Some(AppCommand::MoveToAction),
@@ -345,6 +382,39 @@ mod tests {
             command_for(Screen::Reader, key(KeyCode::Char('<'))),
             Some(AppCommand::MoveToAction)
         ));
+        assert!(matches!(
+            command_for(Screen::Reader, key(KeyCode::Char('r'))),
+            Some(AppCommand::Reply)
+        ));
+        assert!(matches!(
+            command_for(Screen::Reader, key(KeyCode::Char('R'))),
+            Some(AppCommand::ReplyAll)
+        ));
+    }
+
+    #[test]
+    fn compose_has_explicit_save_and_send_shortcuts() {
+        assert!(matches!(
+            command_for(
+                Screen::Compose,
+                KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL)
+            ),
+            Some(AppCommand::ComposeSave)
+        ));
+        assert!(matches!(
+            command_for(
+                Screen::Compose,
+                KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL)
+            ),
+            Some(AppCommand::ComposeSend)
+        ));
+        assert!(matches!(
+            command_for(
+                Screen::Compose,
+                KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)
+            ),
+            Some(AppCommand::Back)
+        ));
     }
 
     #[test]
@@ -368,5 +438,25 @@ mod tests {
             Some(AppCommand::Spam)
         ));
         assert!(command_for(Screen::Queue(WorkflowView::WarmAction), key('f')).is_none());
+    }
+
+    #[test]
+    fn slash_opens_search_without_displacing_snooze() {
+        let key = |character| KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE);
+        assert!(matches!(
+            command_for(Screen::Queue(WorkflowView::WarmAction), key('/')),
+            Some(AppCommand::SearchStart)
+        ));
+        assert!(matches!(
+            command_for(Screen::Queue(WorkflowView::WarmAction), key('s')),
+            Some(AppCommand::SnoozeOneDay)
+        ));
+        assert!(matches!(
+            command_for(
+                Screen::SearchInput,
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)
+            ),
+            Some(AppCommand::SearchSubmit)
+        ));
     }
 }
