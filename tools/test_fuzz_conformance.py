@@ -64,6 +64,7 @@ class GeneratorTests(unittest.TestCase):
             fuzz_cases.validate_inert_source(case.source)
             seen.add(dict(case.factors)["template"])
             self.assertNotIn(b"FUZZ_SLOT", case.source)
+            self.assertIn(b"scrollbar-width:none", case.source)
         self.assertEqual(seen, set(fuzz_cases.SEED_NAMES))
 
     def test_viewports_rotate_by_complete_family_block(self):

@@ -30,16 +30,29 @@ impl Length {
     pub fn eval(self, basis: Au, font: Au, root: Au, vw: Au, vh: Au) -> Au {
         let scales = [0, basis, font, root, font / 2, font / 2, vw, vh];
         let index = unit_index(self.unit);
+        let relative = |coefficient: i64, scale: Au, round: bool| {
+            let numerator = coefficient as i128 * scale as i128;
+            if round && numerator >= 0 {
+                (numerator + 5000) / 10000
+            } else if round {
+                (numerator - 5000) / 10000
+            } else {
+                numerator / 10000
+            }
+        };
         let mut result = if index == 0 {
             self.n as i128
         } else {
-            self.n as i128 * scales[index] as i128 / 10000
+            // Gecko rounds em lengths to the nearest app unit. Percentage
+            // table tracks, by contrast, retain their floor allocation, so
+            // rounding every relative unit regresses fixed table geometry.
+            relative(self.n, scales[index], index == 2)
         };
         for (i, n) in self.extra.iter().enumerate() {
             result += if i == 0 {
                 *n as i128
             } else {
-                *n as i128 * scales[i] as i128 / 10000
+                relative(*n, scales[i], i == 2)
             };
         }
         result.clamp(-(MAX_COORD as i128), MAX_COORD as i128) as Au
@@ -1087,7 +1100,13 @@ fn accepted(name: &str, value: &str) -> bool {
     }
 }
 fn ua(n: &Node, s: &mut Style) {
-    let m = Size::Length(Length::px(16));
+    let em = |hundredths: i64| {
+        Size::Length(Length {
+            n: hundredths * 100,
+            unit: Unit::Em,
+            extra: [0; 8],
+        })
+    };
     match n.tag.as_str() {
         "html" | "body" | "div" | "p" | "pre" | "blockquote" | "address" | "section"
         | "article" | "header" | "footer" | "main" | "nav" | "aside" | "figure" | "figcaption"
@@ -1133,10 +1152,16 @@ fn ua(n: &Node, s: &mut Style) {
                 _ => 67,
             };
             s.font_size = s.font_size * factor / 100;
-            s.margin.top = Size::Length(Length {
-                n: 6700,
-                unit: Unit::Em,
-                extra: [0; 8],
+            // Gecko's heading margins are relative to each heading's own
+            // computed font size, and grow as the heading size decreases.
+            // A single `.67em` rule happens to fit h1 but compresses h2-h6.
+            s.margin.top = em(match n.tag.as_str() {
+                "h1" => 67,
+                "h2" => 83,
+                "h3" => 100,
+                "h4" => 133,
+                "h5" => 167,
+                _ => 233,
             });
             s.margin.bottom = s.margin.top;
         }
@@ -1154,15 +1179,16 @@ fn ua(n: &Node, s: &mut Style) {
         n.tag.as_str(),
         "p" | "pre" | "blockquote" | "ul" | "ol" | "dl"
     ) {
-        s.margin.top = m;
-        s.margin.bottom = m;
+        // These UA margins are `1em`, not a fixed 16px. This matters inside
+        // email templates that set a smaller body font.
+        s.margin.top = em(100);
+        s.margin.bottom = em(100);
     }
     if n.tag == "blockquote" {
         s.margin.left = Size::Length(Length::px(40));
         s.margin.right = s.margin.left;
     }
     if matches!(n.tag.as_str(), "ul" | "ol") {
-        s.padding.left = Length::px(40);
         if n.tag == "ol" {
             s.list_type = "decimal".into();
         }
@@ -1398,6 +1424,17 @@ pub fn compute(
         for (k, v, _) in &winners {
             if k == "direction" {
                 apply(&mut s, k, v, &parent, root_font, width, height);
+            }
+        }
+        if matches!(n.tag.as_str(), "ul" | "ol") {
+            // Gecko's UA rule is `padding-inline-start: 40px`, not a
+            // physical left padding. Establish it after direction resolves
+            // but before author declarations, so e.g. an RTL list with an
+            // author `padding-left` keeps the UA padding on its right edge.
+            if s.direction_rtl {
+                s.padding.right = Length::px(40);
+            } else {
+                s.padding.left = Length::px(40);
             }
         }
         for (k, v, _) in &winners {

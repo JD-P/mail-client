@@ -25,6 +25,7 @@ pub enum Draw {
     DiscMarker {
         rect: Rect,
         color: u32,
+        rtl: bool,
     },
     Text {
         node: NodeId,
@@ -646,19 +647,25 @@ impl<'a> Engine<'a> {
         let m = self.margins(&s, available);
         let edges = self.insets(&s, available);
         let pad = edges.left + edges.right;
+        let mut width_is_definite = forced.is_some() || s.width != Size::Auto;
         let mut w = forced.unwrap_or_else(|| {
             self.val(s.width, available, &s)
                 .map(|n| if s.border_box { n } else { n + pad })
                 .unwrap_or((available - m.left - m.right).max(pad))
         });
         if let Some(max) = self.val(s.max_width, available, &s) {
-            w = w.min(if s.border_box { max } else { max + pad });
+            let constrained = w.min(if s.border_box { max } else { max + pad });
+            width_is_definite |= constrained != w;
+            w = constrained;
         }
         if let Some(min) = self.val(s.min_width, available, &s) {
-            w = w.max(if s.border_box { min } else { min + pad });
+            let constrained = w.max(if s.border_box { min } else { min + pad });
+            width_is_definite |= constrained != w;
+            w = constrained;
         }
         w = w.max(pad).min(MAX_COORD);
-        let free = (available - w - m.left - m.right).max(0);
+        let remaining = available - w - m.left - m.right;
+        let free = remaining.max(0);
         let containing_rtl = self.doc.nodes[id]
             .parent
             .map(|parent| self.styles[parent].direction_rtl)
@@ -670,14 +677,16 @@ impl<'a> Engine<'a> {
                 match (s.margin.left, s.margin.right) {
                     (Size::Auto, Size::Auto) => free / 2,
                     (Size::Auto, _) => free,
-                    (_, _) if containing_rtl && s.width != Size::Auto => free,
+                    (_, _) if containing_rtl && (width_is_definite || remaining < 0) => remaining,
                     _ => 0,
                 }
             };
         let bx = x + left;
         let cx = bx + edges.left;
         let raw_cy = y + edges.top;
-        let cy = if s.display == Display::ListItem {
+        let cy = if s.display == Display::ListItem
+            && matches!(s.list_type.as_str(), "disc" | "circle" | "square")
+        {
             ((raw_cy + PX - 1) / PX) * PX
         } else {
             raw_cy
@@ -851,6 +860,17 @@ impl<'a> Engine<'a> {
                 previous_margin = self.bottom_margin(child, cw, 0)?;
                 first_content = false;
             } else {
+                // Formatting whitespace between block children does not form
+                // an anonymous line box and therefore must not sever margin
+                // collapsing between those blocks. Keep whitespace once an
+                // inline run has begun, where it can separate real content.
+                if inline.is_empty()
+                    && matches!(self.doc.nodes[child].kind, Kind::Text)
+                    && self.doc.nodes[child].text.trim().is_empty()
+                    && matches!(cs.whitespace, WhiteSpace::Normal | WhiteSpace::Nowrap)
+                {
+                    continue;
+                }
                 inline.push(child);
             }
         }
@@ -906,6 +926,20 @@ impl<'a> Engine<'a> {
             }
         }
         let mut h = (cursor - cy).max(0);
+        let empty_outside_marker =
+            s.display == Display::ListItem && !s.list_inside && s.list_type != "none" && h == 0;
+        if empty_outside_marker && s.height == Size::Auto {
+            // An outside marker still creates a principal line box when the
+            // list item has no content.  Without that strut, empty `<li>`
+            // elements collapsed to half a pixel (the graphical marker's
+            // overflow adjustment below) instead of occupying one line.
+            let (_, _, normal) = self.fonts.metrics(&s);
+            h = if s.normal_line_height {
+                normal
+            } else {
+                s.line_height
+            };
+        }
         if s.height == Size::Auto
             && s.display == Display::ListItem
             && matches!(s.list_type.as_str(), "disc" | "circle" | "square")
@@ -971,7 +1005,19 @@ impl<'a> Engine<'a> {
             .rev()
             .find(|l| l.parent >= id)
             .map(|l| l.baseline)
-            .unwrap_or(r.bottom());
+            .unwrap_or_else(|| {
+                if empty_outside_marker {
+                    let (ascent, descent, normal) = self.fonts.metrics(&s);
+                    let line_height = if s.normal_line_height {
+                        normal
+                    } else {
+                        s.line_height
+                    };
+                    cy + ascent + (line_height - ascent - descent) / 2
+                } else {
+                    r.bottom()
+                }
+            });
         self.scene.boxes[id] = Some(LayoutBox {
             node: id,
             border: r,
@@ -990,10 +1036,16 @@ impl<'a> Engine<'a> {
             if s.list_type == "disc" {
                 // Gecko paints the default outside disc as marker geometry,
                 // not as the font's asymmetrical U+2022 outline.
+                let marker_x = if s.direction_rtl {
+                    r.right() + 8 * PX
+                } else {
+                    bx - 14 * PX
+                };
                 self.emit(
                     Draw::DiscMarker {
-                        rect: Rect::new(bx - 14 * PX, baseline - 7 * PX - PX / 2, 6 * PX, 6 * PX),
+                        rect: Rect::new(marker_x, baseline - 7 * PX - PX / 2, 6 * PX, 6 * PX),
                         color: s.color,
+                        rtl: s.direction_rtl,
                     },
                     clip,
                     &s,
@@ -1001,7 +1053,12 @@ impl<'a> Engine<'a> {
             } else {
                 let marker = self.marker(id);
                 let run = self.fonts.shape(&marker, &s, self.budget)?;
-                let mx = bx - run.width - self.fonts.shape(" ", &s, self.budget)?.width;
+                let space = self.fonts.shape(" ", &s, self.budget)?.width;
+                let mx = if s.direction_rtl {
+                    r.right() + space
+                } else {
+                    bx - run.width - space
+                };
                 self.text(id, mx, baseline, run, clip, &s)?;
             }
         }
@@ -1779,7 +1836,17 @@ impl<'a> Engine<'a> {
         }
         let line = if ellipsis { shortened.as_slice() } else { line };
         let offset = match ps.align {
-            Align::Center => (width - used) / 2,
+            Align::Center => {
+                let free = width - used;
+                // A half app-unit left over from centering is assigned to the
+                // logical end edge: LTR starts at the lower coordinate, while
+                // RTL starts one app-unit farther right.
+                if free > 0 && ps.direction_rtl {
+                    (free + 1) / 2
+                } else {
+                    free / 2
+                }
+            }
             Align::Right => width - used,
             Align::Start if ps.direction_rtl => width - used,
             Align::End if !ps.direction_rtl => width - used,
@@ -1889,6 +1956,13 @@ impl<'a> Engine<'a> {
                         .as_ref()
                         .map(|layout| (layout.baseline - r.y).clamp(0, r.h))
                         .unwrap_or(r.h);
+                    let empty_graphical_marker_box = self.styles[parent].display
+                        == Display::ListItem
+                        && matches!(
+                            self.styles[parent].list_type.as_str(),
+                            "disc" | "circle" | "square"
+                        )
+                        && self.cell_empty(*id)?;
                     let dy = match self.styles[*id].vertical_align.as_str() {
                         "top" | "text-top" => y + margins.top,
                         "bottom" => y + h - margins.bottom - r.h,
@@ -1899,22 +1973,22 @@ impl<'a> Engine<'a> {
                                 + margins.top
                         }
                         _ => {
-                            let aligned =
-                                baseline - box_baseline - self.vertical_shift(&self.styles[*id]);
-                            if r.h == 0
-                                && self.styles[parent].display == Display::ListItem
-                                && matches!(
-                                    self.styles[parent].list_type.as_str(),
-                                    "disc" | "circle" | "square"
-                                )
-                            {
+                            let shift = self.vertical_shift(&self.styles[*id]);
+                            let baseline_edge = baseline - box_baseline;
+                            if empty_graphical_marker_box {
                                 // Gecko snaps the baseline edge of an empty
                                 // inline-block in a graphical-marker line to a
-                                // device-pixel boundary.
-                                aligned.div_euclid(PX) * PX
-                                    + if aligned.rem_euclid(PX) == 0 { 0 } else { PX }
+                                // device-pixel boundary before applying its
+                                // vertical-align shift.
+                                baseline_edge.div_euclid(PX) * PX
+                                    + if baseline_edge.rem_euclid(PX) == 0 {
+                                        0
+                                    } else {
+                                        PX
+                                    }
+                                    - shift
                             } else {
-                                aligned
+                                baseline_edge - shift
                             }
                         }
                     };
@@ -2230,24 +2304,31 @@ impl<'a> Engine<'a> {
             let grid = self.grid(id)?;
             let mut a = vec![0; grid.cols];
             let mut b = vec![0; grid.cols];
-            for cell in &grid.cells {
-                let (c, d) = self.measure(cell.id, depth + 1)?;
-                if cell.cs == 1 {
-                    a[cell.col] = a[cell.col].max(c);
-                    b[cell.col] = b[cell.col].max(d);
-                }
-            }
-            for cell in &grid.cells {
-                if cell.cs > 1 {
+            let definite_fixed = s.table_fixed && s.width != Size::Auto;
+            if !definite_fixed {
+                for cell in &grid.cells {
                     let (c, d) = self.measure(cell.id, depth + 1)?;
-                    let have_a: Au = a[cell.col..cell.col + cell.cs].iter().sum();
-                    let have_b: Au = b[cell.col..cell.col + cell.cs].iter().sum();
-                    for i in cell.col..cell.col + cell.cs {
-                        a[i] += (c - have_a).max(0) / cell.cs as i64;
-                        b[i] += (d - have_b).max(0) / cell.cs as i64;
+                    if cell.cs == 1 {
+                        a[cell.col] = a[cell.col].max(c);
+                        b[cell.col] = b[cell.col].max(d);
+                    }
+                }
+                for cell in &grid.cells {
+                    if cell.cs > 1 {
+                        let (c, d) = self.measure(cell.id, depth + 1)?;
+                        let have_a: Au = a[cell.col..cell.col + cell.cs].iter().sum();
+                        let have_b: Au = b[cell.col..cell.col + cell.cs].iter().sum();
+                        for i in cell.col..cell.col + cell.cs {
+                            a[i] += (c - have_a).max(0) / cell.cs as i64;
+                            b[i] += (d - have_b).max(0) / cell.cs as i64;
+                        }
                     }
                 }
             }
+            // A fixed-layout table with a definite (including percentage)
+            // width derives its columns from that width and its first row.
+            // Cell contents may overflow or wrap, but they do not contribute
+            // a min-content demand that widens ancestor auto-layout tables.
             let spacing = if s.border_collapse {
                 0
             } else {

@@ -124,7 +124,10 @@ impl BorderSideHelpers for BorderSide {
             return self.color.scale_rgb(scale)
         }
 
-        let black = if lighter { 0.7 } else { 0.3 };
+        // Gecko quantizes these special black-border shades to 178 and 76.
+        // Using the historical decimal constants lands exactly on half-byte
+        // values (178.5 / 76.5), which SWGL rounds one level brighter.
+        let black = if lighter { 178.0 / 255.0 } else { 76.0 / 255.0 };
         ColorF::new(black, black, black, self.color.a)
     }
 }

@@ -247,6 +247,31 @@
       "height": 600
     },
     {
+      "name": "text-align-fractional",
+      "file": "tests/fixtures/text-align-fractional.html",
+      "features": [
+        "css-text-align",
+        "css-display",
+        "css-width",
+        "css-direction"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "heading-relative-margins",
+      "file": "tests/fixtures/heading-relative-margins.html",
+      "features": [
+        "html-heading",
+        "css-margin",
+        "css-font-size",
+        "css-line-height",
+        "css-visibility"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
       "name": "text-pre",
       "file": "tests/fixtures/text-pre.html",
       "features": [
@@ -383,6 +408,74 @@
       "height": 600
     },
     {
+      "name": "empty-list-item",
+      "file": "tests/fixtures/empty-list-item.html",
+      "features": [
+        "html-lists",
+        "css-list-style-type",
+        "css-line-height"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "rtl-list-logical-padding",
+      "file": "tests/fixtures/rtl-list-logical-padding.html",
+      "features": [
+        "html-lists",
+        "css-direction",
+        "css-padding"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "rtl-overconstrained-auto-block",
+      "file": "tests/fixtures/rtl-overconstrained-auto-block.html",
+      "features": [
+        "html-lists",
+        "css-direction",
+        "css-padding",
+        "css-width"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "decimal-list-fractional-flow",
+      "file": "tests/fixtures/decimal-list-fractional-flow.html",
+      "features": [
+        "html-lists",
+        "css-list-style-type",
+        "css-display",
+        "css-vertical-align"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "disc-list-empty-inline-box",
+      "file": "tests/fixtures/disc-list-empty-inline-box.html",
+      "features": [
+        "html-lists",
+        "css-display",
+        "css-vertical-align"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "disc-list-sub-inline-box",
+      "file": "tests/fixtures/disc-list-sub-inline-box.html",
+      "features": [
+        "html-lists",
+        "css-display",
+        "css-vertical-align"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
       "name": "rtl",
       "file": "tests/fixtures/rtl.html",
       "features": [
@@ -398,6 +491,17 @@
       "features": [
         "css-padding-inline-start-end",
         "css-margin-inline-start-end"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "rtl-auto-max-width",
+      "file": "tests/fixtures/rtl-auto-max-width.html",
+      "features": [
+        "css-direction",
+        "css-max-width",
+        "css-width"
       ],
       "width": 800,
       "height": 600
@@ -791,6 +895,17 @@
       "height": 600
     },
     {
+      "name": "nested-fixed-table-intrinsic",
+      "file": "tests/fixtures/nested-fixed-table-intrinsic.html",
+      "features": [
+        "css-table-layout",
+        "html-table",
+        "css-width"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
       "name": "linked-image-opacity",
       "file": "tests/fixtures/linked-image-opacity.html",
       "features": [
@@ -843,6 +958,15 @@
     {
       "name": "border-style-default-width",
       "file": "tests/fixtures/border-style-default-width.html",
+      "features": [
+        "css-border"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "border-outset-black",
+      "file": "tests/fixtures/border-outset-black.html",
       "features": [
         "css-border"
       ],

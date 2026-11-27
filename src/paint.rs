@@ -242,7 +242,7 @@ fn raster_gradient(
     })
 }
 
-fn raster_disc_marker(color: u32, opacity: u16, rectangle: Rect) -> Option<UploadImage> {
+fn raster_disc_marker(color: u32, opacity: u16, rectangle: Rect, rtl: bool) -> Option<UploadImage> {
     let width = image_pixels(rectangle.w)?;
     let height = image_pixels(rectangle.h)?;
     if (width, height) != (6, 6) {
@@ -251,7 +251,7 @@ fn raster_disc_marker(color: u32, opacity: u16, rectangle: Rect) -> Option<Uploa
     // Gecko's six-pixel CSS disc uses its path rasterizer's asymmetric edge
     // coverage. Retaining that coverage avoids substituting a font bullet or
     // WebRender rounded rectangle, both of which have visibly different ink.
-    const COVERAGE: [[u8; 6]; 6] = [
+    const LTR_COVERAGE: [[u8; 6]; 6] = [
         [0, 1, 72, 95, 26, 0],
         [1, 178, 255, 255, 241, 55],
         [74, 255, 255, 255, 255, 187],
@@ -259,10 +259,18 @@ fn raster_disc_marker(color: u32, opacity: u16, rectangle: Rect) -> Option<Uploa
         [30, 244, 255, 255, 255, 133],
         [0, 62, 196, 219, 138, 7],
     ];
+    const RTL_COVERAGE: [[u8; 6]; 6] = [
+        [0, 13, 87, 85, 10, 0],
+        [22, 221, 255, 255, 216, 16],
+        [138, 255, 255, 255, 255, 123],
+        [164, 255, 255, 255, 255, 150],
+        [83, 255, 255, 255, 255, 69],
+        [0, 104, 211, 210, 97, 0],
+    ];
     let bytes = color.to_be_bytes();
     let color_alpha = ((u32::from(bytes[3]) * u32::from(opacity) + 500) / 1000) as u8;
     let mut pixels = Vec::with_capacity(6 * 6 * 4);
-    for row in COVERAGE {
+    for row in if rtl { RTL_COVERAGE } else { LTR_COVERAGE } {
         for coverage in row {
             let alpha = ((u16::from(color_alpha) * u16::from(coverage) + 127) / 255) as u8;
             pixels.extend_from_slice(&[
@@ -478,10 +486,10 @@ impl<'a> Painter<'a> {
         }
         let mut marker_images = HashMap::<usize, usize>::new();
         for (primitive_index, primitive) in scene.primitives.iter().enumerate() {
-            let Draw::DiscMarker { rect, color } = &primitive.draw else {
+            let Draw::DiscMarker { rect, color, rtl } = &primitive.draw else {
                 continue;
             };
-            let Some(image) = raster_disc_marker(*color, primitive.opacity, *rect) else {
+            let Some(image) = raster_disc_marker(*color, primitive.opacity, *rect, *rtl) else {
                 continue;
             };
             let len = image.premultiplied_rgba.len();
@@ -686,7 +694,9 @@ impl<'a> Painter<'a> {
                         None,
                     );
                 }
-                Draw::DiscMarker { rect: r, color: c } => {
+                Draw::DiscMarker {
+                    rect: r, color: c, ..
+                } => {
                     let b = rect(*r, scroll);
                     if let Some(image) = marker_images.get(&primitive_index) {
                         builder.push_image(
@@ -1014,7 +1024,8 @@ mod tests {
 
     #[test]
     fn default_disc_marker_retains_gecko_edge_coverage() {
-        let marker = raster_disc_marker(0x000000ff, 1000, Rect::new(0, 0, 6 * PX, 6 * PX)).unwrap();
+        let marker =
+            raster_disc_marker(0x000000ff, 1000, Rect::new(0, 0, 6 * PX, 6 * PX), false).unwrap();
         let alpha: Vec<_> = marker
             .premultiplied_rgba
             .chunks_exact(4)
@@ -1022,5 +1033,18 @@ mod tests {
             .collect();
         assert_eq!(&alpha[..6], &[0, 1, 72, 95, 26, 0]);
         assert_eq!(&alpha[30..], &[0, 62, 196, 219, 138, 7]);
+    }
+
+    #[test]
+    fn rtl_disc_marker_retains_gecko_edge_coverage() {
+        let marker =
+            raster_disc_marker(0x000000ff, 1000, Rect::new(0, 0, 6 * PX, 6 * PX), true).unwrap();
+        let alpha: Vec<_> = marker
+            .premultiplied_rgba
+            .chunks_exact(4)
+            .map(|pixel| pixel[3])
+            .collect();
+        assert_eq!(&alpha[..6], &[0, 13, 87, 85, 10, 0]);
+        assert_eq!(&alpha[30..], &[0, 104, 211, 210, 97, 0]);
     }
 }

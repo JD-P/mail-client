@@ -405,6 +405,19 @@ def _seed_fragment(rng: random.Random, config: dict[str, str]) -> str:
 def seed_case(rng: random.Random, config: dict[str, str]) -> CaseParts:
     path = seed_paths()[config["template"]]
     source = path.read_text(encoding="utf-8")
+    # Lizard renders into a fixed canvas and has no browser scrollbar chrome.
+    # Keep Gecko's reference viewport equivalent when a realistic seed grows
+    # taller than the selected fuzz viewport.  Composition cases already carry
+    # this reset through `document()`; seed templates need it injected here.
+    source, style_count = re.subn(
+        r"(<style(?:\s[^>]*)?>)",
+        r"\1html{scrollbar-width:none}",
+        source,
+        count=1,
+        flags=re.I,
+    )
+    if style_count != 1:
+        raise ValueError(f"seed template {path.name} lacks a style element")
     fragment = _seed_fragment(rng, config)
     for placement in ("top", "main", "bottom"):
         marker = f"<!--FUZZ_SLOT_{placement.upper()}-->"

@@ -96,8 +96,10 @@ vec2 get_outer_corner_scale(int segment) {
 // NOTE(emilio): If you change this algorithm, do the same change
 // in border.rs
 vec4 mod_color(vec4 color, bool is_black, bool lighter) {
-    const float light_black = 0.7;
-    const float dark_black = 0.3;
+    // Match Gecko's byte-quantized black inset/outset shades.  The decimal
+    // 0.7/0.3 values sit on half-byte boundaries and round one level brighter.
+    const float light_black = 0.6980392156862745;
+    const float dark_black = 0.2980392156862745;
 
     const float dark_scale = 0.66666666;
     const float light_scale = 1.0;
