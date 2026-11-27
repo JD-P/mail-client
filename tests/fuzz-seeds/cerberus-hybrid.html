@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en" dir="ltr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width">
+<meta name="color-scheme" content="light">
+<title>Hybrid newsletter</title>
+<style>
+html,body{margin:0;padding:0;background:#e7e7e7}
+body{font:15px/22px "DejaVu Sans";color:#222}
+table{border-spacing:0;table-layout:auto}
+img{border:0;max-width:100%;object-fit:contain}
+.email-container{max-width:600px;margin:0 auto;background:#fff}
+.stack-column{display:inline-block;width:49%;vertical-align:top}
+@media (max-width:480px){.stack-column{display:block;width:100%}.fluid{width:100%}}
+</style>
+</head>
+<body>
+<div style="display:none;max-height:0;overflow:hidden">A hybrid responsive layout seed.</div>
+<!--FUZZ_SLOT_TOP-->
+<div class="email-container">
+<table role="presentation" width="100%"><tr><td style="padding:16px;text-align:center;background:#222;color:#fff"><strong>Project dispatch</strong></td></tr></table>
+<div style="font-size:0;text-align:center;padding:16px">
+<div class="stack-column"><table role="presentation" width="100%"><tr><td style="padding:8px;font-size:15px;text-align:left;background:#f0f4f7"><strong>First column</strong><br>Hybrid email templates use inline blocks and tables together.</td></tr></table></div>
+<div class="stack-column"><table role="presentation" width="100%"><tr><td style="padding:8px;font-size:15px;text-align:left;background:#f8f2e8"><strong>Second column</strong><br>This copy has no external resources or active content.</td></tr></table></div>
+</div>
+<!--FUZZ_SLOT_MAIN-->
+<table role="presentation" width="100%"><tr><td style="padding:16px"><h2 style="font-size:18px;margin:0 0 8px">More information</h2><p style="margin:0">Read the <a href="#dispatch">local dispatch details</a> when convenient.</p></td></tr></table>
+</div>
+<!--FUZZ_SLOT_BOTTOM-->
+</body>
+</html>

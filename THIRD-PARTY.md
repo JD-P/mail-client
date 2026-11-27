@@ -22,3 +22,11 @@ provenance are recorded in `vendor/async-imap/UPSTREAM.md`.
 Tranco popularity ranking. MISP Warning Lists publishes the list under the
 CC0 1.0 Universal public-domain dedication. The snapshot is bundled so sender
 identity checks never disclose correspondence through a network lookup.
+
+`tests/fuzz-seeds` contains inert sanitized structural derivatives of Mailgun's
+transactional email templates (commit
+`e05e59e8c1e0fa7ffbacc7a165a609fd37c590b5`) and Ted Goas's Cerberus hybrid
+template (commit `af3cec9dd12fbbea0c6e9a1b0bf82a0479726957`). Both upstreams
+use the MIT license. Their license texts, exact provenance and sanitization
+notes are retained beside the seeds. Tests never fetch the upstream templates
+or any remote resource.

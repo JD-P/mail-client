@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en" dir="ltr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width">
+<title>Basic notification</title>
+<style>
+html,body{margin:0;padding:0;background:#fff}
+body{font:14px/22px "DejaVu Sans";color:#333}
+table{border-spacing:0;table-layout:auto}
+.wrap{max-width:600px;margin:0 auto;padding:16px}
+.muted{color:#888;font-size:12px}
+@media (max-width:480px){.wrap{padding:8px}.summary td{display:block;width:auto}}
+</style>
+</head>
+<body>
+<!--FUZZ_SLOT_TOP-->
+<div class="wrap">
+<table role="presentation" width="100%"><tr><td style="padding:12px 0;border-bottom:2px solid #eee"><strong>Example service</strong></td></tr></table>
+<h2 style="font-size:18px;margin:18px 0 8px">Weekly account summary</h2>
+<p style="margin:0 0 12px">Here is a compact summary of recent activity.</p>
+<table class="summary" role="presentation" width="100%" style="background:#f3f6f8;border:1px solid #d8dde1">
+<tr><td style="width:50%;padding:12px;vertical-align:top"><strong>Three updates</strong><br><span class="muted">Since the prior message</span></td><td style="width:50%;padding:12px;vertical-align:top"><strong>No errors</strong><br><span class="muted">All checks completed</span></td></tr>
+</table>
+<!--FUZZ_SLOT_MAIN-->
+<p style="margin:14px 0"><a href="#summary">View the complete summary</a></p>
+<table role="presentation" width="100%"><tr><td class="muted" style="padding-top:12px;border-top:1px solid #eee">This sanitized seed contains no tracking or remote content.</td></tr></table>
+</div>
+<!--FUZZ_SLOT_BOTTOM-->
+</body>
+</html>

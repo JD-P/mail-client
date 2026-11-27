@@ -20,21 +20,17 @@ import shutil
 import subprocess
 
 from conformance import canon
+import fuzz_cases
 from oracle import Gecko, ORACLE_CODE_SHA256, ORACLE_ENVIRONMENT
 from pixel_compare import acceptance, compare
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-FAMILIES = ("layout", "table", "text", "paint", "inline", "cascade", "parser", "image")
-PNG_DATA = (
-    "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAECAYAAACzzX7wAAAAI0lEQVR4nGP8z8Dw"
-    "nwEJMDYwoAAmBgKAkYHh/380IUaSTAAAurEEhuaPW40AAAAASUVORK5CYII="
-)
-RESET = (
-    "html,body{margin:0;padding:0;background:white}"
-    'body{font:16px/24px "DejaVu Sans";color:#111}'
-    "p{margin:0}"
-)
+LEGACY_FAMILIES = ("layout", "table", "text", "paint", "inline", "cascade", "parser", "image")
+FAMILIES = LEGACY_FAMILIES + fuzz_cases.EXTENDED_FAMILIES
+PNG_DATA = fuzz_cases.PNG_DATA
+RESET = fuzz_cases.RESET
+DEFAULT_VIEWPORTS = fuzz_cases.DEFAULT_VIEWPORTS
 
 
 @dataclasses.dataclass(frozen=True)
@@ -44,6 +40,9 @@ class GeneratedCase:
     family: str
     source: bytes
     features: tuple[str, ...]
+    factors: tuple[tuple[str, str], ...] = ()
+    width: int = 360
+    height: int = 260
 
     @property
     def name(self):
@@ -55,13 +54,7 @@ def choice(rng, values):
 
 
 def document(style, body):
-    return (
-        '<!doctype html><meta charset="utf-8"><style>'
-        + RESET
-        + style
-        + "</style>"
-        + body
-    ).encode("utf-8")
+    return fuzz_cases.document(style, body)
 
 
 def layout_case(rng):
@@ -252,13 +245,37 @@ GENERATORS = {
 }
 
 
-def generate_case(seed, index, families=FAMILIES):
+def generate_case(seed, index, families=FAMILIES, viewports=DEFAULT_VIEWPORTS):
+    families = tuple(families)
+    viewports = tuple(viewports)
+    if not families or not viewports:
+        raise ValueError("at least one family and viewport are required")
     family = families[index % len(families)]
     # Each index owns its RNG stream, so --start and sharded campaigns replay.
     digest = hashlib.sha256(f"{seed}:{index}:{family}".encode()).digest()
     rng = random.Random(int.from_bytes(digest[:16], "big"))
-    source, features = GENERATORS[family](rng)
-    return GeneratedCase(index, seed, family, source, tuple(features))
+    if family in fuzz_cases.EXTENDED_FAMILIES:
+        ordinal = index // len(families)
+        parts = fuzz_cases.extended_case(family, seed, ordinal, rng)
+        source, features, factors = parts.source, parts.features, parts.factors
+    else:
+        source, features = GENERATORS[family](rng)
+        factors = (
+            ("feature_count", str(len(features))),
+            ("source_kind", "bounded-grammar"),
+        )
+    fuzz_cases.validate_inert_source(source)
+    width, height = fuzz_cases.viewport_for(index, len(families), viewports)
+    return GeneratedCase(
+        index,
+        seed,
+        family,
+        source,
+        tuple(features),
+        tuple(factors),
+        width,
+        height,
+    )
 
 
 def geometry(ours, reference, dom_match):
@@ -296,6 +313,7 @@ def failure_kind(row):
 def failure_signature(row):
     kind = failure_kind(row)
     family = row.get("family", "unknown")
+    viewport = row.get("viewport", "unknown")
     if kind == "geometry":
         # Root heights are usually only a downstream symptom.  Bucket on the
         # first content box when possible so separate layout bugs do not all
@@ -305,24 +323,30 @@ def failure_signature(row):
             row["box_differences"][0],
         )
         components = "".join(k for k, v in first["delta_app_units"].items() if v)
-        return f"geometry:{family}:{first['tag']}:{components}"
+        return f"geometry:{family}:{viewport}:{first['tag']}:{components}"
     if kind == "dom":
-        return f"dom:{family}"
+        return f"dom:{family}:{viewport}"
     if kind == "crash":
         stderr = row.get("stderr", "").splitlines()
         tail = stderr[-1][:120] if stderr else "no-stderr"
-        return f"crash:{family}:{tail}"
+        return f"crash:{family}:{viewport}:{tail}"
     if kind == "timeout":
-        return f"timeout:{family}"
+        return f"timeout:{family}:{viewport}"
     if kind == "oracle-error":
-        return f"oracle-error:{family}"
+        return f"oracle-error:{family}:{viewport}"
     if kind == "pixels":
         maximum = row.get("max_difference", 0)
         delta = "one" if maximum <= 1 else "small" if maximum <= 15 else "large"
         count = row.get("different_pixels", 0)
         extent = "few" if count <= 32 else "some" if count <= 512 else "many"
-        return f"pixels:{family}:{delta}:{extent}"
+        return f"pixels:{family}:{viewport}:{delta}:{extent}"
     return "pass"
+
+
+def minimizable_failure(row):
+    """Oracle startup failures are environmental; all real diffs are shrinkable."""
+
+    return failure_kind(row) not in ("pass", "oracle-error")
 
 
 class Campaign:
@@ -349,10 +373,12 @@ class Campaign:
             "seed": case.seed,
             "family": case.family,
             "features": list(case.features),
+            "factors": dict(case.factors),
+            "viewport": f"{case.width}x{case.height}",
             "source_sha256": source_hash,
         }
         try:
-            self.oracle.capture(source_path, self.args.width, self.args.height, gecko)
+            self.oracle.capture(source_path, case.width, case.height, gecko)
         except Exception as error:  # Preserve a malformed-source oracle failure.
             row.update(exit_code=None, oracle_error=repr(error), strict_pass=False, policy_pass=False)
             row["failure_kind"] = failure_kind(row)
@@ -363,7 +389,15 @@ class Campaign:
             raise RuntimeError(f"stale Gecko source for {stem}")
         try:
             run = subprocess.run(
-                [str(self.binary), "render", str(source_path), str(lizard_png), str(self.args.width), str(self.args.height), str(lizard_json)],
+                [
+                    str(self.binary),
+                    "render",
+                    str(source_path),
+                    str(lizard_png),
+                    str(case.width),
+                    str(case.height),
+                    str(lizard_json),
+                ],
                 capture_output=True,
                 text=True,
                 timeout=self.args.timeout,
@@ -424,13 +458,25 @@ def declaration_reductions(source):
         yield source[:start] + source[end:]
 
 
+def reduction_candidates(source):
+    """Yield structure, text, rule, attribute and declaration reductions once."""
+
+    seen = set()
+    for candidates in (fuzz_cases.structural_reductions(source), declaration_reductions(source)):
+        for candidate in candidates:
+            digest = hashlib.sha256(candidate).digest()
+            if digest not in seen:
+                seen.add(digest)
+                yield candidate
+
+
 def minimize(case, runner, wanted_signature, stem):
     current = case
     attempts = 0
     changed = True
     while changed and attempts < runner.args.minimize_attempts:
         changed = False
-        for candidate_source in declaration_reductions(current.source):
+        for candidate_source in reduction_candidates(current.source):
             if attempts >= runner.args.minimize_attempts:
                 break
             attempts += 1
@@ -451,10 +497,18 @@ def output_directory(value):
     return path if path.is_absolute() else ROOT / path
 
 
+def viewport_argument(value):
+    try:
+        return fuzz_cases.parse_viewport(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(str(error)) from error
+
+
 def make_report(args, rows, minimized, out):
     buckets = {}
     for row in rows:
         buckets.setdefault(row["signature"], []).append(row["name"])
+    coverage = fuzz_cases.coverage_report(rows, tuple(args.families), args.viewports)
     result = {
         "cases": len(rows),
         "exact_passes": sum(row["failure_kind"] == "pass" for row in rows),
@@ -465,6 +519,7 @@ def make_report(args, rows, minimized, out):
         },
         "buckets": [{"signature": key, "count": len(value), "representative": value[0]} for key, value in sorted(buckets.items()) if key != "pass"],
         "minimized": minimized,
+        "coverage": coverage,
         "results": rows,
         "environment": {
             "utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
@@ -473,9 +528,13 @@ def make_report(args, rows, minimized, out):
             "start": args.start,
             "requested_cases": args.cases,
             "families": list(args.families),
-            "viewport": [args.width, args.height],
+            "viewports": [list(viewport) for viewport in args.viewports],
             "lizard_binary_sha256": hashlib.sha256(pathlib.Path(args.binary).read_bytes()).hexdigest(),
             "runner_sha256": hashlib.sha256(pathlib.Path(__file__).read_bytes()).hexdigest(),
+            "generator_code_sha256": hashlib.sha256(
+                pathlib.Path(fuzz_cases.__file__).read_bytes()
+            ).hexdigest(),
+            "seed_corpus_sha256": fuzz_cases.seed_corpus_sha256(),
             "oracle_code_sha256": ORACLE_CODE_SHA256,
             "font_freetype_fingerprint": ORACLE_ENVIRONMENT,
         },
@@ -492,11 +551,22 @@ def make_report(args, rows, minimized, out):
             + "<a href=\"" + name + "-diff.png\">Diff</a></td></tr>"
         )
     summary = f"{result['exact_passes']} / {result['cases']} exact; {result['failures']} failures."
+    coverage_rows = "".join(
+        "<tr><td>" + html.escape(section["name"]) + "</td><td>"
+        + str(section["covered"]) + " / " + str(section["total"]) + "</td><td>"
+        + str(section["percent"]) + "%</td></tr>"
+        for section in coverage["sections"]
+    )
     (out / "report.html").write_text(
         '<!doctype html><meta charset="utf-8"><title>Lizard differential fuzzing</title>'
         '<style>body{font:16px/1.5 system-ui;margin:35px}table{border-collapse:collapse}'
         'td,th{padding:8px 14px;border:1px solid #ddd}th{background:#e8eef4}</style>'
         "<h1>Lizard / Gecko email-subset fuzzing</h1><p>" + html.escape(summary) + "</p>"
+        "<h2>Pairwise coverage</h2><p>" + str(coverage["covered"]) + " / "
+        + str(coverage["total"]) + " targets (" + str(coverage["percent"]) + "%). "
+        + str(coverage["observed_feature_pairs"]) + " distinct feature pairs observed.</p>"
+        "<table><tr><th>Section</th><th>Covered</th><th>Percent</th></tr>"
+        + coverage_rows + "</table><h2>Differential findings</h2>"
         "<table><tr><th>Signature</th><th>Count</th><th>Representative</th><th>Images</th></tr>"
         + "".join(cells) + "</table>"
     )
@@ -511,17 +581,50 @@ def main():
     parser.add_argument("--output", default="results/conformance-fuzz")
     parser.add_argument("--seed", type=lambda value: int(value, 0), default=0x4C495A41)
     parser.add_argument("--start", type=int, default=0)
-    parser.add_argument("--cases", type=int, default=256)
+    parser.add_argument("--cases", type=int, default=512)
     parser.add_argument("--families", nargs="+", choices=FAMILIES, default=list(FAMILIES))
-    parser.add_argument("--width", type=int, default=360)
-    parser.add_argument("--height", type=int, default=260)
+    parser.add_argument(
+        "--viewports",
+        nargs="+",
+        type=viewport_argument,
+        help="Viewport rotation as WIDTHxHEIGHT values (default: 320x240 360x260 600x480 800x600)",
+    )
+    parser.add_argument("--width", type=int, help="Legacy single-viewport width; requires --height")
+    parser.add_argument("--height", type=int, help="Legacy single-viewport height; requires --width")
     parser.add_argument("--timeout", type=int, default=15)
     parser.add_argument("--keep-passes", action="store_true")
-    parser.add_argument("--minimize", type=int, default=8, help="Minimize this many non-pixel failure buckets")
-    parser.add_argument("--minimize-attempts", type=int, default=40)
+    parser.add_argument("--minimize", type=int, default=12, help="Minimize this many distinct failure buckets")
+    parser.add_argument("--minimize-attempts", type=int, default=80)
+    parser.add_argument(
+        "--min-pairwise-percent",
+        type=float,
+        default=0.0,
+        help="Fail if declared pairwise targets fall below this percentage",
+    )
+    parser.add_argument(
+        "--fail-on",
+        choices=("difference", "crash", "never"),
+        default="difference",
+        help="Exit policy; scheduled discovery campaigns normally use crash",
+    )
     args = parser.parse_args()
-    if args.cases < 1 or args.start < 0 or args.width < 1 or args.height < 1:
-        parser.error("cases and viewport dimensions must be positive; start must be nonnegative")
+    if args.cases < 1 or args.start < 0:
+        parser.error("cases must be positive and start must be nonnegative")
+    if args.timeout < 1 or args.minimize < 0 or args.minimize_attempts < 0:
+        parser.error("timeout must be positive; minimization limits must be nonnegative")
+    if not 0 <= args.min_pairwise_percent <= 100:
+        parser.error("--min-pairwise-percent must be between 0 and 100")
+    if args.viewports and (args.width is not None or args.height is not None):
+        parser.error("use either --viewports or --width/--height, not both")
+    if (args.width is None) != (args.height is None):
+        parser.error("--width and --height must be supplied together")
+    if args.width is not None:
+        if args.width < 1 or args.height < 1:
+            parser.error("viewport dimensions must be positive")
+        args.viewports = ((args.width, args.height),)
+    else:
+        args.viewports = tuple(dict.fromkeys(args.viewports or DEFAULT_VIEWPORTS))
+    args.families = tuple(args.families)
     out = output_directory(args.output)
     if out.exists():
         shutil.rmtree(out)
@@ -531,10 +634,10 @@ def main():
     runner = Campaign(args, out)
     try:
         for offset in range(args.cases):
-            case = generate_case(args.seed, args.start + offset, tuple(args.families))
+            case = generate_case(args.seed, args.start + offset, args.families, args.viewports)
             row = runner.run(case)
             rows.append(row)
-            if row["failure_kind"] not in ("pass", "pixels", "oracle-error"):
+            if minimizable_failure(row):
                 representatives.setdefault(row["signature"], (case, row))
             label = "EXACT" if row["failure_kind"] == "pass" else row["failure_kind"].upper()
             print(f"{offset + 1:04d}/{args.cases:04d} {case.name} {label}", flush=True)
@@ -559,7 +662,14 @@ def main():
         runner.close()
     result = make_report(args, rows, minimized, out)
     print(json.dumps({key: value for key, value in result.items() if key not in ("results", "buckets")}, ensure_ascii=False))
-    return 0 if result["failures"] == 0 else 1
+    if result["coverage"]["percent"] < args.min_pairwise_percent:
+        return 1
+    if args.fail_on == "difference":
+        return 0 if result["failures"] == 0 else 1
+    if args.fail_on == "crash":
+        severe = sum(result["failure_kinds"][kind] for kind in ("crash", "timeout", "oracle-error"))
+        return 0 if severe == 0 else 1
+    return 0
 
 
 if __name__ == "__main__":

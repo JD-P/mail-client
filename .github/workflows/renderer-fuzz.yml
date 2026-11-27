@@ -1,0 +1,86 @@
+name: renderer-fuzz
+
+on:
+  schedule:
+    - cron: "23 5 * * 1"
+  workflow_dispatch:
+    inputs:
+      cases:
+        description: Cases per deterministic seed
+        required: false
+        default: "512"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: renderer-fuzz-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  gecko-differential:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install native and Python prerequisites
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang \
+            fonts-dejavu-core \
+            fonts-liberation2 \
+            g++ \
+            libfreetype6-dev \
+            pkg-config \
+            python3-pip
+          python3 -m pip install --break-system-packages -r requirements-oracle.txt
+
+      - name: Build the release renderer
+        run: cargo build --locked --release --bin lizard
+
+      - name: Install pinned Gecko oracle
+        run: |
+          set -euo pipefail
+          python3 tools/bootstrap.py --only firefox
+          python3 tools/bootstrap.py --only geckodriver
+
+      - name: Run four deterministic compositional campaigns
+        env:
+          REQUESTED_CASES: ${{ inputs.cases || '512' }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$REQUESTED_CASES" =~ ^[1-9][0-9]*$ ]]; then
+            echo "cases must be a positive integer" >&2
+            exit 2
+          fi
+          for seed in 0x4c495a41 0x6c697a32 0x656d6169 0x6765636b; do
+            python3 tools/fuzz_conformance.py \
+              --binary target/release/lizard \
+              --firefox .tools/firefox/firefox \
+              --geckodriver .tools/geckodriver \
+              --seed "$seed" \
+              --cases "$REQUESTED_CASES" \
+              --viewports 320x240 360x260 600x480 800x600 \
+              --minimize 12 \
+              --minimize-attempts 80 \
+              --min-pairwise-percent 100 \
+              --fail-on crash \
+              --output "results/scheduled-fuzz-${seed#0x}"
+          done
+
+      - name: Upload differential findings
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: renderer-fuzz-${{ github.sha }}-${{ github.run_attempt }}
+          path: results/scheduled-fuzz-*
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 6
