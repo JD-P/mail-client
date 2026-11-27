@@ -1095,7 +1095,15 @@ fn ua(n: &Node, s: &mut Style) {
         "head" | "style" | "title" | "meta" | "link" | "script" | "base" => {
             s.display = Display::None
         }
-        "table" => s.display = Display::Table,
+        "table" => {
+            s.display = Display::Table;
+            // Gecko's UA table rule supplies the initial separate-border
+            // model on every table. Although these properties inherit, a
+            // nested table does not inherit an outer author-level `collapse`
+            // unless the author explicitly targets the nested table too.
+            s.border_collapse = false;
+            s.border_spacing = (2 * PX, 2 * PX);
+        }
         "tr" => s.display = Display::Row,
         "tbody" | "thead" | "tfoot" => s.display = Display::RowGroup,
         "td" | "th" => {

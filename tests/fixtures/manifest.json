@@ -532,6 +532,19 @@
       "height": 600
     },
     {
+      "name": "rtl-nested-table",
+      "file": "tests/fixtures/rtl-nested-table.html",
+      "features": [
+        "html-table",
+        "html-dir",
+        "css-direction",
+        "css-border-collapse",
+        "css-border-spacing"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
       "name": "image-native",
       "file": "tests/fixtures/image-native.html",
       "features": [
@@ -832,6 +845,29 @@
       "file": "tests/fixtures/border-style-default-width.html",
       "features": [
         "css-border"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "bidi-isolate-wrap",
+      "file": "tests/fixtures/bidi-isolate-wrap.html",
+      "features": [
+        "html-dir",
+        "css-direction",
+        "html-span",
+        "css-white-space"
+      ],
+      "width": 800,
+      "height": 600
+    },
+    {
+      "name": "float-margin-cell",
+      "file": "tests/fixtures/float-margin-cell.html",
+      "features": [
+        "html-table",
+        "css-float",
+        "css-margin"
       ],
       "width": 800,
       "height": 600

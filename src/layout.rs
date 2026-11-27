@@ -106,8 +106,8 @@ pub struct Scene {
 #[derive(Clone)]
 enum Item {
     Text { node: NodeId, run: Run, space: bool },
-    Break,
-    Opportunity,
+    Break(NodeId),
+    Opportunity(NodeId),
     Box(NodeId),
     Block(NodeId),
 }
@@ -117,6 +117,7 @@ enum Placed {
         node: NodeId,
         run: Run,
         x: Au,
+        level: unicode_bidi::Level,
     },
     Box {
         id: NodeId,
@@ -127,6 +128,7 @@ enum Placed {
         rect: Rect,
         margins: Edges<Au>,
         advance: Au,
+        level: unicode_bidi::Level,
     },
 }
 #[derive(Clone)]
@@ -775,7 +777,10 @@ impl<'a> Engine<'a> {
                     }
                 }
                 if cs.float == Float::Right {
-                    fx += fw - desired;
+                    // `fx` is the margin-box origin passed to `block`, which
+                    // adds the left margin before placing the border box. Keep
+                    // the entire margin box inside the available line space.
+                    fx += fw - desired - margins.left - margins.right;
                 }
                 let r = self.block(child, fx, fy, cw, Some(desired), content_clip, depth + 1)?;
                 floats.push(Floating {
@@ -870,9 +875,29 @@ impl<'a> Engine<'a> {
         if !collapse_bottom {
             cursor = checked_add(cursor, previous_margin)?;
         }
-        if self.doc.nodes[id].tag == "html" && s.height == Size::Auto {
+        let contains_descendant_floats = self.doc.nodes[id].tag == "html"
+            || s.display == Display::Cell
+            || s.display == Display::InlineBlock
+            || s.float != Float::None
+            || s.overflow_hidden;
+        if contains_descendant_floats && s.height == Size::Auto {
             for (node, b) in self.scene.boxes.iter().enumerate() {
+                self.budget.charge(1)?;
                 if self.styles[node].float != Float::None {
+                    let mut in_context = self.doc.nodes[id].tag == "html";
+                    let mut ancestor = self.doc.nodes[node].parent;
+                    while !in_context {
+                        self.budget.charge(1)?;
+                        let Some(current) = ancestor else { break };
+                        if current == id {
+                            in_context = true;
+                            break;
+                        }
+                        ancestor = self.doc.nodes[current].parent;
+                    }
+                    if !in_context {
+                        continue;
+                    }
                     if let Some(b) = b {
                         let bottom = self.margins(&self.styles[node], cw).bottom;
                         cursor = cursor.max(checked_add(b.border.bottom(), bottom)?);
@@ -1114,11 +1139,11 @@ impl<'a> Engine<'a> {
             return Ok(());
         }
         if node.tag == "br" {
-            items.push(Item::Break);
+            items.push(Item::Break(id));
             return Ok(());
         }
         if node.tag == "wbr" {
-            items.push(Item::Opportunity);
+            items.push(Item::Opportunity(id));
             return Ok(());
         }
         if matches!(
@@ -1148,7 +1173,7 @@ impl<'a> Engine<'a> {
                         self.text_items(id, &part, &s, is_space == Some(true), items)?;
                         part.clear();
                     }
-                    items.push(Item::Break);
+                    items.push(Item::Break(id));
                     is_space = None;
                     continue;
                 }
@@ -1177,6 +1202,68 @@ impl<'a> Engine<'a> {
             self.collect(child, items, depth + 1)?;
         }
         Ok(())
+    }
+    fn bidi_levels(&mut self, parent: NodeId, items: &[Item]) -> Result<Vec<unicode_bidi::Level>> {
+        let mut paragraph = String::new();
+        let mut starts = Vec::with_capacity(items.len());
+        let mut active_isolates: Vec<(NodeId, bool)> = vec![];
+        for item in items {
+            let node = match item {
+                Item::Text { node, .. }
+                | Item::Break(node)
+                | Item::Opportunity(node)
+                | Item::Box(node)
+                | Item::Block(node) => *node,
+            };
+            let mut isolates = vec![];
+            let mut ancestor = Some(node);
+            while let Some(id) = ancestor {
+                self.budget.charge(1)?;
+                if id == parent {
+                    break;
+                }
+                if let Some(value) = self.doc.nodes[id].attr("dir") {
+                    if value.eq_ignore_ascii_case("ltr") || value.eq_ignore_ascii_case("rtl") {
+                        isolates.push((id, value.eq_ignore_ascii_case("rtl")));
+                    }
+                }
+                ancestor = self.doc.nodes[id].parent;
+            }
+            isolates.reverse();
+            let shared = active_isolates
+                .iter()
+                .zip(&isolates)
+                .take_while(|(left, right)| left == right)
+                .count();
+            for _ in shared..active_isolates.len() {
+                paragraph.push('\u{2069}'); // PDI
+            }
+            for (_, rtl) in &isolates[shared..] {
+                paragraph.push(if *rtl { '\u{2067}' } else { '\u{2066}' }); // RLI/LRI
+            }
+            active_isolates = isolates;
+            starts.push(paragraph.len());
+            match item {
+                Item::Text { run, .. } => paragraph.push_str(&run.text),
+                Item::Break(_) => paragraph.push('\n'),
+                Item::Opportunity(_) => paragraph.push('\u{200b}'),
+                Item::Box(_) => paragraph.push('\u{fffc}'),
+                Item::Block(_) => paragraph.push('\u{2029}'),
+            }
+        }
+        for _ in 0..active_isolates.len() {
+            paragraph.push('\u{2069}'); // PDI
+        }
+        let base = if self.styles[parent].direction_rtl {
+            unicode_bidi::Level::rtl()
+        } else {
+            unicode_bidi::Level::ltr()
+        };
+        let bidi = unicode_bidi::BidiInfo::new(&paragraph, Some(base));
+        Ok(starts
+            .into_iter()
+            .map(|start| bidi.levels.get(start).copied().unwrap_or(base))
+            .collect())
     }
     fn inline(
         &mut self,
@@ -1220,6 +1307,11 @@ impl<'a> Engine<'a> {
                 },
             );
         }
+        // Resolve the Unicode bidi paragraph before wrapping. Recomputing it
+        // for each visual line loses the context that determines neutral and
+        // isolate levels, so a wrapped `dir` subtree can otherwise jump to the
+        // opposite side of its following text.
+        let item_levels = self.bidi_levels(parent, &items)?;
         let ps = self.styles[parent].clone();
         let (_, _, normal) = self.fonts.metrics(&ps);
         let default_height = if !ps.normal_line_height {
@@ -1235,12 +1327,12 @@ impl<'a> Engine<'a> {
         let (strut_a, strut_d, _) = self.fonts.metrics(&ps);
         let strut_above = strut_a + (default_height - strut_a - strut_d) / 2;
         let mut line_ascent = strut_above;
-        let mut pending_space: Option<(NodeId, Run)> = None;
+        let mut pending_space: Option<(NodeId, Run, unicode_bidi::Level)> = None;
         let mut first = true;
-        for item in items {
+        for (item, bidi_level) in items.into_iter().zip(item_levels) {
             self.budget.charge(1)?;
             match item {
-                Item::Break => {
+                Item::Break(_) => {
                     self.finish_line(
                         parent,
                         &line,
@@ -1261,17 +1353,17 @@ impl<'a> Engine<'a> {
                     first = false;
                     (lx, lw) = self.line_space(x, y, width, default_height, floats);
                 }
-                Item::Opportunity => {}
+                Item::Opportunity(_) => {}
                 Item::Text { node, run, space } => {
                     let s = self.styles[node].clone();
                     let preserve = matches!(s.whitespace, WhiteSpace::Pre | WhiteSpace::PreWrap);
                     if space && !preserve {
                         if !line.is_empty() {
-                            pending_space = Some((node, run));
+                            pending_space = Some((node, run, bidi_level));
                         }
                         continue;
                     }
-                    let sw = pending_space.as_ref().map(|(_, r)| r.width).unwrap_or(0);
+                    let sw = pending_space.as_ref().map(|(_, r, _)| r.width).unwrap_or(0);
                     let wrapping = !matches!(s.whitespace, WhiteSpace::Pre | WhiteSpace::Nowrap);
                     let split_run = wrapping
                         && (s.word_break == "break-all"
@@ -1302,11 +1394,12 @@ impl<'a> Engine<'a> {
                         first = false;
                         (lx, lw) = self.line_space(x, y, width, default_height, floats);
                     }
-                    if let Some((n, r)) = pending_space.take() {
+                    if let Some((n, r, level)) = pending_space.take() {
                         line.push(Placed::Text {
                             node: n,
                             run: r.clone(),
                             x: pen,
+                            level,
                         });
                         pen += r.width;
                     }
@@ -1380,6 +1473,7 @@ impl<'a> Engine<'a> {
                                 node,
                                 run: piece.clone(),
                                 x: pen,
+                                level: bidi_level,
                             });
                             pen = checked_add(pen, piece.width)?;
                             offset = end;
@@ -1419,7 +1513,12 @@ impl<'a> Engine<'a> {
                         line_height = line_ascent + below;
                         pen = checked_add(pen, run.width)?;
                         let xx = pen - run.width;
-                        line.push(Placed::Text { node, run, x: xx });
+                        line.push(Placed::Text {
+                            node,
+                            run,
+                            x: xx,
+                            level: bidi_level,
+                        });
                     }
                 }
                 Item::Block(id) => {
@@ -1478,7 +1577,7 @@ impl<'a> Engine<'a> {
                     };
                     let b = self.scene.primitives.len();
                     let advance = margins.left + r.w + margins.right;
-                    let sw = pending_space.as_ref().map(|(_, r)| r.width).unwrap_or(0);
+                    let sw = pending_space.as_ref().map(|(_, r, _)| r.width).unwrap_or(0);
                     if pen + sw + advance > lw
                         && !line.is_empty()
                         && !matches!(ps.whitespace, WhiteSpace::Nowrap | WhiteSpace::Pre)
@@ -1500,12 +1599,13 @@ impl<'a> Engine<'a> {
                         pending_space = None;
                         (lx, lw) = self.line_space(x, y, width, default_height, floats);
                     }
-                    if let Some((n, run)) = pending_space.take() {
+                    if let Some((n, run, level)) = pending_space.take() {
                         pen += run.width;
                         line.push(Placed::Text {
                             node: n,
                             x: pen - run.width,
                             run,
+                            level,
                         });
                     }
                     let below = (line_height - line_ascent).max(0);
@@ -1552,6 +1652,7 @@ impl<'a> Engine<'a> {
                         rect: r,
                         margins,
                         advance,
+                        level: bidi_level,
                     });
                     pen = checked_add(pen, advance)?;
                 }
@@ -1597,7 +1698,12 @@ impl<'a> Engine<'a> {
             let room = (width - mark.width).max(0);
             for item in line {
                 match item {
-                    Placed::Text { node, run, x: xx } => {
+                    Placed::Text {
+                        node,
+                        run,
+                        x: xx,
+                        level,
+                    } => {
                         if *xx >= room {
                             continue;
                         }
@@ -1633,6 +1739,7 @@ impl<'a> Engine<'a> {
                                 node: *node,
                                 run: prefix,
                                 x: *xx,
+                                level: *level,
                             });
                         }
                     }
@@ -1667,6 +1774,7 @@ impl<'a> Engine<'a> {
                 // this trailing half-pixel advance.
                 x: (end - PX / 2).max(0),
                 run: mark,
+                level: unicode_bidi::Level::ltr(),
             });
         }
         let line = if ellipsis { shortened.as_slice() } else { line };
@@ -1683,30 +1791,10 @@ impl<'a> Engine<'a> {
             rect: Rect::new(x, y, width, h),
             baseline,
         });
-        let mut paragraph = String::new();
-        let mut starts = vec![];
-        for p in line {
-            starts.push(paragraph.len());
-            match p {
-                Placed::Text { run, .. } => paragraph.push_str(&run.text),
-                Placed::Box { .. } => paragraph.push('\u{fffc}'),
-            }
-        }
-        let bidi = unicode_bidi::BidiInfo::new(
-            &paragraph,
-            Some(if ps.direction_rtl {
-                unicode_bidi::Level::rtl()
-            } else {
-                unicode_bidi::Level::ltr()
-            }),
-        );
-        let levels: Vec<_> = starts
+        let levels: Vec<_> = line
             .iter()
-            .map(|i| {
-                bidi.levels
-                    .get(*i)
-                    .copied()
-                    .unwrap_or(unicode_bidi::Level::ltr())
+            .map(|item| match item {
+                Placed::Text { level, .. } | Placed::Box { level, .. } => *level,
             })
             .collect();
         let visual = unicode_bidi::BidiInfo::reorder_visual(&levels);
@@ -1722,7 +1810,10 @@ impl<'a> Engine<'a> {
         }
         let mut inline_backgrounds: Vec<(NodeId, Rect)> = vec![];
         for (index, p) in line.iter().enumerate() {
-            if let Placed::Text { node, run, x: xx } = p {
+            if let Placed::Text {
+                node, run, x: xx, ..
+            } = p
+            {
                 let xx = if reorder { positions[index] } else { *xx };
                 let r = Rect::new(
                     x + offset + xx,
@@ -1768,6 +1859,7 @@ impl<'a> Engine<'a> {
                     node,
                     run,
                     x: original_x,
+                    ..
                 } => {
                     let xx = if reorder { &bidi_x } else { original_x };
                     let s = self.styles[*node].clone();
@@ -2177,7 +2269,18 @@ impl<'a> Engine<'a> {
             max = w;
         } else {
             for child in n.children.clone() {
-                let (a, b) = self.measure(child, depth + 1)?;
+                let (mut a, mut b) = self.measure(child, depth + 1)?;
+                if self.styles[child].float != Float::None {
+                    // A float's margin box contributes to its containing
+                    // block's shrink-to-fit width. Omitting these margins can
+                    // make an auto-width email table narrower than the float
+                    // it contains, even though final float placement already
+                    // reserves the same space.
+                    let margins = self.margins(&self.styles[child], self.scene.width);
+                    let horizontal = margins.left + margins.right;
+                    a = checked_add(a, horizontal)?;
+                    b = checked_add(b, horizontal)?;
+                }
                 min = min.max(a);
                 if matches!(
                     self.styles[child].display,
@@ -2742,11 +2845,17 @@ impl<'a> Engine<'a> {
             widths[cols - 1] += (inner - assigned).max(0);
         }
         let free = (available - w - margins.left - margins.right).max(0);
+        let containing_rtl = self.doc.nodes[id]
+            .parent
+            .map(|parent| self.styles[parent].direction_rtl)
+            .unwrap_or(false);
         let bx = x
             + margins.left
             + if s.margin.left == Size::Auto && s.margin.right == Size::Auto {
                 free / 2
             } else if s.margin.left == Size::Auto {
+                free
+            } else if containing_rtl {
                 free
             } else {
                 0
@@ -2799,8 +2908,12 @@ impl<'a> Engine<'a> {
             yy = checked_add(yy, *h + sy)?;
         }
         for (cell, (first, last, lines, r)) in cells.iter().zip(placements) {
-            let xx =
-                bx + e.left + sx + widths[..cell.col].iter().sum::<Au>() + sx * cell.col as i64;
+            let xx = if s.direction_rtl {
+                let after = cell.col + cell.cs;
+                bx + e.left + sx + widths[after..].iter().sum::<Au>() + sx * (cols - after) as i64
+            } else {
+                bx + e.left + sx + widths[..cell.col].iter().sum::<Au>() + sx * cell.col as i64
+            };
             let cell_h = row_heights[cell.row..cell.row + cell.rs].iter().sum::<Au>()
                 + sy * (cell.rs - 1) as i64;
             let extra = cell_h - r.h;

@@ -7,6 +7,12 @@ cases=[]
 def add(name,html,features,**extra):
     (OUT/(name+'.html')).write_text(BASE+html,encoding='utf-8')
     cases.append(dict(name=name,file='tests/fixtures/'+name+'.html',features=features,width=800,height=600,**extra))
+def retain(name,features,width=360,height=260):
+    """Keep a minimized differential fixture whose source is already reviewed."""
+    path=OUT/(name+'.html')
+    if not path.is_file():
+        raise FileNotFoundError(path)
+    cases.append(dict(name=name,file='tests/fixtures/'+name+'.html',features=features,width=width,height=height))
 add('block-box','<div style="width:120px;height:60px;padding:10px;border:4px solid #204080;background:#83a6df"></div>',['css-width','css-height','css-padding','css-border','css-background-color'])
 add('center-auto','<div style="width:200px;height:80px;margin:20px auto;background:#4169e1"></div>',['css-margin','css-width'])
 add('margin-collapse','<div style="height:30px;margin-bottom:25px;background:red"></div><div style="height:40px;margin-top:40px;background:blue"></div>',['css-margin'])
@@ -65,6 +71,7 @@ add('font-arial','<p style="font-family:Arial,sans-serif">Arial-compatible text.
 add('nested-email-table','<table width="600" style="margin:0 auto;border-spacing:0"><tr><td style="padding:0"><table width="100%" style="border-spacing:0"><tr><td width="200" style="height:40px;background:#88aaff"></td><td style="background:#aaff88"></td></tr></table></td></tr></table>',['html-table','html-width','css-width'])
 add('cellpadding','<table width="300" cellpadding="10" cellspacing="0"><tr><td style="height:30px;background:#aaccff"></td><td style="background:#88aacc"></td></tr></table>',['html-cellpadding','html-cellspacing','html-table'])
 add('table-collapse','<table style="width:300px;border-collapse:collapse"><tr><td style="height:30px;border:2px solid black;background:#aaccff"></td><td style="border:2px solid black;background:#88aacc"></td></tr></table>',['css-border-collapse','html-table'])
+add('rtl-nested-table','<table dir="rtl" style="width:300px;border-collapse:collapse"><tr><td><table><tr><td style="width:60px;height:20px;background:red"></td><td style="width:40px;background:blue"></td></tr></table></td></tr></table>',['html-table','html-dir','css-direction','css-border-collapse','css-border-spacing'])
 add('image-native',f'<img style="display:block" src="{uri}" width="8" height="4">',['html-img','image-png'])
 add('image-data',f'<img src="{uri}" width="80" height="40">',['html-img','image-base64','image-png'])
 add('image-positioned',f'<div style="padding:20px"><img src="{uri}" width="80" height="40"></div>',['html-img','css-padding'])
@@ -88,6 +95,25 @@ add('empty-cells','<table style="width:200px;empty-cells:hide;border-spacing:4px
 add('author-outline','<div style="margin:20px;width:100px;height:40px;outline:3px solid blue;outline-offset:4px;background:#eee"></div>',['css-outline'])
 add('ellipsis','<div style="width:120px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">The quick brown fox jumps over the lazy dog.</div>',['css-text-overflow','css-overflow'])
 add('border-style-default-width','<div style="width:100px;height:40px;border-style:solid;border-color:green"></div>',['css-border'])
+add('bidi-isolate-wrap','<div dir="rtl" style="width:180px">Invoice 42 is available now <span dir="rtl">x</span> <span>details</span></div>',['html-dir','css-direction','html-span','css-white-space'])
+add('float-margin-cell','<table><tr><td><div style="float:right;width:48px;height:24px;margin:0 8px 4px 0;background:#369"></div></td></tr></table>',['html-table','css-float','css-margin'])
+retain('fuzz-float-margins',['css-float','css-margin'])
+retain('fuzz-inline-vertical-align',['css-display','css-vertical-align','css-list-style-type'])
+retain('fuzz-parser-caption',['html-table'])
+retain('fuzz-image-border-box',['html-img','css-box-sizing','css-padding'])
+retain('fuzz-table-rowspan',['html-table','css-table-layout'])
+retain('fuzz-inline-block-auto',['css-display','css-width'])
+retain('fuzz-transform-wrap',['css-text-transform','css-word-break'])
+retain('fuzz-inline-image-baseline',['html-img','css-object-fit','css-vertical-align'])
+retain('fuzz-float-clearance',['css-float','css-clear','css-margin'])
+retain('fuzz-inline-margins',['css-display','css-margin'])
+retain('fuzz-overflow-anywhere-bidi',['css-overflow-wrap','css-direction'])
+retain('fuzz-inside-roman',['css-list-style-type','css-list-style-position'])
+retain('fuzz-table-cell-width',['html-table','css-width'])
+retain('fuzz-empty-inline-block',['css-display','css-width','css-list-style-type'])
+retain('fuzz-inline-shrink-margins',['css-display','css-width','css-max-width','css-margin','css-padding'])
+retain('fuzz-empty-inline-alpha',['css-display','css-width','css-list-style-type'])
+retain('fuzz-inline-percent-containing',['css-display','css-width','css-max-width','css-unit-percent','css-unit-calc'])
 # Fixture-authored raster regions: independent of Lizard's reported boxes.
 # Keep document geometry/alpha and every pixel outside these regions exact.
 image_regions = {

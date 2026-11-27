@@ -354,6 +354,7 @@ def composition_case(rng: random.Random, config: dict[str, str]) -> CaseParts:
     else:
         body = f'<div dir="{direction}" style="max-width:580px">{body}</div>'
     source = document(
+        "html{scrollbar-width:none}"
         ".fuzz-root a{color:#245;text-decoration:underline}"
         ".fuzz-root img{max-width:100%}"
         "@media (max-width:360px){.fuzz-root{font-size:14px}}",
@@ -545,7 +546,11 @@ def rule_reductions(source: bytes):
         body_start = style.start("body")
         for match in RULE.finditer(style.group("body")):
             selector = match.group("selector").strip().lower()
-            if selector in (b"html,body", b"body", b"p") or b"@media" in selector:
+            if (
+                selector in (b"html,body", b"body", b"p")
+                or b"@media" in selector
+                or b"scrollbar-width:none" in match.group("body").replace(b" ", b"").lower()
+            ):
                 continue
             reductions.append((body_start + match.start(), body_start + match.end()))
     for start, end in reversed(reductions):

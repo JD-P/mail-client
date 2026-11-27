@@ -149,10 +149,12 @@ Passing random cases are discarded by default. Failures, independent traces,
 images, exact environment hashes and `findings.json` are retained. The
 structure-aware reducer can remove complete generated subtrees, text spans, CSS
 rules, attributes and declarations; pixel-only failures are minimized alongside
-DOM, geometry, crash and timeout failures. `--fail-on crash` supports discovery
-campaigns where known visual differences should be reported without making the
-job permanently red. Minimized failures that remain relevant across campaigns
-live in `tests/fuzz-corpus` until promoted to the fixture manifest.
+DOM, geometry, crash and timeout failures. It preserves the exact failure bucket
+by default; `--minimize-scope kind` deliberately peels stacked compositional
+faults even when the first differing node changes. `--fail-on crash` supports
+discovery campaigns where known visual differences should be reported without
+making the job permanently red. Minimized failures that remain relevant across
+campaigns live in `tests/fuzz-corpus` until promoted to the fixture manifest.
 
 `.github/workflows/renderer-fuzz.yml` runs four independent 512-case seeds every
 week against the pinned Gecko build and uploads all findings. This is still a

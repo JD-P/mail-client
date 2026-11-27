@@ -470,7 +470,13 @@ def reduction_candidates(source):
                 yield candidate
 
 
-def minimize(case, runner, wanted_signature, stem):
+def minimization_match(row, wanted_signature, wanted_kind, scope):
+    if scope == "kind":
+        return row["failure_kind"] == wanted_kind
+    return row["signature"] == wanted_signature
+
+
+def minimize(case, runner, wanted_signature, wanted_kind, stem):
     current = case
     attempts = 0
     changed = True
@@ -482,7 +488,12 @@ def minimize(case, runner, wanted_signature, stem):
             attempts += 1
             candidate = dataclasses.replace(current, source=candidate_source)
             row = runner.run(candidate, stem=f"{stem}-try")
-            if row["signature"] == wanted_signature:
+            if minimization_match(
+                row,
+                wanted_signature,
+                wanted_kind,
+                runner.args.minimize_scope,
+            ):
                 current = candidate
                 changed = True
                 break
@@ -596,6 +607,12 @@ def main():
     parser.add_argument("--minimize", type=int, default=12, help="Minimize this many distinct failure buckets")
     parser.add_argument("--minimize-attempts", type=int, default=80)
     parser.add_argument(
+        "--minimize-scope",
+        choices=("signature", "kind"),
+        default="signature",
+        help="Preserve an exact bucket or any failure of the original kind",
+    )
+    parser.add_argument(
         "--min-pairwise-percent",
         type=float,
         default=0.0,
@@ -644,7 +661,13 @@ def main():
         minimized = []
         for ordinal, (signature, (case, row)) in enumerate(list(representatives.items())[: args.minimize], 1):
             stem = f"minimized-{ordinal:03d}-{case.family}"
-            reduced, final_row, attempts = minimize(case, runner, signature, stem)
+            reduced, final_row, attempts = minimize(
+                case,
+                runner,
+                signature,
+                row["failure_kind"],
+                stem,
+            )
             minimized.append(
                 {
                     "source": stem + ".html",

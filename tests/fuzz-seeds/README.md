@@ -13,6 +13,11 @@ Every seed was deliberately sanitized before being checked in:
 - identifying message content was replaced with neutral test prose; and
 - three inert `FUZZ_SLOT_*` comments mark bounded insertion points.
 
+The seeds set `scrollbar-width:none` on the root. Gecko otherwise reserves
+browser scrollbar chrome for long messages, while Lizard correctly renders
+into a frontend-owned scrolling surface without browser chrome. Content remains
+scrollable; this only removes a comparison-harness width artifact.
+
 The generator validates the final bytes and refuses active content, external
 HTTP(S), CSS `url()`, imports, embedded browsing contexts and event handlers.
 

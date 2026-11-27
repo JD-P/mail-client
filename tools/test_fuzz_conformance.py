@@ -52,6 +52,7 @@ class GeneratorTests(unittest.TestCase):
         for token in (b"<table", b"<ul", b"<a ", b"<img", b"dir=", b"float:"):
             self.assertIn(token, source)
         self.assertIn(b"<!--fuzz-node:", source)
+        self.assertIn(b"scrollbar-width:none", source)
         self.assertTrue(all(case.family == "composition" for case in cases))
 
     def test_sanitized_seed_cases_are_local_and_use_each_template(self):
@@ -162,6 +163,11 @@ class ClassificationTests(unittest.TestCase):
         narrow = fuzz.failure_signature({**base, "viewport": "320x240"})
         wide = fuzz.failure_signature({**base, "viewport": "800x600"})
         self.assertNotEqual(narrow, wide)
+
+    def test_kind_scope_allows_structural_signature_to_change(self):
+        row = {"failure_kind": "geometry", "signature": "geometry:new"}
+        self.assertFalse(fuzz.minimization_match(row, "geometry:old", "geometry", "signature"))
+        self.assertTrue(fuzz.minimization_match(row, "geometry:old", "geometry", "kind"))
 
 
 if __name__ == "__main__":
