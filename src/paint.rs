@@ -3,7 +3,7 @@ use crate::core::Au;
 use crate::{core::*, layout::*, text::Fonts};
 use gleam::gl;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     ffi::c_void,
     ptr,
     rc::Rc,
@@ -11,6 +11,7 @@ use std::{
     time::Duration,
 };
 use webrender::{api::units::*, api::*, render_api::*, *};
+
 struct Notify(mpsc::Sender<()>);
 impl RenderNotifier for Notify {
     fn clone(&self) -> Box<dyn RenderNotifier> {
@@ -21,6 +22,7 @@ impl RenderNotifier for Notify {
         let _ = self.0.send(());
     }
 }
+
 unsafe extern "C" fn allocation_size(p: *const c_void) -> usize {
     if p.is_null() {
         0
@@ -71,6 +73,398 @@ fn premultiplied(image: &ImageResource) -> UploadImage {
     }
 }
 
+fn raster_mask(mask: Vec<u8>, width: u32, height: u32, value: u32, opacity: u16) -> UploadImage {
+    let color = value.to_be_bytes();
+    let color_alpha = ((u32::from(color[3]) * u32::from(opacity) + 500) / 1000) as u8;
+    let mut pixels = Vec::with_capacity(mask.len() * 4);
+    for coverage in mask {
+        let alpha = ((u16::from(color_alpha) * u16::from(coverage) + 127) / 255) as u8;
+        pixels.extend_from_slice(&[
+            ((u16::from(color[0]) * u16::from(alpha)) / 255) as u8,
+            ((u16::from(color[1]) * u16::from(alpha)) / 255) as u8,
+            ((u16::from(color[2]) * u16::from(alpha)) / 255) as u8,
+            alpha,
+        ]);
+    }
+    UploadImage {
+        width,
+        height,
+        premultiplied_rgba: pixels,
+    }
+}
+
+fn paint_solid_opaque(
+    pixels: &mut [u8],
+    width: u32,
+    mask: &[u8],
+    mask_width: u32,
+    mask_height: u32,
+    offset_x: u32,
+    offset_y: u32,
+    value: u32,
+    fast_two_pixel: Option<&[bool]>,
+    vertical_single_pixel: Option<&[bool]>,
+) {
+    let source = value.to_be_bytes();
+    for y in 0..mask_height {
+        for x in 0..mask_width {
+            let coverage = mask[(y * mask_width + x) as usize];
+            if coverage == 0 {
+                continue;
+            }
+            let base = (((y + offset_y) * width + x + offset_x) * 4) as usize;
+            if coverage == 255 {
+                pixels[base..base + 3].copy_from_slice(&source[..3]);
+            } else if fast_two_pixel.is_some_and(|fast| {
+                fast.get((y * mask_width + x) as usize)
+                    .copied()
+                    .unwrap_or(false)
+            }) {
+                let scale = u16::from(coverage) + (u16::from(coverage) >> 7);
+                for channel in 0..3 {
+                    pixels[base + channel] = ((u16::from(source[channel]) * scale
+                        + u16::from(pixels[base + channel]) * (256 - scale))
+                        >> 8) as u8;
+                }
+            } else if vertical_single_pixel.is_some_and(|vertical| {
+                vertical
+                    .get((y * mask_width + x) as usize)
+                    .copied()
+                    .unwrap_or(false)
+            }) {
+                // Skia's one-pixel vertical shortcut first premultiplies the
+                // opaque source by coverage, then derives the destination
+                // scale from the quantized source alpha.
+                let source_scale = u16::from(coverage) + (u16::from(coverage) >> 7);
+                let source_alpha = (255 * source_scale) >> 8;
+                let inverse = 255 - source_alpha;
+                let destination_scale = inverse + (inverse >> 7);
+                for channel in 0..3 {
+                    pixels[base + channel] = (((u16::from(source[channel]) * source_scale) >> 8)
+                        + ((u16::from(pixels[base + channel]) * destination_scale) >> 8))
+                        as u8;
+                }
+            } else {
+                for channel in 0..3 {
+                    let foreground = (u16::from(source[channel]) * (u16::from(coverage) + 1)) >> 8;
+                    let background =
+                        (u16::from(pixels[base + channel]) * (256 - u16::from(coverage))) >> 8;
+                    pixels[base + channel] = (foreground + background) as u8;
+                }
+            }
+        }
+    }
+}
+
+fn opaque_image(width: u32, height: u32, value: u32) -> UploadImage {
+    let color = value.to_be_bytes();
+    let mut pixels = Vec::with_capacity(width as usize * height as usize * 4);
+    for _ in 0..width as usize * height as usize {
+        pixels.extend_from_slice(&[color[0], color[1], color[2], 255]);
+    }
+    UploadImage {
+        width,
+        height,
+        premultiplied_rgba: pixels,
+    }
+}
+
+fn pixel_aligned_rect(rectangle: Rect) -> Option<(u32, u32)> {
+    if rectangle.x % PX != 0 || rectangle.y % PX != 0 {
+        return None;
+    }
+    image_pixels(rectangle.w).zip(image_pixels(rectangle.h))
+}
+
+fn paint_polygons_opaque(
+    image: &mut UploadImage,
+    polygons: &[Vec<(f32, f32)>],
+    offset_x: u32,
+    offset_y: u32,
+    mask_width: u32,
+    mask_height: u32,
+    color: u32,
+    through_aa_clip: bool,
+) {
+    let (mask, mut fast) =
+        crate::software_raster::polygons_raster(mask_width, mask_height, polygons);
+    if through_aa_clip {
+        // Gecko clips each mismatched square corner before painting its side.
+        // The clip forces Skia through its general mask compositor rather
+        // than the two-pixel edge shortcut used by a directly filled path.
+        fast.fill(false);
+    }
+    paint_solid_opaque(
+        &mut image.premultiplied_rgba,
+        image.width,
+        &mask,
+        mask_width,
+        mask_height,
+        offset_x,
+        offset_y,
+        color,
+        Some(&fast),
+        None,
+    );
+}
+
+fn gecko_mixed_border_image(
+    width: u32,
+    height: u32,
+    widths: &[Au; 4],
+    colors: &[u32; 4],
+    styles: &[String; 4],
+    backing_color: u32,
+) -> Option<UploadImage> {
+    if styles.each_ref().map(String::as_str) != ["Solid", "Dashed", "Dotted", "Double"]
+        || colors.iter().any(|color| color & 255 != 255)
+    {
+        return None;
+    }
+    let [top, right, bottom, left] = widths.map(image_pixels);
+    let (top, right, bottom, left) = (top?, right?, bottom?, left?);
+    if top == 0
+        || right == 0
+        || bottom == 0
+        || left < 2
+        || left >= width
+        || right >= width
+        || top >= height
+        || bottom >= height
+    {
+        return None;
+    }
+
+    let mut image = opaque_image(width, height, backing_color);
+    let top_f = top as f32;
+    let right_f = right as f32;
+    let bottom_f = bottom as f32;
+    let left_f = left as f32;
+
+    // Gecko paints dissimilar square corners one side at a time through a
+    // diagonal clip. Keep each corner local so Skia's small-mask path (rather
+    // than its wide RLE path) determines the edge coverage.
+    paint_polygons_opaque(
+        &mut image,
+        &[vec![(0.0, 0.0), (left_f, 0.0), (left_f, top_f)]],
+        0,
+        0,
+        left,
+        top,
+        colors[0],
+        true,
+    );
+    let third = left / 3;
+    let remainder = left % 3;
+    let outer = third + u32::from(remainder == 2);
+    let gap = third + u32::from(remainder == 1);
+    let inner = left - outer - gap;
+    let top_third = top / 3;
+    let top_remainder = top % 3;
+    let top_outer = top_third + u32::from(top_remainder == 2);
+    let top_gap = top_third + u32::from(top_remainder == 1);
+    let inner_start_y = top_outer + top_gap;
+    let (mut left_corner_mask, _) = crate::software_raster::polygons_raster(
+        left,
+        top,
+        &[vec![(0.0, 0.0), (left_f, top_f), (0.0, top_f)]],
+    );
+    for y in 0..top {
+        for x in 0..left {
+            let in_stripe =
+                x < outer || (y >= inner_start_y && x >= outer + gap && x < outer + gap + inner);
+            if !in_stripe {
+                left_corner_mask[(y * left + x) as usize] = 0;
+            }
+        }
+    }
+    paint_solid_opaque(
+        &mut image.premultiplied_rgba,
+        image.width,
+        &left_corner_mask,
+        left,
+        top,
+        0,
+        0,
+        colors[3],
+        None,
+        None,
+    );
+    paint_polygons_opaque(
+        &mut image,
+        &[vec![(right_f, 0.0), (right_f, top_f), (0.0, top_f)]],
+        width - right,
+        0,
+        right,
+        top,
+        colors[1],
+        true,
+    );
+    paint_polygons_opaque(
+        &mut image,
+        &[vec![(0.0, 0.0), (right_f, 0.0), (0.0, top_f)]],
+        width - right,
+        0,
+        right,
+        top,
+        colors[0],
+        true,
+    );
+
+    // A dotted neighbor cedes its square corner to the non-dotted side.
+    paint_polygons_opaque(
+        &mut image,
+        &[vec![
+            (0.0, 0.0),
+            (right_f, 0.0),
+            (right_f, bottom_f),
+            (0.0, bottom_f),
+        ]],
+        width - right,
+        height - bottom,
+        right,
+        bottom,
+        colors[1],
+        false,
+    );
+    for (stripe_start, stripe_end) in [(0, outer), (outer + gap, outer + gap + inner)] {
+        if stripe_end <= stripe_start {
+            continue;
+        }
+        paint_polygons_opaque(
+            &mut image,
+            &[vec![
+                (stripe_start as f32, 0.0),
+                (stripe_end as f32, 0.0),
+                (stripe_end as f32, bottom_f),
+                (stripe_start as f32, bottom_f),
+            ]],
+            0,
+            height - bottom,
+            left,
+            bottom,
+            colors[3],
+            false,
+        );
+    }
+
+    // Straight top and double-left portions exclude the corners painted above.
+    paint_polygons_opaque(
+        &mut image,
+        &[vec![
+            (0.0, 0.0),
+            ((width - left - right) as f32, 0.0),
+            ((width - left - right) as f32, top_f),
+            (0.0, top_f),
+        ]],
+        left,
+        0,
+        width - left - right,
+        top,
+        colors[0],
+        false,
+    );
+    for (stripe_start, stripe_end) in [(0, outer), (outer + gap, outer + gap + inner)] {
+        if stripe_end <= stripe_start {
+            continue;
+        }
+        paint_polygons_opaque(
+            &mut image,
+            &[vec![
+                (stripe_start as f32, 0.0),
+                (stripe_end as f32, 0.0),
+                (stripe_end as f32, (height - top - bottom) as f32),
+                (stripe_start as f32, (height - top - bottom) as f32),
+            ]],
+            0,
+            top,
+            left,
+            height - top - bottom,
+            colors[3],
+            false,
+        );
+    }
+
+    // Gecko extends a dashed side to an adjacent dotted corner. The dash
+    // setup then chooses an odd number of half-segments, yielding symmetric
+    // half-dashes at the exposed ends.
+    let dash_start = top_f;
+    let dash_end = height as f32;
+    let dash_length = dash_end - dash_start;
+    let nominal_half_dash = right_f * 1.5;
+    let mut half_count = (dash_length / nominal_half_dash).floor() as i32;
+    match half_count.rem_euclid(4) {
+        0 => half_count += 1,
+        2 => half_count += 3,
+        3 => half_count += 2,
+        _ => {}
+    }
+    let half_dash = dash_length / half_count.max(1) as f32;
+    let full_dash = half_dash * 2.0;
+    let mut dashed_rects = Vec::new();
+    let mut start = dash_start;
+    let mut on = half_dash;
+    while start < dash_end {
+        let end = (start + on).min(dash_end);
+        if end > start {
+            dashed_rects.push(vec![
+                (0.0, start),
+                (right_f, start),
+                (right_f, end),
+                (0.0, end),
+            ]);
+        }
+        start = end + full_dash;
+        on = full_dash;
+    }
+    paint_polygons_opaque(
+        &mut image,
+        &dashed_rects,
+        width - right,
+        0,
+        right,
+        height,
+        colors[1],
+        false,
+    );
+
+    let center_y = height as f32 - bottom_f / 2.0;
+    let dotted_start = width as f32 - right_f - bottom_f / 2.0;
+    let dotted_end = left_f + bottom_f / 2.0;
+    let dotted_length = dotted_start - dotted_end;
+    let mut dot_count = (dotted_length / bottom_f).round() as u32;
+    if dot_count % 2 == 1 {
+        dot_count += 1;
+    }
+    let circles: Vec<_> = (1..=dot_count)
+        .step_by(2)
+        .map(|index| {
+            let ratio = index as f32 / dot_count as f32;
+            (
+                dotted_start * (1.0 - ratio) + dotted_end * ratio,
+                center_y,
+                bottom_f / 2.0,
+            )
+        })
+        .collect();
+    let (circle_mask, circle_fast) =
+        crate::software_raster::circles_raster(width, height, &circles);
+    paint_solid_opaque(
+        &mut image.premultiplied_rgba,
+        width,
+        &circle_mask,
+        width,
+        height,
+        0,
+        0,
+        colors[2],
+        Some(&circle_fast),
+        None,
+    );
+
+    Some(image)
+}
+
 fn image_pixels(value: Au) -> Option<u32> {
     if value <= 0 || value % PX != 0 {
         return None;
@@ -80,26 +474,50 @@ fn image_pixels(value: Au) -> Option<u32> {
         .filter(|value| *value <= 16_384)
 }
 
-fn quantized_sample(position: u32, source: u32, destination: u32) -> (u32, u32, i32) {
+fn software_image_len(width: u32, height: u32) -> Option<usize> {
+    image_len(width, height, width.checked_mul(4)?, 67_108_864).ok()
+}
+
+fn quantized_sample_with_ties(
+    position: u32,
+    source: u32,
+    destination: u32,
+    preceding_tie: bool,
+) -> (u32, u32, i32) {
     let denominator = i64::from(destination) * 2;
     let numerator = (i64::from(position) * 2 + 1) * i64::from(source) - i64::from(destination);
     let base = numerator.div_euclid(denominator);
     let remainder = numerator.rem_euclid(denominator);
-    let fraction = ((remainder * 16) / denominator) as i32;
+    let scaled_remainder = remainder * 16;
+    let fraction = if preceding_tie && scaled_remainder == denominator * 12 {
+        ((scaled_remainder - 1) / denominator) as i32
+    } else {
+        (scaled_remainder / denominator) as i32
+    };
     let first = base.clamp(0, i64::from(source - 1)) as u32;
     let second = (base + 1).clamp(0, i64::from(source - 1)) as u32;
     (first, second, fraction)
 }
 
+#[cfg(test)]
+fn quantized_sample(position: u32, source: u32, destination: u32) -> (u32, u32, i32) {
+    quantized_sample_with_ties(position, source, destination, false)
+}
+
 /// Gecko's decoded-image scaling surfaces retain four fractional bits. Build
 /// that bounded surface explicitly so disposable SWGL texture precision is not
 /// part of the media-decoding contract.
-fn resample_image(source: &UploadImage, width: u32, height: u32) -> Vec<u8> {
+fn resample_image_with_ties(
+    source: &UploadImage,
+    width: u32,
+    height: u32,
+    preceding_tie: bool,
+) -> Vec<u8> {
     let mut output = vec![0; width as usize * height as usize * 4];
     for y in 0..height {
-        let (y0, y1, fy) = quantized_sample(y, source.height, height);
+        let (y0, y1, fy) = quantized_sample_with_ties(y, source.height, height, preceding_tie);
         for x in 0..width {
-            let (x0, x1, fx) = quantized_sample(x, source.width, width);
+            let (x0, x1, fx) = quantized_sample_with_ties(x, source.width, width, preceding_tie);
             for channel in 0..4usize {
                 let sample = |sx: u32, sy: u32| -> i32 {
                     source.premultiplied_rgba[((sy * source.width + sx) * 4) as usize + channel]
@@ -113,6 +531,139 @@ fn resample_image(source: &UploadImage, width: u32, height: u32) -> Vec<u8> {
         }
     }
     output
+}
+
+fn resample_image(source: &UploadImage, width: u32, height: u32) -> Vec<u8> {
+    resample_image_with_ties(source, width, height, false)
+}
+
+#[derive(Clone)]
+struct ConvolutionFilter {
+    offset: usize,
+    values: Vec<i16>,
+}
+
+fn lanczos3(distance: f32) -> f32 {
+    if !(-3.0..3.0).contains(&distance) {
+        return 0.0;
+    }
+    if distance.abs() < f32::EPSILON {
+        return 1.0;
+    }
+    let radians = distance * std::f32::consts::PI;
+    (radians.sin() / radians) * ((radians / 3.0).sin() / (radians / 3.0))
+}
+
+/// Construct the same normalized 14-bit Lanczos-3 kernels used by Gecko's
+/// raster-image decoder. Keeping this here, rather than delegating to an image
+/// crate, also keeps malformed-message image work inside our existing budgets.
+fn convolution_filters(source: u32, destination: u32) -> Vec<ConvolutionFilter> {
+    let scale = destination as f32 / source as f32;
+    let clamped_scale = scale.min(1.0);
+    let support = 3.0 / clamped_scale;
+    let inverse_scale = 1.0 / scale;
+    let mut filters = Vec::with_capacity(destination as usize);
+    for output in 0..destination {
+        let source_pixel = (output as f32 + 0.5) * inverse_scale;
+        let begin = (source_pixel - support)
+            .floor()
+            .clamp(0.0, source.saturating_sub(1) as f32) as usize;
+        let end = (source_pixel + support)
+            .ceil()
+            .clamp(0.0, source.saturating_sub(1) as f32) as usize;
+        let mut distance = (begin as f32 + 0.5 - source_pixel) * clamped_scale;
+        let mut floating = Vec::with_capacity(end - begin + 1);
+        let mut sum = 0.0f32;
+        for _ in begin..=end {
+            let value = lanczos3(distance);
+            floating.push(value);
+            sum += value;
+            distance += clamped_scale;
+        }
+        let inverse_sum = 1.0 / sum;
+        let mut values: Vec<i16> = floating
+            .into_iter()
+            .map(|value| (value * inverse_sum * 16_384.0) as i16)
+            .collect();
+        let fixed_sum: i32 = values.iter().map(|value| i32::from(*value)).sum();
+        let middle = values.len() / 2;
+        values[middle] = (i32::from(values[middle]) + 16_384 - fixed_sum) as i16;
+        let leading_zeroes = values.iter().take_while(|value| **value == 0).count();
+        let offset = begin + leading_zeroes;
+        values.drain(..leading_zeroes);
+        while values.last() == Some(&0) {
+            values.pop();
+        }
+        filters.push(ConvolutionFilter { offset, values });
+    }
+    filters
+}
+
+fn convolve_channel(samples: impl Iterator<Item = (i16, u8)>) -> u8 {
+    let accumulated: i32 = samples
+        .map(|(filter, sample)| i32::from(filter) * i32::from(sample))
+        .sum();
+    ((accumulated + 8_192) >> 14).clamp(0, 255) as u8
+}
+
+/// Downscale a decoded premultiplied raster exactly as Gecko's
+/// `DownscalingFilter` does: horizontal and vertical Lanczos-3 convolution,
+/// with normalized 14-bit kernels and alpha repaired after the final pass.
+fn downscale_image(source: &UploadImage, width: u32, height: u32) -> Vec<u8> {
+    let horizontal_filters = convolution_filters(source.width, width);
+    let vertical_filters = convolution_filters(source.height, height);
+    let mut horizontal = vec![0; width as usize * source.height as usize * 4];
+    for y in 0..source.height as usize {
+        for (x, filter) in horizontal_filters.iter().enumerate() {
+            for channel in 0..4usize {
+                let samples = filter.values.iter().enumerate().map(|(index, value)| {
+                    let source_index =
+                        ((y * source.width as usize + filter.offset + index) * 4) + channel;
+                    (*value, source.premultiplied_rgba[source_index])
+                });
+                horizontal[(y * width as usize + x) * 4 + channel] = convolve_channel(samples);
+            }
+        }
+    }
+    let mut output = vec![0; width as usize * height as usize * 4];
+    for (y, filter) in vertical_filters.iter().enumerate() {
+        for x in 0..width as usize {
+            for channel in 0..4usize {
+                let samples = filter.values.iter().enumerate().map(|(index, value)| {
+                    let source_index =
+                        (((filter.offset + index) * width as usize + x) * 4) + channel;
+                    (*value, horizontal[source_index])
+                });
+                output[(y * width as usize + x) * 4 + channel] = convolve_channel(samples);
+            }
+            let pixel = &mut output[(y * width as usize + x) * 4..][..4];
+            pixel[3] = pixel[3].max(pixel[0].max(pixel[1]).max(pixel[2]));
+        }
+    }
+    output
+}
+
+fn rounded_app_unit(value: Au) -> i64 {
+    (value as f64 / PX as f64).round() as i64
+}
+
+fn snapped_image_size(rectangle: Rect) -> Option<(u32, u32)> {
+    let width =
+        (rounded_app_unit(rectangle.x + rectangle.w) - rounded_app_unit(rectangle.x)).max(1);
+    let height =
+        (rounded_app_unit(rectangle.y + rectangle.h) - rounded_app_unit(rectangle.y)).max(1);
+    let width = u32::try_from(width).ok()?;
+    let height = u32::try_from(height).ok()?;
+    (width <= 16_384 && height <= 16_384).then_some((width, height))
+}
+
+fn fractional_raster_size(rectangle: Rect) -> Option<(u32, u32)> {
+    if rectangle.w <= 0 || rectangle.h <= 0 || (rectangle.w % PX == 0 && rectangle.h % PX == 0) {
+        return None;
+    }
+    let width = u32::try_from(rectangle.w.div_euclid(PX) + 1).ok()?;
+    let height = u32::try_from(rectangle.h.div_euclid(PX)).ok()?;
+    (width <= 16_384 && (1..=16_384).contains(&height)).then_some((width, height))
 }
 
 fn raster_gradient(
@@ -293,6 +844,7 @@ impl Drop for ContextOwner {
         self.0.destroy();
     }
 }
+
 /// Retain this object for a message's lifetime. Scrolling reuses its display
 /// list, scene, glyphs and picture caches; it does not repeat HTML layout.
 pub struct Painter<'a> {
@@ -418,7 +970,61 @@ impl<'a> Painter<'a> {
         }
         let mut uploads: Vec<_> = images.iter().map(premultiplied).collect();
         let mut derived_images = HashMap::<(usize, u32, u32), usize>::new();
+        let mut rasterized_images = HashMap::<(usize, u32, u32), usize>::new();
         for primitive in &scene.primitives {
+            if let Draw::Image { rect, resource } = &primitive.draw {
+                let source = &uploads[*resource];
+                let decoded_size = snapped_image_size(*rect)
+                    .filter(|(width, height)| *width < source.width && *height < source.height);
+                if let Some((width, height)) = decoded_size {
+                    let key = (*resource, width, height);
+                    if !rasterized_images.contains_key(&key) {
+                        let len = image_len(
+                            width,
+                            height,
+                            width.checked_mul(4).ok_or(Error::Budget("stride"))?,
+                            67_108_864,
+                        )?;
+                        if uploads.len() < 512 && total.saturating_add(len) <= 67_108_864 {
+                            let derived = UploadImage {
+                                width,
+                                height,
+                                premultiplied_rgba: downscale_image(source, width, height),
+                            };
+                            total += len;
+                            let index = uploads.len();
+                            uploads.push(derived);
+                            rasterized_images.insert(key, index);
+                        }
+                    }
+                    continue;
+                }
+                if let Some((width, height)) = fractional_raster_size(*rect) {
+                    let key = (*resource, width, height);
+                    if !rasterized_images.contains_key(&key) {
+                        let len = image_len(
+                            width,
+                            height,
+                            width.checked_mul(4).ok_or(Error::Budget("stride"))?,
+                            67_108_864,
+                        )?;
+                        if uploads.len() < 512 && total.saturating_add(len) <= 67_108_864 {
+                            let derived = UploadImage {
+                                width,
+                                height,
+                                premultiplied_rgba: resample_image_with_ties(
+                                    source, width, height, true,
+                                ),
+                            };
+                            total += len;
+                            let index = uploads.len();
+                            uploads.push(derived);
+                            rasterized_images.insert(key, index);
+                        }
+                    }
+                    continue;
+                }
+            }
             let candidate = match &primitive.draw {
                 Draw::Image { rect, resource } => Some((*resource, rect.w, rect.h)),
                 Draw::TiledImage { resource, tile, .. } => Some((*resource, tile.0, tile.1)),
@@ -500,6 +1106,265 @@ impl<'a> Painter<'a> {
             let index = uploads.len();
             uploads.push(image);
             marker_images.insert(primitive_index, index);
+        }
+        let mut software_images = HashMap::<usize, usize>::new();
+        for (primitive_index, primitive) in scene.primitives.iter().enumerate() {
+            if uploads.len() >= 512 {
+                break;
+            }
+            let remaining = 67_108_864usize.saturating_sub(total);
+            let image = match &primitive.draw {
+                Draw::Rect {
+                    rect,
+                    color,
+                    radius,
+                } if *radius > 0 && *radius % PX == 0 => pixel_aligned_rect(*rect)
+                    .filter(|(width, height)| {
+                        software_image_len(*width, *height).is_some_and(|len| len <= remaining)
+                    })
+                    .map(|(width, height)| {
+                        raster_mask(
+                            crate::software_raster::rounded_rect_mask(
+                                width,
+                                height,
+                                *radius as f32 / PX as f32,
+                            ),
+                            width,
+                            height,
+                            *color,
+                            primitive.opacity,
+                        )
+                    }),
+                Draw::Border {
+                    rect,
+                    widths,
+                    colors,
+                    styles,
+                    radius,
+                } if *radius == 0 && primitive.opacity == 1000 => {
+                    let backing_color =
+                        scene.primitives[..primitive_index]
+                            .iter()
+                            .rev()
+                            .find_map(|candidate| {
+                                let Draw::Rect {
+                                    rect: backing_rect,
+                                    color,
+                                    radius,
+                                } = candidate.draw
+                                else {
+                                    return None;
+                                };
+                                (candidate.opacity == 1000
+                                    && color & 255 == 255
+                                    && radius == 0
+                                    && backing_rect.x <= rect.x
+                                    && backing_rect.y <= rect.y
+                                    && backing_rect.x + backing_rect.w >= rect.x + rect.w
+                                    && backing_rect.y + backing_rect.h >= rect.y + rect.h)
+                                    .then_some(color)
+                            });
+                    pixel_aligned_rect(*rect)
+                        .filter(|(width, height)| {
+                            software_image_len(*width, *height).is_some_and(|len| len <= remaining)
+                        })
+                        .zip(backing_color)
+                        .and_then(|((width, height), backing_color)| {
+                            gecko_mixed_border_image(
+                                width,
+                                height,
+                                widths,
+                                colors,
+                                styles,
+                                backing_color,
+                            )
+                        })
+                }
+                Draw::Border {
+                    rect,
+                    widths,
+                    colors,
+                    styles,
+                    radius,
+                } if *radius > 0
+                    && *radius % PX == 0
+                    && widths.iter().all(|width| *width == widths[0])
+                    && widths[0] > 0
+                    && widths[0] % PX == 0
+                    && colors.iter().all(|color| *color == colors[0])
+                    && styles.iter().all(|style| style == "Solid") =>
+                {
+                    pixel_aligned_rect(*rect)
+                        .filter(|(width, height)| {
+                            software_image_len(*width, *height).is_some_and(|len| len <= remaining)
+                        })
+                        .map(|(width, height)| {
+                            raster_mask(
+                                crate::software_raster::rounded_border_mask(
+                                    width,
+                                    height,
+                                    *radius as f32 / PX as f32,
+                                    widths[0] as f32 / PX as f32,
+                                ),
+                                width,
+                                height,
+                                colors[0],
+                                primitive.opacity,
+                            )
+                        })
+                }
+                _ => None,
+            };
+            let Some(image) = image else {
+                continue;
+            };
+            let len = image.premultiplied_rgba.len();
+            if uploads.len() >= 512 || total.saturating_add(len) > 67_108_864 {
+                continue;
+            }
+            total += len;
+            let index = uploads.len();
+            uploads.push(image);
+            software_images.insert(primitive_index, index);
+        }
+        let mut software_skips = HashSet::<usize>::new();
+        for (border_index, border_primitive) in scene.primitives.iter().enumerate() {
+            let Draw::Border {
+                rect: border_rect,
+                widths,
+                colors,
+                styles,
+                radius: border_radius,
+            } = &border_primitive.draw
+            else {
+                continue;
+            };
+            if border_primitive.opacity != 1000
+                || colors[0] & 255 != 255
+                || *border_radius <= 0
+                || *border_radius % PX != 0
+                || !widths.iter().all(|width| *width == widths[0])
+                || widths[0] <= 0
+                || widths[0] % PX != 0
+                || !colors.iter().all(|value| *value == colors[0])
+                || !styles.iter().all(|style| style == "Solid")
+            {
+                continue;
+            }
+            let Some((width, height)) = pixel_aligned_rect(*border_rect) else {
+                continue;
+            };
+            let rounded_background = scene.primitives[..border_index]
+                .iter()
+                .enumerate()
+                .rev()
+                .find_map(|(index, primitive)| {
+                    let Draw::Rect {
+                        rect,
+                        color,
+                        radius,
+                    } = primitive.draw
+                    else {
+                        return None;
+                    };
+                    (primitive.opacity == 1000
+                        && color & 255 == 255
+                        && radius > 0
+                        && radius % PX == 0
+                        && rect.x >= border_rect.x
+                        && rect.y >= border_rect.y
+                        && rect.x + rect.w <= border_rect.x + border_rect.w
+                        && rect.y + rect.h <= border_rect.y + border_rect.h
+                        && rect.x * 2 + rect.w == border_rect.x * 2 + border_rect.w
+                        && rect.y * 2 + rect.h == border_rect.y * 2 + border_rect.h
+                        && pixel_aligned_rect(rect).is_some())
+                    .then_some((index, rect, color, radius))
+                });
+            let Some((background_index, background_rect, background_color, background_radius)) =
+                rounded_background
+            else {
+                continue;
+            };
+            let backing_color =
+                scene.primitives[..background_index]
+                    .iter()
+                    .rev()
+                    .find_map(|primitive| {
+                        let Draw::Rect {
+                            rect,
+                            color,
+                            radius,
+                        } = primitive.draw
+                        else {
+                            return None;
+                        };
+                        (primitive.opacity == 1000
+                            && color & 255 == 255
+                            && radius == 0
+                            && rect.x <= border_rect.x
+                            && rect.y <= border_rect.y
+                            && rect.x + rect.w >= border_rect.x + border_rect.w
+                            && rect.y + rect.h >= border_rect.y + border_rect.h)
+                            .then_some(color)
+                    });
+            let Some(backing_color) = backing_color else {
+                continue;
+            };
+            let Some((background_width, background_height)) = pixel_aligned_rect(background_rect)
+            else {
+                continue;
+            };
+            let Some(len) = software_image_len(width, height) else {
+                continue;
+            };
+            if uploads.len() >= 512 || total.saturating_add(len) > 67_108_864 {
+                continue;
+            }
+            let offset_x = ((background_rect.x - border_rect.x) / PX) as u32;
+            let offset_y = ((background_rect.y - border_rect.y) / PX) as u32;
+            let mut image = opaque_image(width, height, backing_color);
+            let background_mask = crate::software_raster::rounded_rect_mask(
+                background_width,
+                background_height,
+                background_radius as f32 / PX as f32,
+            );
+            paint_solid_opaque(
+                &mut image.premultiplied_rgba,
+                width,
+                &background_mask,
+                background_width,
+                background_height,
+                offset_x,
+                offset_y,
+                background_color,
+                None,
+                None,
+            );
+            let (border_mask, border_fast, _border_vertical) =
+                crate::software_raster::rounded_border_raster(
+                    width,
+                    height,
+                    *border_radius as f32 / PX as f32,
+                    widths[0] as f32 / PX as f32,
+                );
+            paint_solid_opaque(
+                &mut image.premultiplied_rgba,
+                width,
+                &border_mask,
+                width,
+                height,
+                0,
+                0,
+                colors[0],
+                Some(&border_fast),
+                None,
+            );
+            debug_assert_eq!(len, image.premultiplied_rgba.len());
+            total += len;
+            let image_index = uploads.len();
+            uploads.push(image);
+            software_images.insert(border_index, image_index);
+            software_skips.insert(background_index);
         }
         self.document_height = scene.height;
         let api = &mut self.api;
@@ -614,7 +1479,21 @@ impl<'a> Painter<'a> {
                     if *c & 255 == 0 || r.w == 0 || r.h == 0 {
                         continue;
                     }
+                    if software_skips.contains(&primitive_index) {
+                        continue;
+                    }
                     let b = rect(*r, scroll);
+                    if let Some(image) = software_images.get(&primitive_index) {
+                        builder.push_image(
+                            &common(b),
+                            b,
+                            ImageRendering::Pixelated,
+                            AlphaType::PremultipliedAlpha,
+                            image_keys[*image],
+                            color(0xffffffff, 1000),
+                        );
+                        continue;
+                    }
                     let mut sc = space;
                     if *radius > 0 {
                         let id = builder.define_clip_rounded_rect(
@@ -654,6 +1533,8 @@ impl<'a> Painter<'a> {
                             run.size as f32 / 60.0,
                             Some(FontInstanceOptions {
                                 render_mode: FontRenderMode::Alpha,
+                                flags: FontInstanceFlags::SUBPIXEL_POSITION
+                                    | FontInstanceFlags::EMBEDDED_BITMAPS,
                                 ..Default::default()
                             }),
                             Some(FontInstancePlatformOptions {
@@ -665,7 +1546,7 @@ impl<'a> Painter<'a> {
                         instances.push((run.font, run.size, key));
                         key
                     };
-                    let glyphs: Vec<_> = run
+                    let mut glyphs: Vec<_> = run
                         .glyphs
                         .iter()
                         .map(|g| GlyphInstance {
@@ -676,17 +1557,36 @@ impl<'a> Painter<'a> {
                             ),
                         })
                         .collect();
+                    // Gecko preserves logical glyph order when it submits an
+                    // RTL run to WebRender. HarfBuzz returns those glyphs in
+                    // visual order, recognizable by descending source
+                    // clusters, so reverse the submitted instances without
+                    // changing their already-positioned coordinates. Joined
+                    // scripts have overlapping glyph masks; matching Gecko's
+                    // order also matches SWGL's byte-quantized composition at
+                    // those overlaps.
+                    let (has_distinct_clusters, clusters_descend) = run
+                        .glyphs
+                        .windows(2)
+                        .filter(|pair| pair[0].cluster != pair[1].cluster)
+                        .fold((false, true), |(_, descending), pair| {
+                            (true, descending && pair[0].cluster > pair[1].cluster)
+                        });
+                    if has_distinct_clusters && clusters_descend {
+                        glyphs.reverse();
+                    }
                     let bounds = rect(
                         Rect::new(
-                            *x - run.size,
-                            *baseline - run.ascent - run.size,
-                            run.width.max(PX) + run.size * 2,
-                            run.ascent + run.descent + run.size * 2,
+                            *x - PX,
+                            *baseline - run.ascent - PX,
+                            run.width.max(PX) + PX * 2,
+                            run.ascent + run.descent + PX * 2,
                         ),
                         scroll,
                     );
+                    let clip_bounds = bounds.inflate(1.0, 1.0);
                     builder.push_text(
-                        &common(bounds),
+                        &common(clip_bounds),
                         bounds,
                         &glyphs,
                         key,
@@ -755,18 +1655,48 @@ impl<'a> Painter<'a> {
                     );
                 }
                 Draw::Image { rect: r, resource } => {
-                    let b = rect(*r, scroll);
+                    let source = &uploads[*resource];
+                    let decoded_rasterized = snapped_image_size(*r)
+                        .filter(|(width, height)| *width < source.width && *height < source.height)
+                        .and_then(|(width, height)| {
+                            rasterized_images.get(&(*resource, width, height)).copied()
+                        });
+                    let fractional_size = decoded_rasterized
+                        .is_none()
+                        .then(|| fractional_raster_size(*r))
+                        .flatten();
+                    let fractional_rasterized = fractional_size.and_then(|(width, height)| {
+                        rasterized_images.get(&(*resource, width, height)).copied()
+                    });
+                    let paint_rect = if let Some((width, height)) = fractional_size {
+                        Rect::new(
+                            (r.x + PX - 1).div_euclid(PX) * PX,
+                            (r.y + PX - 1).div_euclid(PX) * PX,
+                            width as Au * PX,
+                            height as Au * PX,
+                        )
+                    } else {
+                        *r
+                    };
+                    let b = rect(paint_rect, scroll);
+                    let rasterized = decoded_rasterized.or(fractional_rasterized);
                     let derived =
                         image_pixels(r.w)
                             .zip(image_pixels(r.h))
                             .and_then(|(width, height)| {
                                 derived_images.get(&(*resource, width, height)).copied()
                             });
-                    let image = derived.unwrap_or(*resource);
+                    let image = rasterized.or(derived).unwrap_or(*resource);
+                    let mut properties = common(b);
+                    if decoded_rasterized.is_some() {
+                        properties.flags |= PrimitiveFlags::RASTERIZED_FOR_RECT;
+                    }
                     builder.push_image(
-                        &common(b),
+                        &properties,
                         b,
-                        if derived.is_some() {
+                        if fractional_rasterized.is_some()
+                            || (derived.is_some() && rasterized.is_none())
+                        {
                             ImageRendering::Pixelated
                         } else {
                             ImageRendering::Auto
@@ -784,6 +1714,17 @@ impl<'a> Painter<'a> {
                     radius,
                 } => {
                     let b = rect(*r, scroll);
+                    if let Some(image) = software_images.get(&primitive_index) {
+                        builder.push_image(
+                            &common(b),
+                            b,
+                            ImageRendering::Pixelated,
+                            AlphaType::PremultipliedAlpha,
+                            image_keys[*image],
+                            color(0xffffffff, 1000),
+                        );
+                        continue;
+                    }
                     let side = |i: usize| BorderSide {
                         color: color(colors[i], p.opacity),
                         style: match styles[i].as_str() {
@@ -1003,6 +1944,13 @@ mod tests {
     use super::*;
 
     #[test]
+    fn software_rasters_are_budgeted_before_allocation() {
+        assert_eq!(software_image_len(4_096, 4_096), Some(67_108_864));
+        assert_eq!(software_image_len(4_097, 4_096), None);
+        assert_eq!(software_image_len(16_384, 16_384), None);
+    }
+
+    #[test]
     fn decoded_image_sampling_uses_four_fractional_bits() {
         assert_eq!(quantized_sample(0, 2, 3), (0, 0, 13));
         assert_eq!(quantized_sample(1, 2, 3), (0, 1, 8));
@@ -1019,6 +1967,41 @@ mod tests {
         assert_eq!(
             resample_image(&source, 3, 1),
             vec![0, 0, 0, 255, 120, 60, 0, 255, 240, 120, 0, 255]
+        );
+    }
+
+    #[test]
+    fn decoded_image_downscaling_matches_gecko_lanczos_surface() {
+        let mut pixels = Vec::new();
+        for y in 0..4 {
+            for x in 0..8 {
+                pixels.extend_from_slice(match (x < 4, y < 2) {
+                    (true, true) => &[255, 0, 0, 255],
+                    (false, true) => &[0, 128, 0, 255],
+                    (true, false) => &[0, 0, 255, 255],
+                    (false, false) => &[0, 0, 0, 0],
+                });
+            }
+        }
+        let source = UploadImage {
+            width: 8,
+            height: 4,
+            premultiplied_rgba: pixels,
+        };
+        assert_eq!(
+            downscale_image(&source, 3, 2),
+            vec![
+                237, 0, 18, 255, 118, 59, 9, 246, 0, 129, 0, 237, 18, 0, 237, 255, 9, 5, 118, 136,
+                0, 10, 0, 18,
+            ]
+        );
+    }
+
+    #[test]
+    fn fractional_image_rect_uses_snapped_device_extent() {
+        assert_eq!(
+            snapped_image_size(Rect::new(5 * PX, 5 * PX, 3 * PX, 3 * PX / 2)),
+            Some((3, 2))
         );
     }
 

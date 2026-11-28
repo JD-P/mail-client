@@ -1,0 +1,45 @@
+{
+  "upstream_revision": "2887d9de1f69c0e9776413da80e7ba0d1225dd9b",
+  "entries": [
+    {
+      "path": "glsl-to-cxx/src/hir.rs",
+      "sha256": "3357ebdd75b0538203747d16f90bd51adfe12624e0a268857ac078f0faff423c",
+      "rationale": "Declare the standalone SWGL alpha-text blend intrinsic."
+    },
+    {
+      "path": "swgl/src/blend.h",
+      "sha256": "b52e1a530144fcf964d671fdd45e05612992f7fd2ec1bf3a308e6e8e95543504",
+      "rationale": "Keep alpha-text color modulation and composition in Gecko-compatible fixed-point arithmetic."
+    },
+    {
+      "path": "swgl/src/gl.cc",
+      "sha256": "ad1b0a0ced3fdfce5457419f5443aed6ce87562d744bf66cb25635c19101ec4c",
+      "rationale": "Register the standalone SWGL alpha-text blend key."
+    },
+    {
+      "path": "swgl/src/gl_defs.h",
+      "sha256": "54253e553b484e3029951e0b263b0ad5b85291cf6eefea9cf5ea49e3aaa0d0c7",
+      "rationale": "Define the standalone SWGL alpha-text blend mode."
+    },
+    {
+      "path": "swgl/src/swgl_ext.h",
+      "sha256": "40c0562a47a6d672a90253544d97e8dc5b68ed031cdd6c9cb3ebeb80e469673d",
+      "rationale": "Expose the alpha-text blend override to translated shaders."
+    },
+    {
+      "path": "webrender/res/cs_border_segment.glsl",
+      "sha256": "3e452bd377403206ff6c55971128599df3d318f7e0313133f8cf6078572d98a5",
+      "rationale": "Match Gecko border corner and narrow dotted-border rasterization."
+    },
+    {
+      "path": "webrender/res/ps_text_run.glsl",
+      "sha256": "7e1584647083b692a5a38f83baa2d4d2331fd484cf15db8aff9a78fbe2a14e96",
+      "rationale": "Route SWGL alpha glyphs through deterministic fixed-point composition."
+    },
+    {
+      "path": "webrender/src/border.rs",
+      "sha256": "f527b6ec4c4b96b5865702d3e8d0103865cfd0591f9c3a34a8e66dec413d8b9b",
+      "rationale": "Match Gecko border color quantization, corner placement, and narrow dotted borders."
+    }
+  ]
+}

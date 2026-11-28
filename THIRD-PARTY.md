@@ -11,6 +11,11 @@ approved OS fonts are runtime/build dependencies, not bundled font binaries.
 Firefox, geckodriver and Verus releases are downloaded separately by the optional
 checksummed bootstrap tool; their upstream licenses continue to apply.
 
+`src/software_raster.rs` adapts the fixed-point analytic edge stepping used by
+Skia's anti-aliased path rasterizer into bounded safe Rust. Skia is Copyright
+(c) 2011 Google Inc. and is distributed under its BSD 3-Clause license, included
+as `LICENSE-SKIA.txt`.
+
 `vendor/async-imap` contains a hardened fork of Chatmail's async-imap 0.12.0,
 pinned at commit `31fde98fceb5b9bde726807419992f8d84b1f193`. Upstream offered
 the work under `MIT OR Apache-2.0`; this vendored copy selects Apache-2.0 and

@@ -2233,6 +2233,13 @@ static ALWAYS_INLINE int calcAAEdgeMask(bvec4_scalar mask) {
     swgl_BlendAlphaRGBA8 = alphas(swgl_BlendColorRGBA8);      \
   } while (0)
 
+#define swgl_blendAlphaText(color)                         \
+  do {                                                     \
+    swgl_ClipFlags |= SWGL_CLIP_FLAG_BLEND_OVERRIDE;       \
+    swgl_BlendOverride = BLEND_KEY(SWGL_BLEND_ALPHA_TEXT); \
+    swgl_BlendColorRGBA8 = packColor<uint32_t>(color);     \
+  } while (0)
+
 // Dispatch helper used by the GLSL translator to swgl_drawSpan functions.
 // The number of pixels committed is tracked by checking for the difference in
 // swgl_SpanLength. Any varying interpolants used will be advanced past the

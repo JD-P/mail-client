@@ -103,6 +103,9 @@ for binary in "${binaries[@]}"; do
 done
 install -Dm 0644 "$script_dir/README.md" "$archive_root/PACKAGING.md"
 install -Dm 0644 "$repo_root/LICENSE" "$archive_root/LICENSE"
+install -Dm 0644 "$repo_root/LICENSE-MPL-2.0.txt" "$archive_root/LICENSE-MPL-2.0.txt"
+install -Dm 0644 "$repo_root/LICENSE-SKIA.txt" "$archive_root/LICENSE-SKIA.txt"
+install -Dm 0644 "$repo_root/THIRD-PARTY.md" "$archive_root/THIRD-PARTY.md"
 find "$archive_root" -depth -exec touch -h -d "@$source_date_epoch" -- {} +
 tar --sort=name --mtime="@$source_date_epoch" --owner=0 --group=0 --numeric-owner \
     -C "$work_dir" -cf - "$archive_root_name" \
@@ -115,6 +118,12 @@ for worker in "${binaries[@]:1}"; do
 done
 install -Dm 0644 "$script_dir/README.md" "$deb_root/usr/share/doc/lizard-mail/PACKAGING.md"
 install -Dm 0644 "$repo_root/LICENSE" "$deb_root/usr/share/doc/lizard-mail/copyright"
+install -Dm 0644 "$repo_root/LICENSE-MPL-2.0.txt" \
+    "$deb_root/usr/share/doc/lizard-mail/LICENSE-MPL-2.0.txt"
+install -Dm 0644 "$repo_root/LICENSE-SKIA.txt" \
+    "$deb_root/usr/share/doc/lizard-mail/LICENSE-SKIA.txt"
+install -Dm 0644 "$repo_root/THIRD-PARTY.md" \
+    "$deb_root/usr/share/doc/lizard-mail/THIRD-PARTY.md"
 install -d -m 0755 "$deb_root/DEBIAN"
 cat >"$deb_root/DEBIAN/control" <<EOF
 Package: lizard-mail
@@ -139,12 +148,15 @@ for binary in "${binaries[@]}"; do
 done
 install -m 0644 "$script_dir/README.md" "$rpm_top/SOURCES/PACKAGING.md"
 install -m 0644 "$repo_root/LICENSE" "$rpm_top/SOURCES/LICENSE"
+install -m 0644 "$repo_root/LICENSE-MPL-2.0.txt" "$rpm_top/SOURCES/LICENSE-MPL-2.0.txt"
+install -m 0644 "$repo_root/LICENSE-SKIA.txt" "$rpm_top/SOURCES/LICENSE-SKIA.txt"
+install -m 0644 "$repo_root/THIRD-PARTY.md" "$rpm_top/SOURCES/THIRD-PARTY.md"
 cat >"$rpm_top/SPECS/lizard-mail.spec" <<EOF
 Name:           lizard-mail
 Version:        ${rpm_version}
 Release:        ${release}
 Summary:        Local-first terminal mail client with isolated content workers
-License:        MIT
+License:        MIT AND MPL-2.0 AND BSD-3-Clause
 URL:            https://github.com/JD-P/mail-client
 Source0:        lizard-mail-tui
 Source1:        lizard-mail-tui-render-worker
@@ -152,6 +164,9 @@ Source2:        lizard-mail-sync-worker
 Source3:        lizard-mail-archive-worker
 Source4:        PACKAGING.md
 Source5:        LICENSE
+Source6:        LICENSE-MPL-2.0.txt
+Source7:        LICENSE-SKIA.txt
+Source8:        THIRD-PARTY.md
 BuildArch:      x86_64
 AutoReqProv:    no
 %global __os_install_post %{nil}
@@ -171,6 +186,9 @@ install -Dm 0755 %{SOURCE2} %{buildroot}/usr/libexec/lizard-mail/lizard-mail-syn
 install -Dm 0755 %{SOURCE3} %{buildroot}/usr/libexec/lizard-mail/lizard-mail-archive-worker
 install -Dm 0644 %{SOURCE4} %{buildroot}/usr/share/doc/lizard-mail/PACKAGING.md
 install -Dm 0644 %{SOURCE5} %{buildroot}/usr/share/licenses/lizard-mail/LICENSE
+install -Dm 0644 %{SOURCE6} %{buildroot}/usr/share/licenses/lizard-mail/LICENSE-MPL-2.0.txt
+install -Dm 0644 %{SOURCE7} %{buildroot}/usr/share/licenses/lizard-mail/LICENSE-SKIA.txt
+install -Dm 0644 %{SOURCE8} %{buildroot}/usr/share/doc/lizard-mail/THIRD-PARTY.md
 find %{buildroot} -depth -exec touch -h -d '@${source_date_epoch}' -- {} +
 
 %files
@@ -179,7 +197,10 @@ find %{buildroot} -depth -exec touch -h -d '@${source_date_epoch}' -- {} +
 %attr(0755,root,root) /usr/libexec/lizard-mail/lizard-mail-sync-worker
 %attr(0755,root,root) /usr/libexec/lizard-mail/lizard-mail-archive-worker
 %doc /usr/share/doc/lizard-mail/PACKAGING.md
+%doc /usr/share/doc/lizard-mail/THIRD-PARTY.md
 %license /usr/share/licenses/lizard-mail/LICENSE
+%license /usr/share/licenses/lizard-mail/LICENSE-MPL-2.0.txt
+%license /usr/share/licenses/lizard-mail/LICENSE-SKIA.txt
 EOF
 find "$rpm_top/SOURCES" "$rpm_top/SPECS" -depth \
     -exec touch -h -d "@$source_date_epoch" -- {} +

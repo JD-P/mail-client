@@ -701,6 +701,14 @@ static PREFER_INLINE WideRGBA8 blend_pixels(uint32_t* buf, PackedRGBA8 pdst,
     return applyColor(src, swgl_BlendColorRGBA8) + dst -
            muldiv255(dst, applyColor(src, swgl_BlendAlphaRGBA8));
 
+  BLEND_CASE(SWGL_BLEND_ALPHA_TEXT): {
+    // Keep alpha-text color modulation and composition in one integer path.
+    // The fragment fallback otherwise rounds the premultiplied color in
+    // floating point before blending, unlike Gecko's fixed-point compositor.
+    WideRGBA8 color = applyColor(alphas(src), swgl_BlendColorRGBA8);
+    return color + muldiv256(dst, 256 - alphas(color));
+  }
+
   default:
     UNREACHABLE;
     // return src;

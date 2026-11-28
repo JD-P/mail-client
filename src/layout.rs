@@ -11,6 +11,106 @@ pub struct ImageResource {
     pub height: u32,
     pub rgba: Vec<u8>,
 }
+
+struct InkIntercepts {
+    band_min: f32,
+    band_max: f32,
+    current: (f32, f32),
+    start: (f32, f32),
+    bounds: Option<(f32, f32)>,
+}
+
+impl InkIntercepts {
+    fn new(band_min: f32, band_max: f32) -> Self {
+        Self {
+            band_min,
+            band_max,
+            current: (0.0, 0.0),
+            start: (0.0, 0.0),
+            bounds: None,
+        }
+    }
+
+    fn include(&mut self, x: f32) {
+        self.bounds = Some(match self.bounds {
+            Some((min, max)) => (min.min(x), max.max(x)),
+            None => (x, x),
+        });
+    }
+
+    fn line(&mut self, to: (f32, f32)) {
+        let from = self.current;
+        if (self.band_min..=self.band_max).contains(&from.1) {
+            self.include(from.0);
+        }
+        if (self.band_min..=self.band_max).contains(&to.1) {
+            self.include(to.0);
+        }
+        let dy = to.1 - from.1;
+        if dy != 0.0 {
+            for y in [self.band_min, self.band_max] {
+                let amount = (y - from.1) / dy;
+                if (0.0..=1.0).contains(&amount) {
+                    self.include(from.0 + (to.0 - from.0) * amount);
+                }
+            }
+        }
+        self.current = to;
+    }
+
+    fn quadratic(&mut self, control: (f32, f32), to: (f32, f32)) {
+        let from = self.current;
+        for step in 1..=32 {
+            let t = step as f32 / 32.0;
+            let inverse = 1.0 - t;
+            self.line((
+                inverse * inverse * from.0 + 2.0 * inverse * t * control.0 + t * t * to.0,
+                inverse * inverse * from.1 + 2.0 * inverse * t * control.1 + t * t * to.1,
+            ));
+        }
+    }
+
+    fn cubic(&mut self, first: (f32, f32), second: (f32, f32), to: (f32, f32)) {
+        let from = self.current;
+        for step in 1..=32 {
+            let t = step as f32 / 32.0;
+            let inverse = 1.0 - t;
+            self.line((
+                inverse.powi(3) * from.0
+                    + 3.0 * inverse * inverse * t * first.0
+                    + 3.0 * inverse * t * t * second.0
+                    + t.powi(3) * to.0,
+                inverse.powi(3) * from.1
+                    + 3.0 * inverse * inverse * t * first.1
+                    + 3.0 * inverse * t * t * second.1
+                    + t.powi(3) * to.1,
+            ));
+        }
+    }
+}
+
+impl rustybuzz::ttf_parser::OutlineBuilder for InkIntercepts {
+    fn move_to(&mut self, x: f32, y: f32) {
+        self.current = (x, y);
+        self.start = (x, y);
+    }
+
+    fn line_to(&mut self, x: f32, y: f32) {
+        self.line((x, y));
+    }
+
+    fn quad_to(&mut self, x1: f32, y1: f32, x: f32, y: f32) {
+        self.quadratic((x1, y1), (x, y));
+    }
+
+    fn curve_to(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, x: f32, y: f32) {
+        self.cubic((x1, y1), (x2, y2), (x, y));
+    }
+
+    fn close(&mut self) {
+        self.line(self.start);
+    }
+}
 #[derive(Clone, Debug, Serialize)]
 pub enum Draw {
     BeginOpacity {
@@ -1744,6 +1844,59 @@ impl<'a> Engine<'a> {
         clip: Rect,
     ) -> Result<()> {
         let ps = self.styles[parent].clone();
+        // Keep a collapsible space in the same shaped run as its adjoining
+        // text when both belong to one DOM node and one bidi level. Gecko's
+        // text-run itemizer does this before handing glyphs to WebRender. In
+        // addition to preserving contextual shaping, it prevents the two
+        // runs from acquiring different floating-point origins during
+        // rasterization. Do not coalesce across nodes: those boundaries carry
+        // link, decoration, language and accessibility semantics.
+        let mut coalesced: Vec<Placed> = Vec::with_capacity(line.len());
+        for item in line {
+            let mut merged = false;
+            if let (
+                Some(Placed::Text {
+                    node: previous_node,
+                    run: previous_run,
+                    x: previous_x,
+                    level: previous_level,
+                }),
+                Placed::Text {
+                    node,
+                    run,
+                    x: current_x,
+                    level,
+                },
+            ) = (coalesced.last_mut(), item)
+            {
+                let whitespace_boundary = previous_run
+                    .text
+                    .chars()
+                    .next_back()
+                    .is_some_and(char::is_whitespace)
+                    || run.text.chars().next().is_some_and(char::is_whitespace);
+                if previous_node == node
+                    && previous_level == level
+                    && !self.styles[*node].direction_rtl
+                    && *previous_x + previous_run.width == *current_x
+                    && whitespace_boundary
+                {
+                    let expected_width = previous_run.width + run.width;
+                    let combined = format!("{}{}", previous_run.text, run.text);
+                    let shaped = self
+                        .fonts
+                        .shape(&combined, &self.styles[*node], self.budget)?;
+                    if shaped.width == expected_width {
+                        *previous_run = shaped;
+                        merged = true;
+                    }
+                }
+            }
+            if !merged {
+                coalesced.push(item.clone());
+            }
+        }
+        let line = coalesced.as_slice();
         let mut shortened = vec![];
         let ellipsis = ps.overflow_hidden
             && ps.text_overflow == "ellipsis"
@@ -2017,6 +2170,73 @@ impl<'a> Engine<'a> {
         }
         Ok(())
     }
+    fn underline_segments(&self, x: Au, run: &Run, thickness: Au) -> Vec<(Au, Au)> {
+        let Some(font) = self.fonts.fonts.get(run.font) else {
+            return vec![(x, run.width)];
+        };
+        let Some(face) = rustybuzz::Face::from_slice(&font.bytes, font.index) else {
+            return vec![(x, run.width)];
+        };
+        let units = face.units_per_em() as f32;
+        if run.size <= 0 || units <= 0.0 {
+            return vec![(x, run.width)];
+        }
+        let metric_offset = face
+            .underline_metrics()
+            .map(|metrics| -(metrics.position as f32) * run.size as f32 / units)
+            .unwrap_or(0.0);
+        let offset = metric_offset.max(run.size as f32 / 16.0);
+        let band_min = -(offset + thickness as f32) * units / run.size as f32;
+        let band_max = -offset * units / run.size as f32;
+        let padding = thickness.max(PX).min(run.size / 5).max(0) as f32;
+        let snap = |value: f32| ((value / PX as f32 + 0.5).floor() as Au) * PX;
+        let mut gaps = Vec::new();
+        for glyph in &run.glyphs {
+            let Ok(index) = u16::try_from(glyph.index) else {
+                continue;
+            };
+            let mut intercepts = InkIntercepts::new(band_min, band_max);
+            if face
+                .outline_glyph(rustybuzz::ttf_parser::GlyphId(index), &mut intercepts)
+                .is_none()
+            {
+                continue;
+            }
+            if let Some((left, right)) = intercepts.bounds {
+                let origin = (x + glyph.x) as f32;
+                let scale = run.size as f32 / units;
+                let start = snap(origin + left * scale - padding).max(x);
+                let end = snap(origin + right * scale + padding).min(x + run.width);
+                if end > start {
+                    gaps.push((start, end));
+                }
+            }
+        }
+        gaps.sort_unstable();
+        let mut merged: Vec<(Au, Au)> = Vec::with_capacity(gaps.len());
+        for (start, end) in gaps {
+            if let Some(previous) = merged.last_mut() {
+                if start <= previous.1 {
+                    previous.1 = previous.1.max(end);
+                    continue;
+                }
+            }
+            merged.push((start, end));
+        }
+        let mut segments = Vec::with_capacity(merged.len() + 1);
+        let mut start = x;
+        for (gap_start, gap_end) in merged {
+            if gap_start - start >= PX {
+                segments.push((start, gap_start - start));
+            }
+            start = start.max(gap_end);
+        }
+        if x + run.width - start >= PX {
+            segments.push((start, x + run.width - start));
+        }
+        segments
+    }
+
     fn text(
         &mut self,
         node: NodeId,
@@ -2034,6 +2254,12 @@ impl<'a> Engine<'a> {
             return Ok(());
         }
         let w = run.width;
+        let t = (s.font_size / 16).max(PX);
+        let underline_segments = if s.decoration & 1 != 0 {
+            self.underline_segments(x, &run, t)
+        } else {
+            Vec::new()
+        };
         self.emit(
             Draw::Text {
                 node,
@@ -2050,15 +2276,16 @@ impl<'a> Engine<'a> {
         } else {
             s.decoration_color
         };
-        let t = (s.font_size / 16).max(PX);
         if s.decoration & 1 != 0 {
-            self.rect(
-                Rect::new(x, baseline + s.font_size / 10, w, t),
-                c,
-                0,
-                clip,
-                s,
-            )?;
+            for (segment_x, segment_width) in underline_segments {
+                self.rect(
+                    Rect::new(segment_x, baseline + s.font_size / 10, segment_width, t),
+                    c,
+                    0,
+                    clip,
+                    s,
+                )?;
+            }
         }
         if s.decoration & 2 != 0 {
             self.rect(

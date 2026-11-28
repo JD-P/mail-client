@@ -165,8 +165,9 @@ Both rendering source sets use Firefox tag `FIREFOX_160_0_RELEASE`, Git revision
 `2887d9de1f69c0e9776413da80e7ba0d1225dd9b`; the official binary records Mercurial
 revision `d84e7a6936554efe26097d9d9b24a0e11330e630`. Run
 `python3 tools/check_upstream.py` to check the 245 pinned rendering files and
-reject unexpected files. Standalone Cargo/Glean adjustments are separately
-hashed in `spec/standalone-adapters.json`.
+reject unexpected files. Reviewed conformance patches are separately hashed and
+explained in `spec/webrender-local-patches.json`; standalone Cargo/Glean
+adjustments are hashed in `spec/standalone-adapters.json`.
 
 ## Verus and checks
 

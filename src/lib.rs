@@ -13,3 +13,5 @@ pub mod sandbox;
 pub mod worker;
 
 pub mod resources;
+
+mod software_raster;

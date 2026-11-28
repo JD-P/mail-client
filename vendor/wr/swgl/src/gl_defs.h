@@ -218,3 +218,4 @@ typedef intptr_t GLintptr;
 
 #define SWGL_BLEND_DROP_SHADOW 0xB001
 #define SWGL_BLEND_SUBPIXEL_TEXT 0xB002
+#define SWGL_BLEND_ALPHA_TEXT 0xB003

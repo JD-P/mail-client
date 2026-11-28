@@ -3923,6 +3923,13 @@ pub fn ast_to_hir(state: &mut State, tu: &syntax::TranslationUnit) -> Translatio
     );
     declare_function(
         state,
+        "swgl_blendAlphaText",
+        None,
+        Type::new(Void),
+        vec![Type::new(Vec4)],
+    );
+    declare_function(
+        state,
         "swgl_clipMask",
         None,
         Type::new(Void),

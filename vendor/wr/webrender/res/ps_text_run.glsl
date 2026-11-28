@@ -233,7 +233,12 @@ void main() {
     switch (color_mode) {
         case COLOR_MODE_ALPHA:
             v_mask_swizzle = vec3(0.0, 1.0, 1.0);
-            v_color = text.color;
+            #ifdef SWGL_BLEND
+                swgl_blendAlphaText(text.color);
+                v_color = vec4(1.0);
+            #else
+                v_color = text.color;
+            #endif
             break;
         case COLOR_MODE_BITMAP_SHADOW:
             #ifdef SWGL_BLEND
